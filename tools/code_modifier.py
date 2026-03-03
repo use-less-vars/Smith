@@ -7,6 +7,7 @@ from pydantic import Field, model_validator
 import libcst as cst
 import libcst.matchers as m
 import os
+import textwrap
 
 from .base import ToolBase
 from pathlib import Path
@@ -267,7 +268,14 @@ class CodeModifier(ToolBase):
         def parse_body_to_statements(body_str: str) -> list[cst.BaseStatement]:
             if not body_str.strip():
                 return []
-            dummy_func = f"def _dummy():\n" + "".join(f"    {line}\n" for line in body_str.splitlines())
+            # Remove common leading whitespace
+            dedented = textwrap.dedent(body_str)
+            # Ensure at least one newline at end
+            if dedented and not dedented.endswith('\n'):
+                dedented += '\n'
+            # Indent by 4 spaces
+            indented = textwrap.indent(dedented, '    ')
+            dummy_func = f"def _dummy():\n{indented}"
             try:
                 dummy_module = cst.parse_module(dummy_func)
                 func_def = dummy_module.body[0]
@@ -276,16 +284,33 @@ class CodeModifier(ToolBase):
                 return list(func_def.body.body)
             except Exception as e:
                 raise ValueError(f"Failed to parse function body: {e}")
-
         # Build parameters
         params = []
         if self.parameters:
             for p in self.parameters:
                 p = p.strip()
                 if ':' in p and '=' in p:
-                    name = p.split(':')[0].strip()
-                    param = cst.Param(name=cst.Name(name))
+                    # name: annotation = default
+                    name_part, rest = p.split(':', 1)
+                    name = name_part.strip()
+                    annotation_part, default_part = rest.split('=', 1)
+                    annotation = annotation_part.strip()
+                    default = default_part.strip()
+                    try:
+                        ann_expr = cst.parse_expression(annotation)
+                    except:
+                        ann_expr = cst.Name(annotation)
+                    try:
+                        default_expr = cst.parse_expression(default)
+                    except:
+                        default_expr = cst.Name(default)
+                    param = cst.Param(
+                        name=cst.Name(name),
+                        annotation=cst.Annotation(ann_expr),
+                        default=default_expr
+                    )
                 elif ':' in p:
+                    # name: annotation
                     name, annotation = p.split(':', 1)
                     name = name.strip()
                     annotation = annotation.strip()
@@ -298,6 +323,7 @@ class CodeModifier(ToolBase):
                         annotation=cst.Annotation(ann_expr)
                     )
                 elif '=' in p:
+                    # name = default
                     name, default = p.split('=', 1)
                     name = name.strip()
                     default = default.strip()
@@ -310,6 +336,7 @@ class CodeModifier(ToolBase):
                         default=default_expr
                     )
                 else:
+                    # name only
                     param = cst.Param(name=cst.Name(p))
                 params.append(param)
         else:
@@ -397,7 +424,14 @@ class CodeModifier(ToolBase):
         def parse_body_to_statements(body_str: str) -> list[cst.BaseStatement]:
             if not body_str.strip():
                 return []
-            dummy_func = f"def _dummy():\n" + "".join(f"    {line}\n" for line in body_str.splitlines())
+            # Remove common leading whitespace
+            dedented = textwrap.dedent(body_str)
+            # Ensure at least one newline at end
+            if dedented and not dedented.endswith('\n'):
+                dedented += '\n'
+            # Indent by 4 spaces
+            indented = textwrap.indent(dedented, '    ')
+            dummy_func = f"def _dummy():\n{indented}"
             try:
                 dummy_module = cst.parse_module(dummy_func)
                 func_def = dummy_module.body[0]
@@ -405,7 +439,7 @@ class CodeModifier(ToolBase):
                     raise ValueError("Parsing did not yield a FunctionDef")
                 return list(func_def.body.body)
             except Exception as e:
-                raise ValueError(f"Failed to parse method body: {e}")
+                raise ValueError(f"Failed to parse function body: {e}")
 
         # Build parameters (same as add_function)
         params = []
@@ -413,9 +447,27 @@ class CodeModifier(ToolBase):
             for p in self.parameters:
                 p = p.strip()
                 if ':' in p and '=' in p:
-                    name = p.split(':')[0].strip()
-                    param = cst.Param(name=cst.Name(name))
+                    # name: annotation = default
+                    name_part, rest = p.split(':', 1)
+                    name = name_part.strip()
+                    annotation_part, default_part = rest.split('=', 1)
+                    annotation = annotation_part.strip()
+                    default = default_part.strip()
+                    try:
+                        ann_expr = cst.parse_expression(annotation)
+                    except:
+                        ann_expr = cst.Name(annotation)
+                    try:
+                        default_expr = cst.parse_expression(default)
+                    except:
+                        default_expr = cst.Name(default)
+                    param = cst.Param(
+                        name=cst.Name(name),
+                        annotation=cst.Annotation(ann_expr),
+                        default=default_expr
+                    )
                 elif ':' in p:
+                    # name: annotation
                     name, annotation = p.split(':', 1)
                     name = name.strip()
                     annotation = annotation.strip()
@@ -428,6 +480,7 @@ class CodeModifier(ToolBase):
                         annotation=cst.Annotation(ann_expr)
                     )
                 elif '=' in p:
+                    # name = default
                     name, default = p.split('=', 1)
                     name = name.strip()
                     default = default.strip()
@@ -440,6 +493,7 @@ class CodeModifier(ToolBase):
                         default=default_expr
                     )
                 else:
+                    # name only
                     param = cst.Param(name=cst.Name(p))
                 params.append(param)
         else:
@@ -552,7 +606,6 @@ class CodeModifier(ToolBase):
                         return True
             return False
 
-        # Build import node
         if self.from_import:
             # from module import name1, name2
             module_expr = cst.parse_expression(self.import_module)
@@ -572,6 +625,9 @@ class CodeModifier(ToolBase):
                 asname=cst.Name(self.import_alias) if self.import_alias else None
             )
             import_node = cst.Import(names=[alias_node])
+        
+        # Wrap import node in a SimpleStatementLine (as required by module body)
+        import_stmt = cst.SimpleStatementLine(body=[import_node])
 
         # Determine insertion index
         body = list(module.body)
@@ -599,7 +655,7 @@ class CodeModifier(ToolBase):
                     return None, f"Import already exists: {new_import_source}"
 
         # Insert
-        body.insert(insert_idx, import_node)
+        body.insert(insert_idx, import_stmt)
         new_module = module.with_changes(body=body)
         return new_module, f"Added import at position {insert_idx}: {new_import_source}"
 
@@ -611,7 +667,14 @@ class CodeModifier(ToolBase):
         def parse_body_to_statements(body_str: str) -> list[cst.BaseStatement]:
             if not body_str.strip():
                 return []
-            dummy_func = f"def _dummy():\n" + "".join(f"    {line}\n" for line in body_str.splitlines())
+            # Remove common leading whitespace
+            dedented = textwrap.dedent(body_str)
+            # Ensure at least one newline at end
+            if dedented and not dedented.endswith('\n'):
+                dedented += '\n'
+            # Indent by 4 spaces
+            indented = textwrap.indent(dedented, '    ')
+            dummy_func = f"def _dummy():\n{indented}"
             try:
                 dummy_module = cst.parse_module(dummy_func)
                 func_def = dummy_module.body[0]
@@ -619,7 +682,7 @@ class CodeModifier(ToolBase):
                     raise ValueError("Parsing did not yield a FunctionDef")
                 return list(func_def.body.body)
             except Exception as e:
-                raise ValueError(f"Failed to parse class body: {e}")
+                raise ValueError(f"Failed to parse function body: {e}")
 
         # Parse body
         try:
@@ -708,7 +771,14 @@ class CodeModifier(ToolBase):
         def parse_body_to_statements(body_str: str) -> list[cst.BaseStatement]:
             if not body_str.strip():
                 return []
-            dummy_func = f"def _dummy():\n" + "".join(f"    {line}\n" for line in body_str.splitlines())
+            # Remove common leading whitespace
+            dedented = textwrap.dedent(body_str)
+            # Ensure at least one newline at end
+            if dedented and not dedented.endswith('\n'):
+                dedented += '\n'
+            # Indent by 4 spaces
+            indented = textwrap.indent(dedented, '    ')
+            dummy_func = f"def _dummy():\n{indented}"
             try:
                 dummy_module = cst.parse_module(dummy_func)
                 func_def = dummy_module.body[0]
@@ -813,7 +883,14 @@ class CodeModifier(ToolBase):
         def parse_body_to_statements(body_str: str) -> list[cst.BaseStatement]:
             if not body_str.strip():
                 return []
-            dummy_func = f"def _dummy():\n" + "".join(f"    {line}\n" for line in body_str.splitlines())
+            # Remove common leading whitespace
+            dedented = textwrap.dedent(body_str)
+            # Ensure at least one newline at end
+            if dedented and not dedented.endswith('\n'):
+                dedented += '\n'
+            # Indent by 4 spaces
+            indented = textwrap.indent(dedented, '    ')
+            dummy_func = f"def _dummy():\n{indented}"
             try:
                 dummy_module = cst.parse_module(dummy_func)
                 func_def = dummy_module.body[0]

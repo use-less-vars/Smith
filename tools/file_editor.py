@@ -9,7 +9,7 @@ from .base import ToolBase
 class FileEditor(ToolBase):
     """Unified file editor supporting read, write, insert, append, replace, and delete operations.
     Supports single file operations or batch operations across multiple files."""
-    operation: Literal["read", "write", "insert", "append", "replace", "delete"] = Field(
+    operation: Literal["read", "write", "insert", "append", "replace", "delete", "grep"] = Field(
         description="Operation to perform: 'read' (read file), 'write' (write content), 'insert' (insert lines), 'append' (append lines), 'replace' (replace specific lines), 'delete' (delete lines)"
     )
     filename: Optional[str] = Field(
@@ -40,6 +40,14 @@ class FileEditor(ToolBase):
         default="replace",
         description="Mode for write operation: 'replace' (overwrite line), 'insert' (insert before line), 'append' (append after line). Only used when operation='write' and line_number is specified."
     )
+    context_lines: int = Field(
+        default=0,
+        description="Number of surrounding lines to show when reading specific lines (only for read operation)"
+    )
+    pattern: Optional[str] = Field(
+        default=None,
+        description="Pattern for grep operation (only for grep operation)"
+    )
 
     @model_validator(mode='after')
     def validate_operation(self):
@@ -61,7 +69,11 @@ class FileEditor(ToolBase):
         elif op == "delete":
             if self.line_numbers is None:
                 raise ValueError("line_numbers required for delete")
+        elif op == "grep":
+            if self.pattern is None:
+                raise ValueError("pattern required for grep")
         return self
+
 
     @model_validator(mode='after')
     def validate_filenames(self):
@@ -98,8 +110,11 @@ class FileEditor(ToolBase):
                     result = self._execute_replace(actual_filename)
                 elif self.operation == "delete":
                     result = self._execute_delete(actual_filename)
+                elif self.operation == "grep":
+                    result = self._execute_grep(actual_filename)
                 else:
                     result = f"Error: Unknown operation {self.operation}"
+                    result = self._execute_delete(actual_filename)
                 results.append(f"{filename}: {result}")
             except Exception as e:
                 results.append(f"{filename}: Error: {e}")
@@ -162,7 +177,22 @@ class FileEditor(ToolBase):
         else:
             return f"Error: Invalid line_numbers parameter: {self.line_numbers}"
 
+        # Apply context lines if specified
+        if self.context_lines > 0:
+            expanded_indices = set()
+            for idx in line_indices:
+                start = max(1, idx - self.context_lines)
+                end = min(total_lines, idx + self.context_lines)
+                expanded_indices.update(range(start, end + 1))
+            line_indices = sorted(expanded_indices)
+            result_lines = [lines[i-1] for i in line_indices]
+
         # Format the output
+        output_lines = []
+        for idx, line in zip(line_indices, result_lines):
+            output_lines.append(f"Line {idx}: {line.rstrip()}")
+
+        return f"File: {filename}\nTotal lines: {total_lines}\n" + "\n".join(output_lines)
         output_lines = []
         for idx, line in zip(line_indices, result_lines):
             output_lines.append(f"Line {idx}: {line.rstrip()}")
@@ -321,3 +351,31 @@ class FileEditor(ToolBase):
             f.writelines(lines)
 
         return f"Successfully deleted {len(delete_indices)} line(s) from {filename}"
+
+    def _execute_grep(self, filename: str) -> str:
+        """Search for pattern in file."""
+        try:
+            with open(filename, 'r', encoding='utf-8', errors='ignore') as f:
+                lines = f.readlines()
+        except Exception as e:
+            return f"Error reading file: {e}"
+        
+        matches = []
+        pattern = self.pattern
+        for i, line in enumerate(lines, start=1):
+            if pattern in line:
+                matches.append((i, line.rstrip()))
+        
+        if not matches:
+            return f"No matches for pattern '{pattern}' in {filename}"
+        
+        # Limit matches for readability
+        max_matches = 20
+        displayed = matches[:max_matches]
+        output_lines = [f"File: {filename}", f"Pattern: '{pattern}'", f"Total matches: {len(matches)}"]
+        for line_num, line in displayed:
+            output_lines.append(f"Line {line_num}: {line}")
+        if len(matches) > max_matches:
+            output_lines.append(f"... and {len(matches) - max_matches} more matches")
+        
+        return "\n".join(output_lines)

@@ -18,6 +18,23 @@ You have access to the `CodeModifier` tool which can perform high‑level code c
 - Only for very small tweaks (changing a single line, adding a comment) or when CodeModifier cannot express the change (e.g., editing a non‑Python file).
 
 **Always batch related changes into a single CodeModifier call** (e.g., add a function and its import together – you may need two calls, but avoid interleaving with FileEditor).
+## Optimizing Turn-Cycles with Batch Operations
+
+**Always Ask**: "Can this operation be batched?"
+- Modifying multiple files? Use `filenames` parameter
+- Similar changes across files? Use batch replace
+- Reading multiple files? Batch read for efficiency
+
+**CodeModifier Best Practices**:
+- Combine related changes (function + imports)
+- Use for structural changes, FileEditor for line edits
+
+**Thinking Framework**:
+1. **Assess**: Use FileSummaryTool for project overview
+2. **Plan**: Group operations by file and type
+3. **Batch**: Combine identical operations across files
+4. **Sequence**: Use CodeModifier for structural changes
+5. **Verify**: Batch read for confirmation
 
 1. **File Operations**: Use the FileEditor tool for all file reading and editing operations. It supports read, write, insert, append, replace, and delete operations with fine-grained line control. When modifying existing files, prefer partial modifications (line-specific operations) over rewriting entire files. The reason is that the larger the files become, the more error prone LLM outputs become. Changing a file in place using line-specific operations is safer than rewriting the whole file. Full file rewrites should only be used for creating new files or when completely replacing small files.
 
