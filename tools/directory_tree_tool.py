@@ -3,17 +3,20 @@ import os
 import pathlib
 import stat
 from pydantic import Field
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Tuple
 import time
 
 class DirectoryTreeTool(ToolBase):
-    """Show recursive directory structure with file counts and sizes."""
+    """Show directory structure with tree visualization or flat file listing. Supports recursion limits, hidden file filtering, pattern matching, and output truncation."""
     
     directory: str = Field(description="Root directory to show tree structure")
     max_depth: int = Field(default=3, description="Maximum depth to recurse (0 for unlimited)")
     show_hidden: bool = Field(default=False, description="Show hidden files and directories (starting with .)")
     include_sizes: bool = Field(default=True, description="Include file sizes and line counts")
     pattern: str = Field(default="*", description="Glob pattern to filter files (e.g., '*.py', '*.txt')")
+    format: str = Field(default='tree', description="Output format: 'tree' (directory tree) or 'list' (flat file list)")
+    max_results: int = Field(default=100, description="Maximum files to show in list format (0=unlimited)")
+    sort_by: str = Field(default='name', description="Sort order for list format: 'name', 'size', or 'modified'")
     
     def execute(self) -> str:
         try:
@@ -23,26 +26,19 @@ class DirectoryTreeTool(ToolBase):
                 return f"Error: Directory '{self.directory}' does not exist."
             if not dir_path.is_dir():
                 return f"Error: '{self.directory}' is not a directory."
-            
-            # Build tree structure
-            tree_data = self._build_tree(dir_path, current_depth=0)
-            
-            # Generate tree visualization
-            output_lines = self._format_tree(tree_data, dir_path)
-            
-            # Add summary statistics
-            summary = self._generate_summary(tree_data)
-            output_lines.extend(summary)
-            
-            return "\n".join(output_lines)
-            
+
+            if self.format == 'list':
+                return self._execute_list_format(dir_path)
+            else:
+                return self._execute_tree_format(dir_path)
         except Exception as e:
             return f"Error generating directory tree: {e}"
+
     
     def _build_tree(self, dir_path: pathlib.Path, current_depth: int) -> Dict[str, Any]:
         """Recursively build tree structure."""
         if self.max_depth > 0 and current_depth >= self.max_depth:
-            return {'type': 'directory', 'path': dir_path, 'children': [], 'file_count': 0, 'total_size': 0}
+            return {'type': 'directory', 'path': dir_path, 'name': dir_path.name, 'children': [], 'file_count': 0, 'total_size': 0, 'line_count': 0}
         
         tree_node = {
             'type': 'directory',
@@ -233,3 +229,111 @@ class DirectoryTreeTool(ToolBase):
                 stack.extend(node['children'])
         
         return count - 1  # Exclude root directory
+    def _execute_tree_format(self, dir_path: pathlib.Path) -> str:
+        """Generate tree format output."""
+        # Build tree structure
+        tree_data = self._build_tree(dir_path, current_depth=0)
+
+        # Generate tree visualization
+        output_lines = self._format_tree(tree_data, dir_path)
+
+        # Add summary statistics
+        summary = self._generate_summary(tree_data)
+        output_lines.extend(summary)
+
+        return "\n".join(output_lines)
+    def _collect_file_entries(self, dir_path: pathlib.Path) -> List[Tuple[str, int, float]]:
+        """Collect file entries matching criteria, respecting max_results."""
+        import os
+        from pathlib import Path
+        entries = []
+        # Use stack of (path, depth)
+        stack = [(dir_path, 0)]
+        while stack and (self.max_results == 0 or len(entries) < self.max_results):
+            current_path, depth = stack.pop()
+            # If max_depth > 0 and depth >= max_depth, skip deeper traversal
+            if self.max_depth > 0 and depth >= self.max_depth:
+                continue
+            try:
+                for entry in current_path.iterdir():
+                    # Skip hidden if not showing hidden
+                    if not self.show_hidden and entry.name.startswith('.'):
+                        continue
+                    if entry.is_dir():
+                        # Add subdirectory to stack for further traversal
+                        stack.append((entry, depth + 1))
+                    elif entry.is_file():
+                        # Check pattern filter
+                        if not self._matches_pattern(entry.name):
+                            continue
+                        # Get file info
+                        try:
+                            stat_info = entry.stat()
+                            size = stat_info.st_size
+                            mtime = stat_info.st_mtime
+                        except (OSError, PermissionError):
+                            size = -1
+                            mtime = -1
+                        # Compute relative path from root dir
+                        rel_path = str(entry.relative_to(dir_path))
+                        entries.append((rel_path, size, mtime))
+                        # Stop if max_results reached
+                        if self.max_results > 0 and len(entries) >= self.max_results:
+                            break
+            except (PermissionError, OSError):
+                # Skip directories we can't read
+                continue
+        return entries
+    def _execute_list_format(self, dir_path: pathlib.Path) -> str:
+        """Generate list format output."""
+        import os
+        import time
+        entries = self._collect_file_entries(dir_path)
+
+        if not entries:
+            return f"No files matching pattern '{self.pattern}' in directory '{self.directory}' (max_depth={self.max_depth})."
+
+        # Sort entries
+        if self.sort_by == 'name':
+            entries.sort(key=lambda x: x[0].lower())
+        elif self.sort_by == 'size':
+            # Sort by size ascending, unknown sizes (-1) last
+            entries.sort(key=lambda x: (x[1] == -1, x[1]))
+        elif self.sort_by == 'modified':
+            # Sort by modification time descending (newest first), unknown times last
+            entries.sort(key=lambda x: (x[2] == -1, -x[2] if x[2] != -1 else 0))
+        else:
+            return f"Error: Invalid sort_by value '{self.sort_by}'. Must be 'name', 'size', or 'modified'."
+
+        # Build output lines
+        lines = []
+        for rel_path, size, mtime in entries:
+            # Format size
+            if size >= 0:
+                size_str = f"{size:,} bytes"
+            else:
+                size_str = "?"
+            # Format modification time
+            if mtime >= 0:
+                time_str = time.strftime("%Y-%m-%d %H:%M", time.localtime(mtime))
+            else:
+                time_str = "?"
+            # Indent subdirectory files
+            indent = ""
+            if os.path.dirname(rel_path):
+                indent = "    "
+            lines.append(f"{indent}{rel_path} ({size_str}, modified {time_str})")
+
+        # Determine if truncated due to max_results
+        truncated = False
+        if self.max_results > 0 and len(entries) >= self.max_results:
+            # We may have more files beyond max_results; we need to know total count
+            # For simplicity, we can note truncation
+            truncated = True
+
+        # Build header
+        header = f"Files in {self.directory} (pattern='{self.pattern}', max_depth={self.max_depth}, format='list', sorted by {self.sort_by}):"
+        output = header + "\n" + "\n".join(lines)
+        if truncated:
+            output += f"\n... and more files (truncated, max_results={self.max_results})"
+        return output

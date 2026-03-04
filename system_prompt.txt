@@ -54,7 +54,7 @@ You have access to the `CodeModifier` tool which can perform high‑level code c
 
 
 9. **Directory Structure Diagnosis**: When you start or encounter file access errors, immediately determine the project root location:
-   1. **Initial Check**: Use FileLister on `.` (current directory) and `..` (parent directory).
+    1. **Initial Check**: Use DirectoryTreeTool with format='list' and max_depth=1 on `.` (current directory) and `..` (parent directory).
    2. **Identify Project Root**: Look for key project files: `agent_core.py`, `tools/`, `ai_docs/`.
       - If these are in `.`, project root is current directory (normal operation).
       - If these are in `..`, project root is parent directory (sandbox/isolation).

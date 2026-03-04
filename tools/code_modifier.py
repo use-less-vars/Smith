@@ -5,6 +5,8 @@ Supports operations: add_function, add_method, add_import, add_class, replace_fu
 from typing import Optional, Literal
 from pydantic import Field, model_validator
 import libcst as cst
+if not hasattr(cst, 'ImportFrom') or not hasattr(cst.ImportFrom, 'relative'):
+    print("Warning: Your libcst version may be incompatible. Expected >=0.4.0")
 import libcst.matchers as m
 import os
 import textwrap
@@ -124,8 +126,18 @@ class CodeModifier(ToolBase):
         elif self.operation == "add_import":
             if not self.import_module:
                 raise ValueError("import_module is required for add_import")
-            if self.from_import and not self.import_names:
-                raise ValueError("import_names required when from_import is True")
+            if self.from_import:
+                if not self.import_names:
+                    raise ValueError("import_names required when from_import is True")
+                # Convert single string to list for convenience
+                if isinstance(self.import_names, str):
+                    self.import_names = [self.import_names]
+                elif not isinstance(self.import_names, list):
+                    raise ValueError("import_names must be a list of strings")
+                # Ensure all items are strings
+                for i, name in enumerate(self.import_names):
+                    if not isinstance(name, str):
+                        raise ValueError(f"import_names[{i}] must be a string, got {type(name).__name__}")
         elif self.operation == "add_class":
             if not self.name:
                 raise ValueError("name is required for add_class")
@@ -259,7 +271,30 @@ class CodeModifier(ToolBase):
             return ' ', width
 
         return ' ', 4  # default
+    def _validate_parameter_order(self, params: list[cst.Param]) -> None:
+        """Raise ValueError if a parameter without default appears after a parameter with default."""
+        seen_default = False
+        for param in params:
+            if param.default is not None:
+                seen_default = True
+            elif seen_default:
+                # This param has no default but appears after a default param
+                raise ValueError(
+                    "Cannot have param without defaults following a param with defaults."
+                )
 
+    def _reorder_params(self, params: list[cst.Param]) -> list[cst.Param]:
+        """Reorder parameters so that params with defaults come after those without."""
+        # Split into two groups
+        no_default = []
+        with_default = []
+        for param in params:
+            if param.default is None:
+                no_default.append(param)
+            else:
+                with_default.append(param)
+        # Return concatenated (no_default before with_default)
+        return no_default + with_default
     # --------------------------------------------------------------------------
     # add_function
     # --------------------------------------------------------------------------
@@ -289,6 +324,16 @@ class CodeModifier(ToolBase):
         if self.parameters:
             for p in self.parameters:
                 p = p.strip()
+                star = ''
+                # Detect star prefixes
+                if p.startswith('**'):
+                    star = '**'
+                    p = p[2:].strip()
+                elif p.startswith('*'):
+                    star = '*'
+                    p = p[1:].strip()
+                
+                # Now parse annotation and default
                 if ':' in p and '=' in p:
                     # name: annotation = default
                     name_part, rest = p.split(':', 1)
@@ -307,7 +352,8 @@ class CodeModifier(ToolBase):
                     param = cst.Param(
                         name=cst.Name(name),
                         annotation=cst.Annotation(ann_expr),
-                        default=default_expr
+                        default=default_expr,
+                        star=star
                     )
                 elif ':' in p:
                     # name: annotation
@@ -320,7 +366,8 @@ class CodeModifier(ToolBase):
                         ann_expr = cst.Name(annotation)
                     param = cst.Param(
                         name=cst.Name(name),
-                        annotation=cst.Annotation(ann_expr)
+                        annotation=cst.Annotation(ann_expr),
+                        star=star
                     )
                 elif '=' in p:
                     # name = default
@@ -333,15 +380,19 @@ class CodeModifier(ToolBase):
                         default_expr = cst.Name(default)
                     param = cst.Param(
                         name=cst.Name(name),
-                        default=default_expr
+                        default=default_expr,
+                        star=star
                     )
                 else:
                     # name only
-                    param = cst.Param(name=cst.Name(p))
+                    param = cst.Param(name=cst.Name(p), star=star)
                 params.append(param)
+            # Reorder parameters to satisfy Python syntax
+            params = self._reorder_params(params)
+            # Validate parameter order
+            self._validate_parameter_order(params)
         else:
             params = []
-
         # Return annotation
         return_annotation = None
         if self.return_type:
@@ -446,6 +497,16 @@ class CodeModifier(ToolBase):
         if self.parameters:
             for p in self.parameters:
                 p = p.strip()
+                star = ''
+                # Detect star prefixes
+                if p.startswith('**'):
+                    star = '**'
+                    p = p[2:].strip()
+                elif p.startswith('*'):
+                    star = '*'
+                    p = p[1:].strip()
+                
+                # Now parse annotation and default
                 if ':' in p and '=' in p:
                     # name: annotation = default
                     name_part, rest = p.split(':', 1)
@@ -464,7 +525,8 @@ class CodeModifier(ToolBase):
                     param = cst.Param(
                         name=cst.Name(name),
                         annotation=cst.Annotation(ann_expr),
-                        default=default_expr
+                        default=default_expr,
+                        star=star
                     )
                 elif ':' in p:
                     # name: annotation
@@ -477,7 +539,8 @@ class CodeModifier(ToolBase):
                         ann_expr = cst.Name(annotation)
                     param = cst.Param(
                         name=cst.Name(name),
-                        annotation=cst.Annotation(ann_expr)
+                        annotation=cst.Annotation(ann_expr),
+                        star=star
                     )
                 elif '=' in p:
                     # name = default
@@ -490,12 +553,17 @@ class CodeModifier(ToolBase):
                         default_expr = cst.Name(default)
                     param = cst.Param(
                         name=cst.Name(name),
-                        default=default_expr
+                        default=default_expr,
+                        star=star
                     )
                 else:
                     # name only
-                    param = cst.Param(name=cst.Name(p))
+                    param = cst.Param(name=cst.Name(p), star=star)
                 params.append(param)
+            # Reorder parameters to satisfy Python syntax
+            params = self._reorder_params(params)
+            # Validate parameter order
+            self._validate_parameter_order(params)
         else:
             params = []
 
@@ -608,6 +676,8 @@ class CodeModifier(ToolBase):
 
         if self.from_import:
             # from module import name1, name2
+            if not isinstance(self.import_names, list):
+                return None, f"import_names must be a list, got {type(self.import_names).__name__}"
             module_expr = cst.parse_expression(self.import_module)
             names = [
                 cst.ImportAlias(name=cst.Name(name.strip()))
@@ -616,7 +686,7 @@ class CodeModifier(ToolBase):
             import_node = cst.ImportFrom(
                 module=module_expr,
                 names=names,
-                level=None
+                relative=0
             )
         else:
             # import module [as alias]
@@ -814,9 +884,18 @@ class CodeModifier(ToolBase):
                     method_idx = idx
                     break
             if method_node is None:
-                return None, f"Method '{self.target}' not found in class '{self.class_name}'."
-
-            # Preserve docstring if requested
+                available = []
+                for item in class_body:
+                    if m.matches(item, m.FunctionDef()):
+                        name_node = item.name
+                        if isinstance(name_node, cst.Name):
+                            available.append(name_node.value)
+                if available:
+                    hint = f" Available methods: {', '.join(available)}"
+                else:
+                    hint = " No methods found in class."
+                return None, f"Method '{self.target}' not found in class '{self.class_name}'.{hint}"
+            
             old_body = method_node.body.body
             if self.preserve_docstring and old_body and isinstance(old_body[0], cst.SimpleStatementLine):
                 first_stmt = old_body[0]
@@ -858,7 +937,17 @@ class CodeModifier(ToolBase):
                     func_idx = idx
                     break
             if func_node is None:
-                return None, f"Function '{self.target}' not found."
+                available = []
+                for stmt in module.body:
+                    if m.matches(stmt, m.FunctionDef()):
+                        name_node = stmt.name
+                        if isinstance(name_node, cst.Name):
+                            available.append(name_node.value)
+                if available:
+                    hint = f" Available functions: {', '.join(available)}"
+                else:
+                    hint = " No functions found at module level."
+                return None, f"Function '{self.target}' not found.{hint}"
 
             # Preserve docstring if requested
             old_body = func_node.body.body
@@ -909,7 +998,14 @@ class CodeModifier(ToolBase):
                     class_node = stmt
                     break
             if class_node is None:
-                return None, f"Class '{self.class_name}' not found."
+                available_classes = []
+                for stmt in module.body:
+                    if m.matches(stmt, m.ClassDef()):
+                        name_node = stmt.name
+                        if isinstance(name_node, cst.Name):
+                            available_classes.append(name_node.value)
+                hint = f" Available classes: {', '.join(available_classes)}" if available_classes else " No classes found."
+                return None, f"Class '{self.class_name}' not found.{hint}"
             # Find method inside class
             target_node = None
             target_idx = None
@@ -946,9 +1042,27 @@ class CodeModifier(ToolBase):
             for p in self.parameters:
                 p = p.strip()
                 if ':' in p and '=' in p:
-                    name = p.split(':')[0].strip()
-                    param = cst.Param(name=cst.Name(name))
+                    # name: annotation = default
+                    name_part, rest = p.split(':', 1)
+                    name = name_part.strip()
+                    annotation_part, default_part = rest.split('=', 1)
+                    annotation = annotation_part.strip()
+                    default = default_part.strip()
+                    try:
+                        ann_expr = cst.parse_expression(annotation)
+                    except:
+                        ann_expr = cst.Name(annotation)
+                    try:
+                        default_expr = cst.parse_expression(default)
+                    except:
+                        default_expr = cst.Name(default)
+                    param = cst.Param(
+                        name=cst.Name(name),
+                        annotation=cst.Annotation(ann_expr),
+                        default=default_expr
+                    )
                 elif ':' in p:
+                    # name: annotation
                     name, annotation = p.split(':', 1)
                     name = name.strip()
                     annotation = annotation.strip()
@@ -961,6 +1075,7 @@ class CodeModifier(ToolBase):
                         annotation=cst.Annotation(ann_expr)
                     )
                 elif '=' in p:
+                    # name = default
                     name, default = p.split('=', 1)
                     name = name.strip()
                     default = default.strip()
@@ -973,8 +1088,13 @@ class CodeModifier(ToolBase):
                         default=default_expr
                     )
                 else:
+                    # name only
                     param = cst.Param(name=cst.Name(p))
                 params.append(param)
+            # Reorder parameters to satisfy Python syntax
+            params = self._reorder_params(params)
+            # Validate parameter order
+            self._validate_parameter_order(params)
             new_params = cst.Parameters(params=params)
         else:
             new_params = existing_params

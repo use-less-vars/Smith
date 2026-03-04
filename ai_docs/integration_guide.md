@@ -4,7 +4,7 @@
 Two primary file operation tools are available:
 
 1. **FileEditor** - Unified tool for all file reading and editing operations
-2. **FileLister** - List files in directories
+2. **DirectoryTreeTool** - List files in directories with tree visualization options
 
 Additionally, **FileMover** and **DirectoryCreator** are available for file system operations.
 
@@ -109,7 +109,7 @@ These tools are excluded from the simplified toolset but can be accessed if expl
 ## Simplified Toolset
 The simplified toolset includes:
 - FileEditor (unified file operations)
-- FileLister (list files)
+- DirectoryTreeTool (list files)
 - FileMover (move files/directories)
 - DirectoryCreator (create directories)
 - Calculator (basic arithmetic)
@@ -158,7 +158,7 @@ When to use FileEditor vs legacy tools:
 | Use Case | Recommended Tool |
 |----------|-----------------|
 | Any file operation | FileEditor |
-| Listing files | FileLister |
+| Listing files | DirectoryTreeTool (with format='list') |
 | Moving files | FileMover |
 | Creating directories | DirectoryCreator |
 | Reading entire files | FileEditor read with line_numbers='all' |
@@ -188,7 +188,7 @@ When using the agent in isolated environments (such as sandboxes or containers),
 
 When you start or encounter file access errors:
 
-1. **Initial Check**: Run FileLister on both `.` and `..` to understand directory structure.
+1. **Initial Check**: Run DirectoryTreeTool with format='list' and max_depth=1 on both `.` and `..` to understand directory structure.
 2. **Identify Project Root**: Look for key project files: `agent_core.py`, `tools/`, `ai_docs/`.
    - If these are in `.`, you're in Normal Operation.
    - If these are in `..`, you're in Sandbox Operation.
@@ -213,8 +213,8 @@ When you start or encounter file access errors:
 ### Solution Template
 ```python
 # Diagnostic first
-FileLister(directory=".")
-FileLister(directory="..")
+DirectoryTreeTool(directory=".", format='list', max_depth=1)
+DirectoryTreeTool(directory="..", format='list', max_depth=1)
 
 # Based on findings:
 # If project root is '..':

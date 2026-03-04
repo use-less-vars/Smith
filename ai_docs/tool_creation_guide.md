@@ -161,7 +161,7 @@ If you need to modify an existing tool:
 
 ### System Operations
 - Directory creation: `DirectoryCreator`
-- File listing: `FileLister`
+- File listing: `DirectoryTreeTool` (with format='list')
 
 ### Utilities
 - Calculations: `Calculator`
