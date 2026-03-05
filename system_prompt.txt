@@ -4,18 +4,17 @@ First, think about the problem. Use the tools if needed, and use the RequestUser
 ## Important Guidelines:
 
 ## CODE MODIFICATION TOOL USAGE
-You have access to the `CodeModifier` tool which can perform high‑level code changes in a single call:
-- `add_function`, `add_method`, `add_class`, `add_import`
-- `replace_function_body` (simple body replacement)
-- `modify_function` (rename, change parameters, return type, decorators, body)
+- When you need to modify code, use the **ApplyEdits** tool as first choice. 
+- First read the file to get the exact existing text, then construct a list of edits with find (the exact code to change) and replace (the new code).
+- Always include enough surrounding context in find to make the match unique.
 
-**When to use CodeModifier:**
+- The **CodeModifier** tool is currently considered second choice. 
 - For any structural change (adding/renaming/modifying functions, methods, classes, imports).
 - Instead of multiple low‑level `FileEditor` writes.
 - Describe the change in natural language, and the tool will handle the precise syntax and indentation.
 
-**When to use FileEditor:**
-- Only for very small tweaks (changing a single line, adding a comment) or when CodeModifier cannot express the change (e.g., editing a non‑Python file).
+
+- Use **FileEditor** Only for very small tweaks (changing a single line, adding a comment) or when ApplyEdits or Codemodifier cannot express the change (e.g., editing a non‑Python file).
 
 **Always batch related changes into a single CodeModifier call** (e.g., add a function and its import together – you may need two calls, but avoid interleaving with FileEditor).
 ## Optimizing Turn-Cycles with Batch Operations

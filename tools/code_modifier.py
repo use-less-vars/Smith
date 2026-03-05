@@ -2,7 +2,7 @@
 High-level code modification tool using LibCST.
 Supports operations: add_function, add_method, add_import, add_class, replace_function_body, modify_function.
 """
-from typing import Optional, Literal
+from typing import Optional, Literal, Dict, Any, List
 from pydantic import Field, model_validator
 import libcst as cst
 if not hasattr(cst, 'ImportFrom') or not hasattr(cst.ImportFrom, 'relative'):
@@ -10,7 +10,7 @@ if not hasattr(cst, 'ImportFrom') or not hasattr(cst.ImportFrom, 'relative'):
 import libcst.matchers as m
 import os
 import textwrap
-
+import difflib
 from .base import ToolBase
 from pathlib import Path
 
@@ -295,6 +295,36 @@ class CodeModifier(ToolBase):
                 with_default.append(param)
         # Return concatenated (no_default before with_default)
         return no_default + with_default
+    def _collect_names(self, module: cst.Module) -> Dict[str, Any]:
+        """Collect all function, class, and method names from the module."""
+        functions = []
+        classes = {}
+        for stmt in module.body:
+            if isinstance(stmt, cst.FunctionDef):
+                functions.append(stmt.name.value)
+            elif isinstance(stmt, cst.ClassDef):
+                class_name = stmt.name.value
+                methods = []
+                for item in stmt.body.body:
+                    if isinstance(item, cst.FunctionDef):
+                        methods.append(item.name.value)
+                classes[class_name] = methods
+        return {"functions": functions, "classes": classes}
+
+    def _suggest_closest(self, target: str, candidates: List[str], max_suggestions: int = 3) -> str:
+        """Suggest closest matches for target among candidates."""
+        if not candidates:
+            return ""
+        # Compute similarity scores
+        scores = [(candidate, difflib.SequenceMatcher(None, target, candidate).ratio())
+                  for candidate in candidates]
+        scores.sort(key=lambda x: x[1], reverse=True)
+        best = scores[:max_suggestions]
+        if best[0][1] < 0.3:  # too low similarity
+            return ""
+        suggestions = [f"'{c}'" for c, _ in best]
+        return f' Did you mean {", ".join(suggestions)}?'
+
     # --------------------------------------------------------------------------
     # add_function
     # --------------------------------------------------------------------------
@@ -460,7 +490,9 @@ class CodeModifier(ToolBase):
                     found_idx = i
                     break
             if found_idx is None:
-                return None, f"Function '{self.after}' not found to insert after."
+                functions = self._collect_names(module)["functions"]
+                suggestion = self._suggest_closest(self.after, functions)
+                return None, f"Function '{self.after}' not found to insert after.{suggestion}"
             insert_idx = found_idx + 1
 
         body.insert(insert_idx, func)
@@ -613,7 +645,9 @@ class CodeModifier(ToolBase):
                 break
 
         if class_node is None:
-            return None, f"Class '{self.class_name}' not found."
+            classes = list(self._collect_names(module)["classes"].keys())
+            suggestion = self._suggest_closest(self.class_name, classes)
+            return None, f"Class '{self.class_name}' not found.{suggestion}"
 
         # Work with class body
         class_body = list(class_node.body.body)
@@ -631,7 +665,9 @@ class CodeModifier(ToolBase):
                     insert_idx = j + 1
                     break
             if insert_idx is None:
-                return None, f"Method '{self.after_method}' not found in class '{self.class_name}'."
+                methods = self._collect_names(module)["classes"].get(self.class_name, [])
+                suggestion = self._suggest_closest(self.after_method, methods)
+                return None, f"Method '{self.after_method}' not found in class '{self.class_name}'.{suggestion}"
         else:
             # Append at the end
             insert_idx = len(class_body)
@@ -813,7 +849,9 @@ class CodeModifier(ToolBase):
                     found_idx = i
                     break
             if found_idx is None:
-                return None, f"Class '{self.after}' not found to insert after."
+                classes = list(self._collect_names(module)["classes"].keys())
+                suggestion = self._suggest_closest(self.after, classes)
+                return None, f"Class '{self.after}' not found to insert after.{suggestion}"
             insert_idx = found_idx + 1
         else:
             # If there are existing classes, insert at end of module
@@ -872,7 +910,9 @@ class CodeModifier(ToolBase):
                     class_node = stmt
                     break
             if class_node is None:
-                return None, f"Class '{self.class_name}' not found."
+                classes = list(self._collect_names(module)["classes"].keys())
+                suggestion = self._suggest_closest(self.class_name, classes)
+                return None, f"Class '{self.class_name}' not found.{suggestion}"
 
             # Find method inside class body
             method_node = None
@@ -894,7 +934,8 @@ class CodeModifier(ToolBase):
                     hint = f" Available methods: {', '.join(available)}"
                 else:
                     hint = " No methods found in class."
-                return None, f"Method '{self.target}' not found in class '{self.class_name}'.{hint}"
+                suggestion = self._suggest_closest(self.target, available)
+                return None, f"Method '{self.target}' not found in class '{self.class_name}'.{hint}{suggestion}"
             
             old_body = method_node.body.body
             if self.preserve_docstring and old_body and isinstance(old_body[0], cst.SimpleStatementLine):
@@ -947,7 +988,8 @@ class CodeModifier(ToolBase):
                     hint = f" Available functions: {', '.join(available)}"
                 else:
                     hint = " No functions found at module level."
-                return None, f"Function '{self.target}' not found.{hint}"
+                suggestion = self._suggest_closest(self.target, available)
+                return None, f"Function '{self.target}' not found.{hint}{suggestion}"
 
             # Preserve docstring if requested
             old_body = func_node.body.body
@@ -1005,7 +1047,8 @@ class CodeModifier(ToolBase):
                         if isinstance(name_node, cst.Name):
                             available_classes.append(name_node.value)
                 hint = f" Available classes: {', '.join(available_classes)}" if available_classes else " No classes found."
-                return None, f"Class '{self.class_name}' not found.{hint}"
+                suggestion = self._suggest_closest(self.class_name, available_classes)
+                return None, f"Class '{self.class_name}' not found.{hint}{suggestion}"
             # Find method inside class
             target_node = None
             target_idx = None
@@ -1016,7 +1059,9 @@ class CodeModifier(ToolBase):
                     target_idx = idx
                     break
             if target_node is None:
-                return None, f"Method '{self.name}' not found in class '{self.class_name}'."
+                methods = self._collect_names(module)["classes"].get(self.class_name, [])
+                suggestion = self._suggest_closest(self.name, methods)
+                return None, f"Method '{self.name}' not found in class '{self.class_name}'.{suggestion}"
             is_method = True
         else:
             # Find module-level function
@@ -1028,7 +1073,9 @@ class CodeModifier(ToolBase):
                     target_idx = idx
                     break
             if target_node is None:
-                return None, f"Function '{self.name}' not found."
+                functions = self._collect_names(module)["functions"]
+                suggestion = self._suggest_closest(self.name, functions)
+                return None, f"Function '{self.name}' not found.{suggestion}"
             is_method = False
 
         existing_params = target_node.params
