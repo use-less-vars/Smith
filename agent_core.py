@@ -4,14 +4,25 @@ import logging
 import os
 from typing import Optional, Callable, List, Any, Dict
 from openai import OpenAI
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, ValidationError, Field
 
 from tools import TOOL_CLASSES, SIMPLIFIED_TOOL_CLASSES
 from tools.base import ToolBase
 from tools.final import Final
 from tools.request_user_interaction import RequestUserInteraction
 from tools.utils import model_to_openai_tool
-from fast_json_repair import loads as repair_loads 
+from fast_json_repair import loads as repair_loads
+
+# Import logging module
+try:
+    from agent_logging import create_logger, AgentLogger, LogEventType, LogLevel
+    LOGGING_AVAILABLE = True
+except ImportError:
+    LOGGING_AVAILABLE = False
+    create_logger = None
+    AgentLogger = None
+    LogEventType = None
+    LogLevel = None 
 
 class AgentConfig(BaseModel):
     api_key: str
@@ -20,13 +31,26 @@ class AgentConfig(BaseModel):
     max_turns: int = 30
     extra_system: Optional[str] = None
     stop_check: Optional[Callable[[], bool]] = None
-    tool_classes: Optional[List[type]] = None   # 
+    tool_classes: Optional[List[type]] = None   #
     initial_conversation: Optional[List[Dict[str, Any]]] = None
     max_history_turns: Optional[int] = None
     max_tokens: Optional[int] = None
     keep_initial_query: bool = True
     keep_system_messages: bool = True
-
+    
+    # Logging configuration
+    enable_logging: bool = Field(default=False, description="Enable agent logging")
+    log_dir: str = Field(default="./logs", description="Directory for log files")
+    log_level: str = Field(default="INFO", description="Logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL)")
+    enable_file_logging: bool = Field(default=True, description="Write logs to files")
+    enable_console_logging: bool = Field(default=False, description="Print logs to console")
+    jsonl_format: bool = Field(default=True, description="Use JSONL format for log files")
+    max_file_size_mb: int = Field(default=10, description="Maximum log file size in MB before rotation")
+    max_backup_files: int = Field(default=5, description="Maximum number of backup log files to keep")
+    session_id: Optional[str] = Field(default=None, description="Unique session ID for logging (auto-generated if None)")
+    
+    class Config:
+        extra = "ignore"  # Allow backward compatibility with older configs
 def prune_conversation_history(conversation: List[Dict[str, Any]], config: AgentConfig) -> List[Dict[str, Any]]:
     """Prune conversation history based on config settings."""
     if config.max_history_turns is None and config.max_tokens is None:
@@ -95,6 +119,24 @@ def prune_conversation_history(conversation: List[Dict[str, Any]], config: Agent
     
 def run_agent_stream(query: str, config: AgentConfig):
     client = OpenAI(api_key=config.api_key, base_url="https://api.deepseek.com")
+    
+    # Initialize logger if enabled
+    logger = None
+    if LOGGING_AVAILABLE and config.enable_logging:
+        logger = create_logger(config)
+    
+    # Log agent start if logger exists
+    if logger:
+        config_data = {
+            "model": config.model,
+            "temperature": config.temperature,
+            "max_turns": config.max_turns,
+            "max_history_turns": config.max_history_turns,
+            "max_tokens": config.max_tokens,
+            "keep_initial_query": config.keep_initial_query,
+            "keep_system_messages": config.keep_system_messages,
+        }
+        logger.log_agent_start(query, config_data)
     # Prepare tool definitions for OpenAI
     tool_classes = config.tool_classes if config.tool_classes is not None else SIMPLIFIED_TOOL_CLASSES
     tool_definitions = [model_to_openai_tool(cls) for cls in tool_classes]
@@ -135,8 +177,18 @@ def run_agent_stream(query: str, config: AgentConfig):
     last_output_tokens = 0
 
     for turn in range(config.max_turns):
+        # Log turn start
+        if logger:
+            logger.log_turn_start(turn)
+        
         # Check stop signal
         if config.stop_check and config.stop_check():
+            # Log stop signal
+            if logger:
+                logger.log_stop_signal()
+                logger.log_agent_end("stopped", "Stop signal received")
+                logger.close()
+            
             yield {
                 "type": "stopped",
                 "turn": turn,
@@ -145,7 +197,14 @@ def run_agent_stream(query: str, config: AgentConfig):
             return
 
         # Prune conversation history if configured
+        original_len = len(conversation)
         conversation = prune_conversation_history(conversation, config)
+        new_len = len(conversation)
+        
+        # Log pruning if it occurred
+        if logger and new_len < original_len:
+            reason = "config.max_history_turns" if config.max_history_turns else "config.max_tokens"
+            logger.log_conversation_prune(original_len, new_len, reason)
         
         # Use the full conversation as messages (system messages remain)
         # Ensure any assistant message with tool_calls has reasoning_content field
@@ -155,6 +214,10 @@ def run_agent_stream(query: str, config: AgentConfig):
                     msg["reasoning_content"] = ""
         messages = conversation
 
+        # Log LLM request
+        if logger:
+            logger.log_llm_request(messages, tool_definitions)
+        
         # Call OpenAI with tools
         response = client.chat.completions.create(
             model=config.model,
@@ -181,6 +244,20 @@ def run_agent_stream(query: str, config: AgentConfig):
         content = assistant_message.content or ""
         reasoning = getattr(assistant_message, 'reasoning_content', None)
         tool_calls = assistant_message.tool_calls
+        
+        # Log LLM response
+        if logger:
+            usage_dict = {
+                "input": input_tokens,
+                "output": output_tokens,
+                "total_input": total_input_tokens,
+                "total_output": total_output_tokens,
+            }
+            # Convert tool_calls to dict if present
+            tool_calls_dict = None
+            if tool_calls:
+                tool_calls_dict = [tc.model_dump() for tc in tool_calls]
+            logger.log_llm_response(content, reasoning, tool_calls_dict, usage_dict)
 
         # Build assistant message dict for storage
         assistant_dict = {"role": "assistant", "content": content}
@@ -195,6 +272,10 @@ def run_agent_stream(query: str, config: AgentConfig):
             assistant_dict["tool_calls"] = [tc.model_dump() for tc in tool_calls]
 
         conversation.append(assistant_dict)
+        
+        # Log conversation update
+        if logger:
+            logger.log_conversation_update(conversation, "append_assistant")
 
         # If there are tool calls, execute them and append tool responses
         if tool_calls:
@@ -213,10 +294,17 @@ def run_agent_stream(query: str, config: AgentConfig):
                 except json.JSONDecodeError:
                     try:
                         arguments = repair_loads(arguments_str)
+                        # Log JSON repair
+                        if logger:
+                            # Simple log for JSON repair
+                            logger.py_logger.info(f"JSON repaired for {tool_name}")
                         # Optional: log repair
                         print(f"Repaired JSON for {tool_name}")
                     except Exception as e:
                         tool_result = f"Invalid JSON in arguments: {e}. Raw: {arguments_str}"
+                        # Log JSON error
+                        if logger:
+                            logger.log_error("JSON_DECODE_ERROR", f"Failed to parse JSON for {tool_name}: {e}")
                         # Append error result
                         conversation.append({
                             "role": "tool",
@@ -230,6 +318,10 @@ def run_agent_stream(query: str, config: AgentConfig):
                         })
                         continue 
 
+                # Log tool call
+                if logger:
+                    logger.log_tool_call(tool_name, arguments, tool_call.id)
+                
                 # Find matching tool class
                 tool_class = next((cls for cls in tool_classes if cls.__name__ == tool_name), None)
                 if not tool_class:
@@ -252,12 +344,20 @@ def run_agent_stream(query: str, config: AgentConfig):
                     except Exception as e:
                         tool_result = f"Error executing tool: {e}"
 
+                # Log tool result
+                if logger:
+                    logger.log_tool_result(tool_name, tool_result, tool_call.id)
+                
                 # Append tool result as a message with role "tool"
                 conversation.append({
                     "role": "tool",
                     "tool_call_id": tool_call.id,
                     "content": tool_result
                 })
+                
+                # Log conversation update
+                if logger:
+                    logger.log_conversation_update(conversation, "append_tool_result")
 
                 executed_tools.append({
                     "name": tool_name,
@@ -265,11 +365,19 @@ def run_agent_stream(query: str, config: AgentConfig):
                     "result": tool_result
                 })
 
+            # Log turn completion
+            if logger:
+                turn_usage = {
+                    "input": input_tokens,
+                    "output": output_tokens,
+                }
+                logger.log_turn_complete(turn, turn_usage)
+            
             # Yield turn event with all tool calls and results
             yield {
                 "type": "turn",
                 "turn": turn,
-                "assistant_content": content, 
+                "assistant_content": content,
                 "tool_calls": executed_tools,
                 "reasoning": reasoning,
                 "history": conversation.copy(),
@@ -279,9 +387,14 @@ def run_agent_stream(query: str, config: AgentConfig):
                     "total_input": total_input_tokens,
                     "total_output": total_output_tokens,
                 }
-            }
-            # If a RequestUserInteraction tool was called, stop the agent and wait for user response
+            }            # If a RequestUserInteraction tool was called, stop the agent and wait for user response
             if user_interaction_requested:
+                # Log user interaction request
+                if logger:
+                    logger.log_user_interaction_requested(user_interaction_message)
+                    logger.log_agent_end("user_interaction_requested", "Waiting for user response")
+                    logger.close()
+                
                 yield {
                     "type": "user_interaction_requested",
                     "turn": turn,
@@ -298,6 +411,12 @@ def run_agent_stream(query: str, config: AgentConfig):
 
             # If a Final tool was called, stop the agent
             if final_detected:
+                # Log final detected
+                if logger:
+                    logger.log_final_detected(final_content)
+                    logger.log_agent_end("final", "Final tool executed", final_content)
+                    logger.close()
+                
                 yield {
                     "type": "final",
                     "content": final_content,
@@ -314,6 +433,11 @@ def run_agent_stream(query: str, config: AgentConfig):
             # Otherwise continue to next turn
         else:
             # No tool calls: this is the final answer
+            # Log final answer
+            if logger:
+                logger.log_agent_end("final_no_tools", "Final answer without tool calls", content)
+                logger.close()
+            
             yield {
                 "type": "final",
                 "content": content,
@@ -328,6 +452,12 @@ def run_agent_stream(query: str, config: AgentConfig):
             return
 
     # Max turns reached without final answer
+    # Log max turns reached
+    if logger:
+        logger.log_max_turns_reached()
+        logger.log_agent_end("max_turns", f"Maximum turns ({config.max_turns}) reached without final answer")
+        logger.close()
+    
     yield {
         "type": "max_turns",
         "turn": config.max_turns,
