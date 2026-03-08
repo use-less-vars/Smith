@@ -15,7 +15,8 @@ for file in tools_dir.glob("*.py"):
     for attr_name in dir(module):
         cls = getattr(module, attr_name)
         if isinstance(cls, type) and issubclass(cls, ToolBase) and cls != ToolBase:
-            TOOL_CLASSES.append(cls)
+            if cls not in TOOL_CLASSES:  # Prevent duplicates
+                TOOL_CLASSES.append(cls)
 
 # Define a simplified toolset that excludes redundant file operation tools
 # Keep only unified FileEditor and essential file management tools
@@ -30,10 +31,13 @@ FILE_TOOL_BLACKLIST = {
     'FileWriter',
 }
 
-SIMPLIFIED_TOOL_CLASSES = [
-    cls for cls in TOOL_CLASSES 
-    if cls.__name__ not in FILE_TOOL_BLACKLIST
-]
+# Create simplified toolset, removing duplicates by class object
+SIMPLIFIED_TOOL_CLASSES = []
+seen_classes = set()
+for cls in TOOL_CLASSES:
+    if cls.__name__ not in FILE_TOOL_BLACKLIST and cls not in seen_classes:
+        seen_classes.add(cls)
+        SIMPLIFIED_TOOL_CLASSES.append(cls)
 
 # Ensure FileEditor is included (in case it wasn't discovered yet)
 try:

@@ -34,19 +34,19 @@ class CodeModifier(ToolBase):
     # Common parameters
     name: Optional[str] = Field(
         default=None,
-        description="Name of the function/method/class to add (required for add_function/add_method/add_class)."
+        description="Name of function/method/class to add."
     )
     new_name: Optional[str] = Field(
         default=None,
-        description="New name for the function (rename). Only used for modify_function."
+        description="New name for function (rename)."
     )
     body: Optional[str] = Field(
         default=None,
-        description="Body content as a string (without indentation). Required for add_function/add_method/add_class."
+        description="Body content as string (without indentation)."
     )
     parameters: Optional[list[str]] = Field(
         default=None,
-        description="List of parameters, e.g., ['self', 'x: int', 'y=10']. If None, empty parentheses."
+        description="List of parameters, e.g., ['self', 'x: int', 'y=10']."
     )
     return_type: Optional[str] = Field(
         default=None,
@@ -58,31 +58,31 @@ class CodeModifier(ToolBase):
     )
     after: Optional[str] = Field(
         default=None,
-        description="For add_function/add_class: insert after this named function/class. For add_method: insert after this named method."
+        description="Insert after this named function/class/method."
     )
 
     # add_method specific
     class_name: Optional[str] = Field(
         default=None,
-        description="Name of the class to add a method to (required for add_method)."
+        description="Name of class to add method to."
     )
     after_method: Optional[str] = Field(
         default=None,
-        description="For add_method: insert after this named method within the class."
+        description="Insert after this named method within class."
     )
 
     # add_import specific
     import_module: Optional[str] = Field(
         default=None,
-        description="Module to import (required for add_import)."
+        description="Module to import."
     )
     import_names: Optional[list[str]] = Field(
         default=None,
-        description="Names to import from the module (for 'from ... import ...')."
+        description="Names to import from module."
     )
     import_alias: Optional[str] = Field(
         default=None,
-        description="Alias for the module (e.g., 'np' for 'import numpy as np')."
+        description="Alias for module."
     )
     from_import: bool = Field(
         default=False,
@@ -98,11 +98,11 @@ class CodeModifier(ToolBase):
     # replace_function_body specific
     target: Optional[str] = Field(
         default=None,
-        description="Name of the function or method to replace (required for replace_function_body)."
+        description="Name of function/method to replace."
     )
     new_body: Optional[str] = Field(
         default=None,
-        description="New body content for the function (required for replace_function_body)."
+        description="New body content for function."
     )
     preserve_docstring: bool = Field(
         default=True,

@@ -493,7 +493,9 @@ class AgentGUI(QMainWindow):
             tool_classes=enabled_classes,
             max_history_turns=self.turns_spinbox.value() if self.pruning_checkbox.isChecked() else None,
             keep_initial_query=self.keep_initial_checkbox.isChecked() if self.pruning_checkbox.isChecked() else True,
-            keep_system_messages=True
+            keep_system_messages=True,
+            initial_input_tokens=self.total_input if self.last_history is not None else 0,
+            initial_output_tokens=self.total_output if self.last_history is not None else 0
         )
 
         try:
@@ -517,6 +519,11 @@ class AgentGUI(QMainWindow):
         self.status_panel.update_status("Running")
     def restart_session(self):
         self.last_history = None
+        self.total_input = 0
+        self.total_output = 0
+        self.context_length = 0
+        self.status_panel.update_context_length(self.context_length)
+        self.status_panel.update_tokens(self.total_input, self.total_output)
         self.update_buttons(running=False)
     
     def stop_agent(self):
@@ -714,6 +721,11 @@ class AgentGUI(QMainWindow):
             if item.widget():
                 item.widget().deleteLater()
         self.last_history = None
+        self.total_input = 0
+        self.total_output = 0
+        self.context_length = 0
+        self.status_panel.update_context_length(self.context_length)
+        self.status_panel.update_tokens(self.total_input, self.total_output)
         self.update_buttons(running=False)
 
 def main():

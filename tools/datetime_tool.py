@@ -7,7 +7,7 @@ class DateTimeTool(ToolBase):
     """Access date and time information and perform datetime operations."""
     
     operation: Literal["current_datetime", "current_date", "current_time", "format", "parse", "difference"] = Field(
-        description="Operation to perform: 'current_datetime' returns current datetime, 'current_date' returns current date, 'current_time' returns current time, 'format' formats a datetime string, 'parse' parses a datetime string, 'difference' calculates difference between two dates/times"
+        description="Operation: current_datetime, current_date, current_time, format, parse, or difference."
     )
     
     datetime_string: Optional[str] = Field(

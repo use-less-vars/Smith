@@ -7,18 +7,7 @@ from .final import Final
 
 
 class FinalizeAndReport(Final):
-    """
-    Write a timestamped report into the ./reports folder and finalize.
-    The report is saved with a timestamp and optional title.
-    This tool also acts as a finalization tool (the agent will stop after execution).
-    
-    Use this when you want to both:
-    1. Provide a final answer to the user
-    2. Save detailed work to a timestamped report file
-    
-    Example: After analyzing a system, provide a summary in `content` 
-    and save the full analysis in `report_body`.
-    """
+    """Write a timestamped report into ./reports folder and finalize. The agent stops after execution. Use when you want to provide a final answer and save detailed work to a report file."""
     content: str = Field(default="Report written successfully.", description="The final answer text")
     report_body: Optional[str] = Field(default=None, description="The body/content of the report to write to file. If not provided, defaults to the content field.")
     report_title: Optional[str] = Field(default=None, description="Optional title for the report file name")

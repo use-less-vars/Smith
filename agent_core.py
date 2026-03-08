@@ -37,6 +37,8 @@ class AgentConfig(BaseModel):
     max_tokens: Optional[int] = None
     keep_initial_query: bool = True
     keep_system_messages: bool = True
+    initial_input_tokens: int = 0
+    initial_output_tokens: int = 0
     
     # Logging configuration
     enable_logging: bool = Field(default=True, description="Enable agent logging")
@@ -171,8 +173,8 @@ def run_agent_stream(query: str, config: AgentConfig):
             conversation.append({"role": "system", "content": config.extra_system})
         conversation.append({"role": "user", "content": query})
 
-    total_input_tokens = 0
-    total_output_tokens = 0
+    total_input_tokens = config.initial_input_tokens
+    total_output_tokens = config.initial_output_tokens
     last_input_tokens = 0
     last_output_tokens = 0
 
@@ -192,7 +194,7 @@ def run_agent_stream(query: str, config: AgentConfig):
             yield {
                 "type": "stopped",
                 "turn": turn,
-                 "usage": {"input": last_input_tokens, "output": last_output_tokens, "total_input": total_input_tokens, "total_output": total_output_tokens}
+                "usage": {"input": last_input_tokens, "output": last_output_tokens, "total_input": total_input_tokens, "total_output": total_output_tokens}
             }
             return
 

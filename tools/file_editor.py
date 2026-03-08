@@ -10,35 +10,35 @@ class FileEditor(ToolBase):
     """Unified file editor supporting read, write, insert, append, replace, and delete operations.
     Supports single file operations or batch operations across multiple files."""
     operation: Literal["read", "write", "insert", "append", "replace", "delete", "grep"] = Field(
-        description="Operation to perform: 'read' (read file), 'write' (write content), 'insert' (insert lines), 'append' (append lines), 'replace' (replace specific lines), 'delete' (delete lines)"
+        description="Operation: read, write, insert, append, replace, delete, or grep."
     )
     filename: Optional[str] = Field(
         default=None,
-        description="Path to a single file. Either filename or filenames must be provided."
+        description="Path to a single file."
     )
     filenames: Optional[List[str]] = Field(
         default=None,
-        description="List of file paths to operate on. If provided, operation will be applied to each file. Either filename or filenames must be provided."
+        description="List of file paths to operate on."
     )
     content: Optional[Union[str, List[str]]] = Field(
         default=None,
-        description="Content for write/insert/append/replace operations. String for write, list of strings for insert/append/replace."
+        description="Content for write/insert/append/replace operations."
     )
     line_number: Optional[int] = Field(
         default=None,
-        description="Line number for insert or write operations (1-indexed). For write operation, specifies which line to overwrite."
+        description="Line number for insert/write (1-indexed)."
     )
     line_numbers: Optional[Union[int, List[int], str]] = Field(
         default=None,
-        description="Line number(s) for read or delete operations. Can be: single int, list of ints, 'all', or range string like '1-10'."
+        description="Line number(s) for read/delete: int, list, 'all', or range."
     )
     replacements: Optional[Dict[int, str]] = Field(
         default=None,
-        description="Dictionary mapping line numbers to new content for replace operation (line numbers are 1-indexed)."
+        description="Dictionary mapping line numbers to new content."
     )
     mode: Literal["replace", "insert", "append"] = Field(
         default="replace",
-        description="Mode for write operation: 'replace' (overwrite line), 'insert' (insert before line), 'append' (append after line). Only used when operation='write' and line_number is specified."
+        description="Mode for write operation: replace, insert, or append."
     )
     context_lines: int = Field(
         default=0,

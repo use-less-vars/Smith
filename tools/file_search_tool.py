@@ -1,18 +1,25 @@
 from .base import ToolBase
 import os
+import re
 import fnmatch
 from pathlib import Path
 from pydantic import Field
 from typing import List, Optional
 
 class FileSearchTool(ToolBase):
-    """Search for patterns across multiple files or directories."""
+    """Search for patterns across multiple files or directories with regex, multiline, context lines, and line numbers.
+    Supports regex (with (?s) flag for dot-matches-newline) and plain text multi-line searches.
+    Use file_pattern glob to limit files, or directory/filenames."""
     
-    pattern: str = Field(description="String pattern to search for (case-insensitive by default)")
-    filenames: Optional[List[str]] = Field(default=None, description="List of file paths to search in. If not provided, use directory parameter.")
-    directory: Optional[str] = Field(default=None, description="Directory to search recursively (if filenames not provided)")
-    case_sensitive: bool = Field(default=False, description="If True, perform case-sensitive search")
-    max_results: int = Field(default=50, description="Maximum number of matches to return")
+    pattern: str = Field(description="Search pattern. If use_regex=True, this is a regex pattern; otherwise plain text.")
+    file_pattern: Optional[str] = Field(None, description="Glob pattern to limit which files are searched (e.g., '**/*.py'). If None, use filenames or directory.")
+    filenames: Optional[List[str]] = Field(default=None, description="List of file paths to search in. If not provided, use directory or file_pattern.")
+    directory: Optional[str] = Field(default=None, description="Directory to search recursively (if filenames not provided).")
+    context_lines: int = Field(default=5, description="Number of lines of context to show before and after each match.")
+    show_line_numbers: bool = Field(default=True, description="Include line numbers in the output.")
+    use_regex: bool = Field(default=False, description="If True, treat pattern as a regular expression.")
+    case_sensitive: bool = Field(default=False, description="If True, perform case-sensitive search (default False).")
+    max_results: int = Field(default=50, description="Maximum number of matches to return.")
     
     def execute(self) -> str:
         try:
@@ -33,65 +40,145 @@ class FileSearchTool(ToolBase):
                 for root, dirs, files in os.walk(self.directory):
                     for file in files:
                         files_to_search.append(os.path.join(root, file))
+            elif self.file_pattern:
+                # Use glob to find files matching pattern
+                files_to_search = [str(p) for p in Path('.').glob(self.file_pattern)]
             else:
-                return "Error: Either 'filenames' or 'directory' must be provided."
+                return "Error: Provide one of 'filenames', 'directory', or 'file_pattern'."
             
             # Limit number of files to prevent excessive scanning (optional)
             if len(files_to_search) > 1000:
                 return f"Error: Too many files to search ({len(files_to_search)}). Please narrow your search."
             
+            # Prepare pattern
+            if self.use_regex:
+                flags = 0 if self.case_sensitive else re.IGNORECASE
+                regex_pattern = re.compile(self.pattern, flags)
+            else:
+                # escape special regex characters, treat as literal
+                flags = 0 if self.case_sensitive else re.IGNORECASE
+                regex_pattern = re.compile(re.escape(self.pattern), flags)
+            
             matches = []
-            pattern = self.pattern if self.case_sensitive else self.pattern.lower()
+            file_lines_cache = {}
+            file_line_offsets_cache = {}
             
             for file_path in files_to_search:
                 if not os.path.isfile(file_path):
                     continue
                 try:
                     with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
-                        for line_num, line in enumerate(f, start=1):
-                            search_line = line if self.case_sensitive else line.lower()
-                            if pattern in search_line:
-                                matches.append({
-                                    'file': file_path,
-                                    'line': line_num,
-                                    'content': line.rstrip('\n')
-                                })
-                                if len(matches) >= self.max_results:
-                                    break
+                        content = f.read()
+                    lines = content.splitlines(keepends=True)
+                    file_lines_cache[file_path] = lines
+                    line_offsets = [0]
+                    for line in lines:
+                        line_offsets.append(line_offsets[-1] + len(line))
+                    file_line_offsets_cache[file_path] = line_offsets
                 except (IOError, PermissionError, UnicodeDecodeError):
                     continue
+                
+                # Find all matches
+                for match in regex_pattern.finditer(content):
+                    start = match.start()
+                    end = match.end()
+                    # Compute line numbers of first and last characters of match
+                    line_start = content.count('\n', 0, start) + 1
+                    if end == start:
+                        line_end = line_start
+                    else:
+                        line_end = content.count('\n', 0, end - 1) + 1
+                    matches.append({
+                        'file': file_path,
+                        'start': start,
+                        'end': end,
+                        'line_start': line_start,
+                        'line_end': line_end,
+                        'match_text': match.group()
+                    })
+                    if len(matches) >= self.max_results:
+                        break
                 if len(matches) >= self.max_results:
                     break
             
             if not matches:
                 return "No matches found."
             
-            # Group matches by file for readability
-            matches_by_file = {}
+            # Now build output with context lines and highlighting
+            output_lines = []
             for match in matches:
-                file = match['file']
-                matches_by_file.setdefault(file, []).append(match)
-            
-            # Build output
-            lines = []
-            for file, file_matches in matches_by_file.items():
-                # Make path relative to current directory for brevity
+                file_path = match['file']
+                # Retrieve cached lines and offsets
+                file_lines = file_lines_cache.get(file_path)
+                line_offsets = file_line_offsets_cache.get(file_path)
+                if file_lines is None or line_offsets is None:
+                    continue
+                
+                line_start = match['line_start']
+                line_end = match['line_end']
+                start = match['start']
+                end = match['end']
+                
+                context_before = max(1, line_start - self.context_lines)
+                context_after = min(len(file_lines), line_end + self.context_lines)
+                
+                # Determine relative path
                 try:
-                    rel_path = os.path.relpath(file)
+                    rel_path = os.path.relpath(file_path)
                 except ValueError:
-                    rel_path = file
-                lines.append(f"{rel_path}:")
-                for match in file_matches[:10]:  # limit per file for readability
-                    lines.append(f"  Line {match['line']}: {match['content']}")
-                if len(file_matches) > 10:
-                    lines.append(f"  ... and {len(file_matches) - 10} more matches in this file")
-                lines.append("")
+                    rel_path = file_path
+                
+                output_lines.append(f"{rel_path}:")
+                # Context lines before match
+                for i in range(context_before, line_start):
+                    line_num = i
+                    line_content = file_lines[i-1].rstrip('\n')
+                    if self.show_line_numbers:
+                        output_lines.append(f"  {line_num:4d}: {line_content}")
+                    else:
+                        output_lines.append(f"  {line_content}")
+                # Matched lines with highlighting
+                for i in range(line_start, line_end + 1):
+                    line_num = i
+                    line_idx = i - 1
+                    raw_line = file_lines[line_idx]
+                    # Compute highlight segment within this line
+                    line_start_pos = line_offsets[line_idx]
+                    line_end_pos = line_offsets[line_idx + 1]
+                    seg_start = max(start, line_start_pos)
+                    seg_end = min(end, line_end_pos)
+                    if seg_start < seg_end:
+                        # Convert to column positions within line (including newline)
+                        col_start = seg_start - line_start_pos
+                        col_end = seg_end - line_start_pos
+                        # Apply highlighting to raw_line
+                        highlighted = raw_line[:col_start] + '**' + raw_line[col_start:col_end] + '**' + raw_line[col_end:]
+                        line_content = highlighted.rstrip('\n')
+                    else:
+                        line_content = raw_line.rstrip('\n')
+                    if self.show_line_numbers:
+                        output_lines.append(f"> {line_num:4d}: {line_content}")
+                    else:
+                        output_lines.append(f"> {line_content}")
+                # Context lines after match
+                for i in range(line_end + 1, context_after + 1):
+                    line_num = i
+                    line_content = file_lines[i-1].rstrip('\n')
+                    if self.show_line_numbers:
+                        output_lines.append(f"  {line_num:4d}: {line_content}")
+                    else:
+                        output_lines.append(f"  {line_content}")
+                output_lines.append("")
             
             header = f"Found {len(matches)} matches for pattern '{self.pattern}'"
+            if self.use_regex:
+                header += " (regex)"
+            else:
+                header += " (plain text)"
             if self.directory:
                 header += f" in directory '{self.directory}'"
             header += f" (case_sensitive={self.case_sensitive}, max_results={self.max_results}):"
-            return header + "\n" + "\n".join(lines)
+            return header + "\n" + "\n".join(output_lines)
             
         except Exception as e:
             return f"Error searching files: {e}"

@@ -7,19 +7,7 @@ from .base import ToolBase
 
 
 class _ApplyEditsEngine:
-    """
-    Apply a list of search/replace edits to a file with resilient matching.
-
-    Each edit must contain:
-      - find:  text to locate (normalized matching ignores trailing whitespace)
-      - replace: new text to substitute
-      - occurrence: (optional, default 1) which occurrence to replace.
-                    Use 0 to replace all occurrences.
-
-    The tool reads the file, applies edits in order, and writes it back.
-    If any 'find' is not found (or the specified occurrence doesn't exist),
-    the tool stops and returns an error without modifying the file.
-    """
+    """Apply search/replace edits to file(s) with resilient matching. Edits are applied sequentially; if any find fails, the file is unchanged."""
 
     def __init__(self, file_path: Union[str, Path], edits: List[Dict], use_regex: bool = False, preview: bool = False):
         self.file_path = Path(file_path)
@@ -222,19 +210,7 @@ class _ApplyEditsEngine:
 
 
 class ApplyEdits(ToolBase):
-    """
-    Apply a list of search/replace edits to a file with resilient matching.
-
-    Each edit must contain:
-      - find:  text to locate (normalized matching ignores trailing whitespace)
-      - replace: new text to substitute
-      - occurrence: (optional, default 1) which occurrence to replace.
-                    Use 0 to replace all occurrences.
-
-    The tool reads the file, applies edits in order, and writes it back.
-    If any 'find' is not found (or the specified occurrence doesn't exist),
-    the tool stops and returns an error without modifying the file.
-    """
+    """Apply search/replace edits to file(s) with resilient matching. Edits are applied sequentially; if any find fails, the file is unchanged."""
     file_path: Optional[str] = Field(None, description="Path to the file to edit (optional if files or file_pattern provided)")
     edits: List[dict] = Field(description="List of edit dictionaries. Each edit must have 'find' and 'replace' keys, and optionally 'occurrence' (default 1, 0 for all).")
     files: Optional[List[str]] = Field(None, description="List of file paths to edit (optional if file_path or file_pattern provided)")
