@@ -447,7 +447,6 @@ class AgentGUI(QMainWindow):
             model="deepseek-reasoner",
             max_turns=100,
             temperature=0.2,
-            extra_system=None,
             tool_classes=enabled_classes,
             max_history_turns=self.turns_spinbox.value() if self.pruning_checkbox.isChecked() else None,
             keep_initial_query=self.keep_initial_checkbox.isChecked() if self.pruning_checkbox.isChecked() else True,
@@ -666,6 +665,18 @@ class AgentGUI(QMainWindow):
             self.total_output = usage.get("total_output", self.total_output)
             self.context_length = usage.get("input", self.context_length)
             self.status_panel.update_context_length(self.context_length)
+            self.status_panel.update_tokens(self.total_input, self.total_output)
+            self.agent_idle = True
+        elif etype == "token_warning":
+            frame.add_content_line(event["message"], style="color: #FFA500; font-weight: bold;")
+            usage = event.get("usage", {})
+            self.total_input = usage.get("total_input", self.total_input)
+            self.total_output = usage.get("total_output", self.total_output)
+            # Update context length with token_count from warning
+            token_count = event.get("token_count", 0)
+            if token_count > 0:
+                self.context_length = token_count
+                self.status_panel.update_context_length(self.context_length)
             self.status_panel.update_tokens(self.total_input, self.total_output)
             self.agent_idle = True
         elif etype == "paused":

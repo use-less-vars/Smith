@@ -10,6 +10,7 @@ from tools import SIMPLIFIED_TOOL_CLASSES
 from tools.utils import model_to_openai_tool
 from tools.final import Final
 from tools.request_user_interaction import RequestUserInteraction
+from tools.summarize_tool import SummarizeTool
 from fast_json_repair import loads as repair_loads
 
 # Import logging module
@@ -27,7 +28,7 @@ if TYPE_CHECKING:
 class Agent:
     def __init__(self, config: AgentConfig, initial_conversation=None):
         self.config = config
-        self.client = OpenAI(api_key=config.api_key, base_url="https://api.deepseek.com")
+        self.client = OpenAI(api_key=config.api_key, base_url=config.base_url)
         self.logger = None
         if LOGGING_AVAILABLE and config.enable_logging:
             self.logger = create_logger(config)
@@ -52,6 +53,13 @@ class Agent:
         self._next_query_queue = queue.Queue()
         self._paused = False
         self._should_reset = False
+        # Token monitoring state
+        self.token_state = "low"  # low, medium, high, critical
+        self.current_conversation_tokens = 0
+        self.last_warning_state = "low"
+        # Token warning event storage
+        self._last_token_warning = None
+        self._last_token_warning_count = 0
         
     def _load_system_prompt(self):
         script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -76,14 +84,19 @@ class Agent:
         if not any(msg.get("role") == "system" for msg in self.conversation):
             system_prompt = self._load_system_prompt()
             self.conversation.insert(0, {"role": "system", "content": system_prompt})
-            if self.config.extra_system:
-                self.conversation.append({"role": "system", "content": self.config.extra_system})
+
     
     def reset(self):
         self.conversation = []
         self._ensure_system_prompt()
         self.total_input_tokens = self.config.initial_input_tokens
         self.total_output_tokens = self.config.initial_output_tokens
+        self.token_state = "low"
+        self.current_conversation_tokens = 0
+        self.last_warning_state = "low"
+        # Token warning event storage
+        self._last_token_warning = None
+        self._last_token_warning_count = 0
     def submit_next_query(self, query: str):
         """Submit next query to paused agent."""
         self._next_query_queue.put(query)
@@ -109,10 +122,134 @@ class Agent:
                     self._should_reset = False
                     continue
     
+    def _apply_summary_pruning(self, summary: str, keep_recent_turns: int):
+        """Replace older conversation turns with a summary, keeping the most recent turns."""
+        # Separate system messages and other messages
+        system_messages = []
+        other_messages = []
+        for msg in self.conversation:
+            if msg.get("role") == "system":
+                system_messages.append(msg)
+            else:
+                other_messages.append(msg)
+
+        if not other_messages:
+            return
+
+        # Group messages by turns starting from user messages
+        turns = []
+        current_turn = []
+        for msg in other_messages:
+            if msg.get("role") == "user":
+                if current_turn:
+                    turns.append(current_turn)
+                current_turn = [msg]
+            else:
+                current_turn.append(msg)
+        if current_turn:
+            turns.append(current_turn)
+
+        # Determine how many turns to keep from the end
+        if keep_recent_turns <= 0:
+            kept_turns = []
+        else:
+            kept_turns = turns[-keep_recent_turns:] if keep_recent_turns <= len(turns) else turns
+
+        # Flatten kept turns
+        pruned_other = []
+        for turn in kept_turns:
+            pruned_other.extend(turn)
+
+        # Create summary system message
+        summary_msg = {"role": "system", "content": f"Summary of previous conversation: {summary}"}
+
+        # Clean up old system messages: keep only:
+        # 1. Original system prompt (first system message if it looks like a prompt)
+        # 2. Our new summary message
+        # Discard all other system messages (old warnings, old summaries)
+        cleaned_system_messages = []
+        if system_messages:
+            # Keep first system message (assumed to be main system prompt)
+            cleaned_system_messages.append(system_messages[0])
+        
+        # Combine: cleaned system messages, summary message, then kept turns
+        new_conversation = cleaned_system_messages + [summary_msg] + pruned_other
+        self.conversation = new_conversation
+        
+        # Debug logging
+        if self.logger and hasattr(self.logger, 'py_logger'):
+            self.logger.py_logger.info(
+                f"[PRUNING] Applied summary pruning: kept {len(kept_turns)} turns, "
+                f"removed {len(system_messages) - len(cleaned_system_messages)} old system messages, "
+                f"conversation length: {len(self.conversation)} messages"
+            )
+        
+        # Update current conversation tokens estimate after pruning
+        # We need to estimate because we won't get accurate token count until next API call
+        old_token_count = self.current_conversation_tokens
+        total_chars = 0
+        for msg in self.conversation:
+            # Estimate tokens based on character count (rough)
+            content = msg.get('content', '')
+            if isinstance(content, str):
+                total_chars += len(content)
+            # Also count JSON structure overhead
+            total_chars += len(str(msg)) - len(content) if isinstance(content, str) else len(str(msg))
+        estimated_tokens = total_chars // 4
+        self.current_conversation_tokens = estimated_tokens
+        if self.logger and hasattr(self.logger, 'py_logger'):
+            self.logger.py_logger.info(
+                f"[PRUNING] Updated token estimate: {estimated_tokens} tokens (was {old_token_count})"
+            )
+    def _check_token_state_and_warn(self):
+        """Check current token count against thresholds and inject warning if state changed."""
+        if not self.config.token_monitor_enabled:
+            return
+
+        # Determine new state based on current conversation tokens
+        total = self.current_conversation_tokens
+        if total < self.config.token_monitor_low_threshold:
+            new_state = "low"
+        elif total < self.config.token_monitor_medium_threshold:
+            new_state = "medium"
+        elif total < self.config.token_monitor_high_threshold:
+            new_state = "high"
+        else:
+            new_state = "critical"
+
+        # Check if state changed (only upward transitions trigger warnings)
+        if new_state != self.token_state:
+            old_state = self.token_state
+            self.token_state = new_state
+
+            # Only warn when moving to a higher state (not when decreasing)
+            state_order = {"low": 0, "medium": 1, "high": 2, "critical": 3}
+            if state_order[new_state] > state_order[old_state]:
+                # Create warning message
+                if new_state == "medium":
+                    warning = f"Token usage warning: Conversation is approaching context limits ({total} tokens). You MUST use the SummarizeTool to prune older turns within 3 turns."
+                elif new_state == "high":
+                    warning = f"Token usage warning: Conversation is nearing context window limits ({total} tokens). It is recommended to use the SummarizeTool soon to avoid truncation."
+                elif new_state == "critical":
+                    warning = f"Token usage warning: Conversation is at critical context window limits ({total} tokens). Immediate use of the SummarizeTool is advised to prevent loss of context."
+                else:
+                    warning = None
+
+                if warning:
+                    # Append as system message
+                    self.conversation.append({"role": "system", "content": warning})
+                    # Estimate tokens for warning message and update current count
+                    warning_tokens = len(warning) // 4
+                    self.current_conversation_tokens += warning_tokens
+                    # Store warning to be yielded as event
+                    self._last_token_warning = warning
+                    self._last_token_warning_count = total
+                    if self.logger:
+                        self.logger.log_token_warning(old_state, new_state, total, warning)
+
     def process_query(self, query):
         """Process a user query, appending it to conversation and running the agent.
         Yields events as dicts."""
-        from agent_core import prune_conversation_history
         # Ensure system prompt present
         self._ensure_system_prompt()
         # Log agent start if logger exists
@@ -129,6 +266,9 @@ class Agent:
             self.logger.log_agent_start(query, config_data)
         # Append user message
         self.conversation.append({"role": "user", "content": query})
+        # Estimate tokens for the new user message and update current count
+        estimated_tokens = len(query) // 4  # rough estimate
+        self.current_conversation_tokens += estimated_tokens
         
         prev_conversation_len = len(self.conversation)
         last_input_tokens = 0
@@ -153,13 +293,26 @@ class Agent:
                 }
                 return
             
-            # Prune conversation history if configured
-            original_len = len(self.conversation)
-            self.conversation = prune_conversation_history(self.conversation, self.config)
-            new_len = len(self.conversation)
-            if self.logger and new_len < original_len:
-                reason = "config.max_history_turns" if self.config.max_history_turns else "config.max_tokens"
-                self.logger.log_conversation_prune(original_len, new_len, reason)
+            # Token monitoring warning
+            self._check_token_state_and_warn()
+            # Yield token warning event if generated
+            if self._last_token_warning is not None:
+                warning = self._last_token_warning
+                count = self._last_token_warning_count
+                self._last_token_warning = None
+                self._last_token_warning_count = 0
+                yield {
+                    "type": "token_warning",
+                    "message": warning,
+                    "token_count": count,
+                    "usage": {
+                        "input": last_input_tokens,
+                        "output": last_output_tokens,
+                        "total_input": self.total_input_tokens,
+                        "total_output": self.total_output_tokens,
+                    }
+                }
+
             
             # Ensure any assistant message with tool_calls has reasoning_content field
             for msg in self.conversation:
@@ -191,6 +344,7 @@ class Agent:
                 input_tokens = output_tokens = 0
             self.total_input_tokens += input_tokens
             self.total_output_tokens += output_tokens
+            self.current_conversation_tokens = input_tokens
             last_input_tokens = input_tokens
             last_output_tokens = output_tokens
             
@@ -234,6 +388,9 @@ class Agent:
                 final_content = None
                 user_interaction_requested = False
                 user_interaction_message = None
+                summary_requested = False
+                summary_text = None
+                summary_keep_recent_turns = 0
                 
                 for tool_call in tool_calls:
                     tool_name = tool_call.function.name
@@ -283,6 +440,11 @@ class Agent:
                             if isinstance(tool_instance, RequestUserInteraction):
                                 user_interaction_requested = True
                                 user_interaction_message = tool_result
+                            # Check if this is a SummarizeTool
+                            if isinstance(tool_instance, SummarizeTool):
+                                summary_requested = True
+                                summary_text = tool_instance.summary
+                                summary_keep_recent_turns = tool_instance.keep_recent_turns
                         except ValidationError as e:
                             tool_result = f"Invalid arguments: {e}"
                         except Exception as e:
@@ -308,6 +470,9 @@ class Agent:
                         "result": tool_result
                     })
                 
+                # Apply summary pruning if requested
+                if summary_requested:
+                    self._apply_summary_pruning(summary_text, summary_keep_recent_turns)
                 # Log turn completion
                 if self.logger:
                     turn_usage = {"input": input_tokens, "output": output_tokens}

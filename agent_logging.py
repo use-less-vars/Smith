@@ -42,6 +42,7 @@ class LogEventType(Enum):
     # Conversation management
     CONVERSATION_UPDATE = "conversation_update"
     CONVERSATION_PRUNE = "conversation_prune"
+    TOKEN_WARNING = "token_warning"
     
     # Turn lifecycle
     TURN_START = "turn_start"
@@ -453,6 +454,21 @@ class AgentLogger:
             self.current_turn
         )
     
+    def log_token_warning(self, old_state: str, new_state: str, token_count: int, warning_message: str):
+        """Log token usage warning."""
+        self._log_event(
+            LogEventType.TOKEN_WARNING,
+            LogLevel.WARNING,
+            f"Token usage warning: {old_state} -> {new_state} ({token_count} tokens)",
+            {
+                "old_state": old_state,
+                "new_state": new_state,
+                "token_count": token_count,
+                "warning_message": warning_message,
+            },
+            self.current_turn
+        )
+
     def log_user_interaction_requested(self, message: str):
         """Log when user interaction is requested."""
         self._log_event(

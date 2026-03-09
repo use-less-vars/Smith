@@ -27,10 +27,10 @@ except ImportError:
 
 class AgentConfig(BaseModel):
     api_key: str
+    base_url: str = "https://api.deepseek.com"
     model: str = "deepseek-reasoner"
     temperature: float = 0.2
     max_turns: int = 30
-    extra_system: Optional[str] = None
     stop_check: Optional[Callable[[], bool]] = None
     tool_classes: Optional[List[type]] = None   #
     initial_conversation: Optional[List[Dict[str, Any]]] = None
@@ -40,6 +40,12 @@ class AgentConfig(BaseModel):
     keep_system_messages: bool = True
     initial_input_tokens: int = 0
     initial_output_tokens: int = 0
+    
+    # Token monitoring configuration
+    token_monitor_enabled: bool = Field(default=True, description="Enable automatic token usage warnings")
+    token_monitor_low_threshold: int = Field(default=35000, description="Token count below this is low state")
+    token_monitor_medium_threshold: int = Field(default=55000, description="Token count between low and medium thresholds")
+    token_monitor_high_threshold: int = Field(default=75000, description="Token count between medium and high thresholds")
     
     # Logging configuration
     enable_logging: bool = Field(default=True, description="Enable agent logging")
@@ -54,71 +60,6 @@ class AgentConfig(BaseModel):
     
     class Config:
         extra = "ignore"  # Allow backward compatibility with older configs
-def prune_conversation_history(conversation: List[Dict[str, Any]], config: AgentConfig) -> List[Dict[str, Any]]:
-    """Prune conversation history based on config settings."""
-    if config.max_history_turns is None and config.max_tokens is None:
-        return conversation
-    
-    # Separate system messages and other messages
-    system_messages = []
-    other_messages = []
-    for msg in conversation:
-        if msg.get("role") == "system":
-            system_messages.append(msg)
-        else:
-            other_messages.append(msg)
-    
-    # If no pruning needed for other messages, just return
-    if not other_messages:
-        return conversation
-    
-    # Apply turn-based pruning if configured
-    if config.max_history_turns is not None:
-        # Group messages by turns starting from user messages
-        turns = []
-        current_turn = []
-        for msg in other_messages:
-            if msg.get("role") == "user":
-                if current_turn:
-                    turns.append(current_turn)
-                current_turn = [msg]
-            else:
-                current_turn.append(msg)
-        if current_turn:
-            turns.append(current_turn)
-        
-        # Determine how many turns to keep
-        turns_to_keep = config.max_history_turns
-        if turns_to_keep <= 0:
-            kept_turns = []
-        elif config.keep_initial_query and turns:
-            # Always keep the first turn (initial query)
-            if turns_to_keep == 1:
-                # Keep only first turn
-                kept_turns = [turns[0]]
-            else:
-                # Keep first turn plus recent turns
-                if len(turns) <= turns_to_keep:
-                    kept_turns = turns
-                else:
-                    # Keep first turn + (turns_to_keep-1) most recent turns
-                    recent_turns = turns[-(turns_to_keep-1):]
-                    kept_turns = [turns[0]] + recent_turns
-        else:
-            # Just keep most recent turns
-            kept_turns = turns[-turns_to_keep:] if turns_to_keep > 0 else []
-        
-        # Flatten kept turns
-        pruned_other = []
-        for turn in kept_turns:
-            pruned_other.extend(turn)
-        
-        # Combine with system messages
-        result = system_messages + pruned_other if config.keep_system_messages else pruned_other
-        return result
-    
-    # TODO: Implement token-based pruning
-    return conversation
 def run_agent_stream(query: str, config: AgentConfig):
     """
     Backward compatibility wrapper that creates an Agent instance and processes the query.
