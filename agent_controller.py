@@ -2,7 +2,8 @@
 import threading
 import queue
 import traceback
-from agent_core import run_agent_stream, AgentConfig
+from agent_core import AgentConfig
+from agent import Agent
 from typing import Optional, List, Dict, Any
 
 class AgentController:
@@ -24,6 +25,12 @@ class AgentController:
         self.thread = None
         self._running = False
         self._initial_conversation = None
+        self.agent = None
+        # Query queue for keep-alive mode
+        self.query_queue = queue.Queue()
+        self._keep_alive = True
+        self._pause_requested = False
+        self._processing_query = False
 
     @property
     def is_running(self):
@@ -39,6 +46,7 @@ class AgentController:
             config: An AgentConfig instance (api_key, model, etc.).
             initial_conversation: Optional previous conversation history to continue from.
         """
+        print(f"[Controller] start called with query: {query[:50]}...")
         if self._running:
             raise RuntimeError("Agent is already running. Stop it first.")
 
@@ -50,6 +58,8 @@ class AgentController:
         self._query = query
         self._config = config
         self._initial_conversation = initial_conversation
+        # Enqueue the initial query
+        self.query_queue.put(query)
 
         # Create and start the daemon thread
         self.thread = threading.Thread(target=self._run, daemon=True)
@@ -61,13 +71,41 @@ class AgentController:
         self.stop_event.set()
         self.pause_event.set()   # if paused, resume so stop can be noticed
 
+    def continue_session(self, query: str):
+        """Submit a new query to the already running agent."""
+        if not self._running:
+            raise RuntimeError("Agent not running. Use start() first.")
+        self.resume()
+        self.query_queue.put(query)
+
+    def request_pause(self):
+        """Request agent to pause after current turn."""
+        if not self._running:
+            raise RuntimeError("Agent not running. Use start() first.")
+        if self._processing_query:
+            # Agent is currently processing a query, set pause flag
+            self.pause()
+        else:
+            # Agent is idle, send paused event directly
+            self.event_queue.put({"type": "paused"})
+    def restart_session(self):
+        """Restart agent with cleared history."""
+        if not self._running:
+            raise RuntimeError("Agent not running. Use start() first.")
+        if self.agent:
+            self.agent.request_reset()
+        # Also submit a sentinel to trigger reset in queue
+        self.query_queue.put("[RESET]")
+
     def pause(self):
         """Pause the agent before the next turn (finishes current turn first)."""
         self.pause_event.clear()
+        self._pause_requested = True
 
     def resume(self):
         """Resume a paused agent."""
         self.pause_event.set()
+        self._pause_requested = False
 
     def get_event(self, block=False, timeout=None):
         """
@@ -87,31 +125,80 @@ class AgentController:
 
     def _run(self):
         """Internal method that runs in the background thread."""
+        print("[Controller] _run started")
         try:
             # Define the stop_check function that the agent will call before each turn
             def should_stop():
                 # If paused, wait until pause_event is set again
+                print(f"[Controller] should_stop called, pause_event.is_set={self.pause_event.is_set()}, stop_event.is_set={self.stop_event.is_set()}")
                 self.pause_event.wait()   # blocks while paused
                 return self.stop_event.is_set()
 
             # Inject the stop_check into a copy of the config to avoid mutating the original
-            # (optional, but good practice)
             run_config = self._config.model_copy() if hasattr(self._config, 'model_copy') else self._config
             run_config.stop_check = should_stop
             if self._initial_conversation is not None:
                 run_config.initial_conversation = self._initial_conversation
 
-            # Run the agent stream
-            for event in run_agent_stream(self._query, run_config):
-                # Put each event into the queue for the GUI to pick up
-                self.event_queue.put(event)
+            # Create Agent instance
+            agent = Agent(run_config, initial_conversation=self._initial_conversation)
+            self.agent = agent  # store for potential reuse
 
-                # If this is a terminal event, stop the loop (agent already stopped)
-                if event["type"] in ("final", "stopped", "max_turns", "error", "user_interaction_requested"):
+            # Main loop: process queries from queue
+            while self._keep_alive:
+                # Wait for next query
+                try:
+                    query = self.query_queue.get(timeout=1.0)
+                except queue.Empty:
+                    # Check if we should stop
+                    if self.stop_event.is_set():
+                        break
+                    continue
+
+                if query == "[RESET]":
+                    agent.reset()
+                    continue
+                if query == "[PAUSE]":
+                    print("[Controller] Pause requested")
+                    self.event_queue.put({"type": "paused"})
+                    continue
+
+                print(f"[Controller] Processing query: {query[:50]}...")
+                self._processing_query = True
+                # Run the agent for this query
+                for event in agent.process_query(query):
+                    print(f"[Controller] Event: {event['type']}")
+                    # Put each event into the queue for the GUI to pick up
+                    self.event_queue.put(event)
+
+                    # If this is a terminal event, decide what to do
+                    if event["type"] in ("stopped", "error", "max_turns"):
+                        # These are fatal, stop the whole agent thread
+                        self._keep_alive = False
+                        break
+                    elif event["type"] in ("final", "user_interaction_requested"):
+                        # Agent has completed this query, pause and wait for next query
+                        # Yield a paused event to inform GUI
+                        print("[Controller] Sending paused event")
+                        self.event_queue.put({"type": "paused"})
+                        break
+                    # For other events (turn), continue processing
+                    # Check if pause requested after a turn
+                    if event["type"] == "turn" and self._pause_requested:
+                        print("[Controller] Pause requested, breaking after turn")
+                        self._pause_requested = False
+                        self.event_queue.put({"type": "paused"})
+                        break
+
+                self._processing_query = False
+                # If _keep_alive becomes False, break outer loop
+                if not self._keep_alive:
                     break
 
         except Exception as e:
             # Catch any unexpected exception and send an error event
+            print(f"[Controller] Exception in _run: {e}")
+            traceback.print_exc()
             self.event_queue.put({
                 "type": "error",
                 "message": str(e),

@@ -163,6 +163,7 @@ class AgentGUI(QMainWindow):
         self.total_output = 0
         self.context_length = 0
         self.last_history = None
+        self.agent_idle = False
         
         self.init_ui()
         self.setup_polling()
@@ -289,7 +290,7 @@ class AgentGUI(QMainWindow):
         btn_layout.addWidget(self.run_btn)
 
         # Stop button (■)
-        self.stop_btn = QPushButton("■ Stop")
+        self.stop_btn = QPushButton("■ Pause")
         self.stop_btn.setMaximumWidth(80)
         self.stop_btn.setStyleSheet("""
             QPushButton {
@@ -310,49 +311,7 @@ class AgentGUI(QMainWindow):
         self.stop_btn.setEnabled(False)
         btn_layout.addWidget(self.stop_btn)
 
-        # Pause button (⏸)
-        self.pause_btn = QPushButton("⏸ Pause")
-        self.pause_btn.setMaximumWidth(80)
-        self.pause_btn.setStyleSheet("""
-            QPushButton {
-                padding: 5px;
-                font-size: 12px;
-                background-color: #ff9800;
-                color: white;
-                border-radius: 4px;
-            }
-            QPushButton:hover {
-                background-color: #e68a00;
-            }
-            QPushButton:disabled {
-                background-color: #cccccc;
-            }
-        """)
-        self.pause_btn.clicked.connect(self.pause_agent)
-        self.pause_btn.setEnabled(False)
-        btn_layout.addWidget(self.pause_btn)
-
-        # Resume button (⏵)
-        self.resume_btn = QPushButton("⏵ Resume")
-        self.resume_btn.setMaximumWidth(80)
-        self.resume_btn.setStyleSheet("""
-            QPushButton {
-                padding: 5px;
-                font-size: 12px;
-                background-color: #2196F3;
-                color: white;
-                border-radius: 4px;
-            }
-            QPushButton:hover {
-                background-color: #0b7dda;
-            }
-            QPushButton:disabled {
-                background-color: #cccccc;
-            }
-        """)
-        self.resume_btn.clicked.connect(self.resume_agent)
-        self.resume_btn.setEnabled(False)
-        btn_layout.addWidget(self.resume_btn)
+        btn_layout.addStretch()
         # Restart session button (↪)
         self.restart_btn = QPushButton("↪ Restart Session")
         self.restart_btn.setMaximumWidth(80)
@@ -374,8 +333,6 @@ class AgentGUI(QMainWindow):
         self.restart_btn.clicked.connect(self.restart_session)
         self.restart_btn.setEnabled(False)
         btn_layout.addWidget(self.restart_btn)
-
-        btn_layout.addStretch()
         right_layout.addWidget(btn_frame)
         
         splitter.addWidget(right_container)
@@ -471,6 +428,7 @@ class AgentGUI(QMainWindow):
         self.keep_initial_checkbox.setEnabled(enabled)
     # ---- Agent control ----
     def run_agent(self):
+        print(f"[GUI] run_agent called, controller.is_running={self.controller.is_running}, agent_idle={self.agent_idle}")
         query = self.query_entry.toPlainText().strip()
         if not query:
             QMessageBox.warning(self, "No query", "Please enter a query.")
@@ -499,70 +457,89 @@ class AgentGUI(QMainWindow):
         )
 
         try:
-            if self.last_history is not None:
-                # Continue existing session
-                self.controller.start(query, config, initial_conversation=self.last_history.copy())
+            if self.controller.is_running:
+                if self.agent_idle:
+                    # Submit new query to already running agent
+                    self.controller.continue_session(query)
+                    self.agent_idle = False
+                else:
+                    # Agent is still processing previous query (should not happen)
+                    QMessageBox.warning(self, "Agent busy", "Agent is still processing previous query.")
+                    return
             else:
                 # Start new session
-                self.controller.start(query, config)
-                # Reset token totals only for new session
-                self.total_input = 0
-                self.total_output = 0
-                self.context_length = 0
-                self.status_panel.update_context_length(self.context_length)
-                self.status_panel.update_tokens(self.total_input, self.total_output)
+                if self.last_history is not None:
+                    # Continue existing session (with history)
+                    self.controller.start(query, config, initial_conversation=self.last_history.copy())
+                else:
+                    # Start new session
+                    self.controller.start(query, config)
+                    # Reset token totals only for new session
+                    self.total_input = 0
+                    self.total_output = 0
+                    self.context_length = 0
+                    self.status_panel.update_context_length(self.context_length)
+                    self.status_panel.update_tokens(self.total_input, self.total_output)
         except RuntimeError as e:
             QMessageBox.critical(self, "Error", str(e))
             return
 
-        self.update_buttons(running=True)
+        self.update_buttons(running=True, idle=False)
         self.status_panel.update_status("Running")
     def restart_session(self):
+        if self.controller.is_running:
+            self.controller.restart_session()
+            # After restart, agent is idle (waiting for query)
+            self.agent_idle = True
         self.last_history = None
         self.total_input = 0
         self.total_output = 0
         self.context_length = 0
         self.status_panel.update_context_length(self.context_length)
         self.status_panel.update_tokens(self.total_input, self.total_output)
-        self.update_buttons(running=False)
+        # Update buttons: if controller running, idle; else not running
+        if self.controller.is_running:
+            self.update_buttons(running=True, idle=True)
+        else:
+            self.update_buttons(running=False)
     
     def stop_agent(self):
-        self.controller.stop()
-        self.status_panel.update_status("Stopping...")
+        self.controller.request_pause()
+        self.status_panel.update_status("Pausing...")
     
-    def pause_agent(self):
-        self.controller.pause()
-        self.pause_btn.setEnabled(False)
-        self.resume_btn.setEnabled(True)
-        self.status_panel.update_status("Paused")
     
-    def resume_agent(self):
-        self.controller.resume()
-        self.pause_btn.setEnabled(True)
-        self.resume_btn.setEnabled(False)
-        self.status_panel.update_status("Running")
-    
-    def update_buttons(self, running):
+    def update_buttons(self, running, idle=False):
         if running:
-            self.run_btn.setEnabled(False)
-            self.stop_btn.setEnabled(True)
-            self.pause_btn.setEnabled(True)
-            self.resume_btn.setEnabled(False)
-            self.restart_btn.setEnabled(False)
+            if idle:
+                self.run_btn.setEnabled(True)
+                self.stop_btn.setEnabled(True)
+                self.restart_btn.setEnabled(True)
+                self.status_panel.update_status("Ready for next query")
+            else:
+                self.run_btn.setEnabled(False)
+                self.stop_btn.setEnabled(True)
+                self.restart_btn.setEnabled(False)
         else:
             self.run_btn.setEnabled(True)
             self.stop_btn.setEnabled(False)
-            self.pause_btn.setEnabled(False)
-            self.resume_btn.setEnabled(False)
             self.restart_btn.setEnabled(self.last_history is not None)
             self.status_panel.update_status("Ready")
     
     def poll(self):
         event = self.controller.get_event()
         if event:
+            print(f"[GUI] Received event: {event['type']}")
             self.display_event(event)
             if event["type"] == "thread_finished":
                 self.update_buttons(running=False)
+        else:
+            # Debug: print every 10th poll
+            if hasattr(self, '_poll_count'):
+                self._poll_count += 1
+            else:
+                self._poll_count = 1
+            if self._poll_count % 100 == 0:
+                print(f"[GUI] Poll count: {self._poll_count}")
     
     # ---- Helper for result widget ----
     def _create_result_widget(self, result_text, full_text):
@@ -622,7 +599,7 @@ class AgentGUI(QMainWindow):
             if etype == "user_interaction_requested":
                 self.update_buttons(running=False)
             else:
-                self.update_buttons(running=self.controller.is_running)
+                self.update_buttons(running=self.controller.is_running, idle=self.agent_idle)
 
         frame = EventFrame(etype.upper(), etype)
 
@@ -658,6 +635,7 @@ class AgentGUI(QMainWindow):
             self.context_length = usage.get("input", self.context_length)
             self.status_panel.update_context_length(self.context_length)
             self.status_panel.update_tokens(self.total_input, self.total_output)
+            self.agent_idle = False
 
         elif etype == "final":
             frame.add_content_line(f"Final answer: {event['content']}", style="font-weight: bold; color: #000080;")
@@ -669,6 +647,7 @@ class AgentGUI(QMainWindow):
             self.context_length = usage.get("input", self.context_length)
             self.status_panel.update_context_length(self.context_length)
             self.status_panel.update_tokens(self.total_input, self.total_output)
+            self.agent_idle = True
 
         elif etype == "stopped":
             frame.add_content_line("Agent stopped by user.", style="color: #FF8C00;")
@@ -688,6 +667,11 @@ class AgentGUI(QMainWindow):
             self.context_length = usage.get("input", self.context_length)
             self.status_panel.update_context_length(self.context_length)
             self.status_panel.update_tokens(self.total_input, self.total_output)
+            self.agent_idle = True
+        elif etype == "paused":
+            frame.add_content_line("Agent paused, ready for next query.", style="color: #808080;")
+            self.agent_idle = True
+            self.update_buttons(running=True, idle=True)
         elif etype == "max_turns":
             frame.add_content_line("Max turns reached without final answer.", style="color: #FF8C00;")
             usage = event.get("usage", {})
