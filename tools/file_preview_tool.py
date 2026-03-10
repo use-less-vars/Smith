@@ -2,11 +2,17 @@ from .base import ToolBase
 import os
 import pathlib
 from pydantic import Field
-from typing import Optional
+from typing import Optional, ClassVar
 
 class FilePreviewTool(ToolBase):
     """Show beginning and end of file with line numbers."""
     
+    # Safety limits
+    MAX_HEAD_LINES: ClassVar[int] = 500
+    MAX_TAIL_LINES: ClassVar[int] = 500
+    MAX_TOTAL_LINES: ClassVar[int] = 1000
+    MAX_OUTPUT_CHARS: ClassVar[int] = 30_000
+
     filename: str = Field(description="Path to the file to preview")
     head_lines: int = Field(default=10, description="Number of lines to show from beginning of file")
     tail_lines: int = Field(default=5, description="Number of lines to show from end of file")
@@ -30,6 +36,21 @@ class FilePreviewTool(ToolBase):
             except OSError:
                 return f"Error: Cannot access file '{self.filename}'."
             
+            # Apply safety limits to head_lines and tail_lines
+            head_lines = min(self.head_lines, self.MAX_HEAD_LINES)
+            tail_lines = min(self.tail_lines, self.MAX_TAIL_LINES)
+            # Ensure total lines shown does not exceed MAX_TOTAL_LINES
+            if head_lines + tail_lines > self.MAX_TOTAL_LINES:
+                # Reduce proportionally, but keep at least 1 each
+                if head_lines > 0 and tail_lines > 0:
+                    ratio = head_lines / (head_lines + tail_lines)
+                    head_lines = max(1, int(self.MAX_TOTAL_LINES * ratio))
+                    tail_lines = max(1, self.MAX_TOTAL_LINES - head_lines)
+                elif head_lines > 0:
+                    head_lines = min(head_lines, self.MAX_TOTAL_LINES)
+                else:
+                    tail_lines = min(tail_lines, self.MAX_TOTAL_LINES)
+            
             # Read file lines
             lines = self._read_file_lines(file_path)
             if not lines:
@@ -43,30 +64,33 @@ class FilePreviewTool(ToolBase):
             output_lines.append("=" * 60)
             
             # Show head lines
-            if self.head_lines > 0:
-                head_section = self._extract_section(lines, 0, self.head_lines, "Beginning")
+            if head_lines > 0:
+                head_section = self._extract_section(lines, 0, head_lines, "Beginning")
                 output_lines.extend(head_section)
             
             # Show separator if both head and tail will be shown
-            if self.head_lines > 0 and self.tail_lines > 0 and total_lines > (self.head_lines + self.tail_lines):
-                omitted = total_lines - self.head_lines - self.tail_lines
+            if head_lines > 0 and tail_lines > 0 and total_lines > (head_lines + tail_lines):
+                omitted = total_lines - head_lines - tail_lines
                 if omitted > 0:
                     output_lines.append(f"... {omitted:,} lines omitted ...")
             
             # Show tail lines
-            if self.tail_lines > 0 and total_lines > self.head_lines:
-                tail_start = max(self.head_lines, total_lines - self.tail_lines)
-                tail_section = self._extract_section(lines, tail_start, self.tail_lines, "End")
+            if tail_lines > 0 and total_lines > head_lines:
+                tail_start = max(head_lines, total_lines - tail_lines)
+                tail_section = self._extract_section(lines, tail_start, tail_lines, "End")
                 output_lines.extend(tail_section)
             
             # Add line range info
             output_lines.append("")
-            output_lines.append(f"Line range shown: 1-{min(self.head_lines, total_lines)}",)
-            if total_lines > self.head_lines:
-                tail_start = max(self.head_lines + 1, total_lines - self.tail_lines + 1)
+            output_lines.append(f"Line range shown: 1-{min(head_lines, total_lines)}",)
+            if total_lines > head_lines:
+                tail_start = max(head_lines + 1, total_lines - tail_lines + 1)
                 output_lines.append(f"               and {tail_start}-{total_lines}")
             
-            return "\n".join(output_lines)
+            output = "\n".join(output_lines)
+            if len(output) > self.MAX_OUTPUT_CHARS:
+                output = output[:self.MAX_OUTPUT_CHARS] + "\n... (output truncated, too large)"
+            return output
             
         except Exception as e:
             return f"Error previewing file '{self.filename}': {e}"

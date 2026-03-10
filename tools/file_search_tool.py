@@ -4,13 +4,21 @@ import re
 import fnmatch
 from pathlib import Path
 from pydantic import Field
-from typing import List, Optional
+from typing import List, Optional, ClassVar
 
 class FileSearchTool(ToolBase):
     """Search for patterns across multiple files or directories with regex, multiline, context lines, and line numbers.
     Supports regex (with (?s) flag for dot-matches-newline) and plain text multi-line searches.
     Use file_pattern glob to limit files, or directory/filenames."""
     
+    # Safety limits
+    MAX_FILE_SIZE: ClassVar[int] = 10_000_000  # 10MB
+    MAX_LINES_PER_FILE: ClassVar[int] = 100_000
+    MAX_CONTEXT_LINES: ClassVar[int] = 20
+    MAX_OUTPUT_CHARS: ClassVar[int] = 40_000
+    MAX_RESULTS: ClassVar[int] = 200
+    MAX_FILES_TO_SEARCH: ClassVar[int] = 1000
+
     pattern: str = Field(description="Search pattern. If use_regex=True, this is a regex pattern; otherwise plain text.")
     file_pattern: Optional[str] = Field(None, description="Glob pattern to limit which files are searched (e.g., '**/*.py'). If None, use filenames or directory.")
     filenames: Optional[List[str]] = Field(default=None, description="List of file paths to search in. If not provided, use directory or file_pattern.")
@@ -47,7 +55,7 @@ class FileSearchTool(ToolBase):
                 return "Error: Provide one of 'filenames', 'directory', or 'file_pattern'."
             
             # Limit number of files to prevent excessive scanning (optional)
-            if len(files_to_search) > 1000:
+            if len(files_to_search) > self.MAX_FILES_TO_SEARCH:
                 return f"Error: Too many files to search ({len(files_to_search)}). Please narrow your search."
             
             # Prepare pattern
@@ -59,6 +67,10 @@ class FileSearchTool(ToolBase):
                 flags = 0 if self.case_sensitive else re.IGNORECASE
                 regex_pattern = re.compile(re.escape(self.pattern), flags)
             
+            # Apply safety limits to parameters
+            context_lines = min(self.context_lines, self.MAX_CONTEXT_LINES)
+            max_results = min(self.max_results, self.MAX_RESULTS)
+            
             matches = []
             file_lines_cache = {}
             file_line_offsets_cache = {}
@@ -67,9 +79,15 @@ class FileSearchTool(ToolBase):
                 if not os.path.isfile(file_path):
                     continue
                 try:
+                    file_size = os.path.getsize(file_path)
+                    if file_size > self.MAX_FILE_SIZE:
+                        continue
                     with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
                         content = f.read()
                     lines = content.splitlines(keepends=True)
+                    if len(lines) > self.MAX_LINES_PER_FILE:
+                        lines = lines[:self.MAX_LINES_PER_FILE]
+                        content = ''.join(lines)
                     file_lines_cache[file_path] = lines
                     line_offsets = [0]
                     for line in lines:
@@ -96,9 +114,9 @@ class FileSearchTool(ToolBase):
                         'line_end': line_end,
                         'match_text': match.group()
                     })
-                    if len(matches) >= self.max_results:
+                    if len(matches) >= max_results:
                         break
-                if len(matches) >= self.max_results:
+                if len(matches) >= max_results:
                     break
             
             if not matches:
@@ -119,8 +137,8 @@ class FileSearchTool(ToolBase):
                 start = match['start']
                 end = match['end']
                 
-                context_before = max(1, line_start - self.context_lines)
-                context_after = min(len(file_lines), line_end + self.context_lines)
+                context_before = max(1, line_start - context_lines)
+                context_after = min(len(file_lines), line_end + context_lines)
                 
                 # Determine relative path
                 try:
@@ -171,6 +189,10 @@ class FileSearchTool(ToolBase):
                 output_lines.append("")
             
             header = f"Found {len(matches)} matches for pattern '{self.pattern}'"
+            # Debug: show values
+            header += f" [DEBUG: self.max_results={self.max_results}, max_results={max_results}, self.MAX_RESULTS={self.MAX_RESULTS}]"
+            if self.max_results != max_results:
+                header += f" (clamped from {self.max_results} to {max_results})"
             if self.use_regex:
                 header += " (regex)"
             else:
@@ -178,7 +200,10 @@ class FileSearchTool(ToolBase):
             if self.directory:
                 header += f" in directory '{self.directory}'"
             header += f" (case_sensitive={self.case_sensitive}, max_results={self.max_results}):"
-            return header + "\n" + "\n".join(output_lines)
+            output = header + "\n" + "\n".join(output_lines)
+            if len(output) > self.MAX_OUTPUT_CHARS:
+                output = output[:self.MAX_OUTPUT_CHARS] + "\n... (output truncated, too large)"
+            return output
             
         except Exception as e:
             return f"Error searching files: {e}"

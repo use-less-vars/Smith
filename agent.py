@@ -124,6 +124,7 @@ class Agent:
     
     def _apply_summary_pruning(self, summary: str, keep_recent_turns: int):
         """Replace older conversation turns with a summary, keeping the most recent turns."""
+        original_len = len(self.conversation)
         # Separate system messages and other messages
         system_messages = []
         other_messages = []
@@ -136,16 +137,46 @@ class Agent:
         if not other_messages:
             return
 
-        # Group messages by turns starting from user messages
+        # Group messages into turns: 
+        # - User messages always start a new turn
+        # - Assistant messages start a new turn only if current turn already has an assistant
+        # - Tool messages stay with their preceding assistant
         turns = []
         current_turn = []
+        current_has_assistant = False
+        
         for msg in other_messages:
-            if msg.get("role") == "user":
+            role = msg.get("role")
+            
+            if role == "user":
+                # User always starts a new turn
                 if current_turn:
                     turns.append(current_turn)
                 current_turn = [msg]
+                current_has_assistant = False
+            elif role == "assistant":
+                if current_has_assistant:
+                    # Current turn already has an assistant, start new turn
+                    if current_turn:
+                        turns.append(current_turn)
+                    current_turn = [msg]
+                    current_has_assistant = True
+                else:
+                    # No assistant in current turn yet, add to current turn
+                    if not current_turn:
+                        # Start new turn if empty
+                        current_turn = [msg]
+                    else:
+                        current_turn.append(msg)
+                    current_has_assistant = True
             else:
-                current_turn.append(msg)
+                # Tool messages - add to current turn
+                if not current_turn:
+                    # Should not happen, but handle gracefully
+                    current_turn = [msg]
+                else:
+                    current_turn.append(msg)
+        
         if current_turn:
             turns.append(current_turn)
 
@@ -161,6 +192,9 @@ class Agent:
             pruned_other.extend(turn)
 
         # Create summary system message
+        MAX_SUMMARY_LENGTH = 2000
+        if len(summary) > MAX_SUMMARY_LENGTH:
+            summary = summary[:MAX_SUMMARY_LENGTH] + "... (truncated)"
         summary_msg = {"role": "system", "content": f"Summary of previous conversation: {summary}"}
 
         # Clean up old system messages: keep only:
@@ -175,6 +209,9 @@ class Agent:
         # Combine: cleaned system messages, summary message, then kept turns
         new_conversation = cleaned_system_messages + [summary_msg] + pruned_other
         self.conversation = new_conversation
+        new_len = len(self.conversation)
+        if self.logger:
+            self.logger.log_conversation_prune(original_len, new_len, "summary_pruning")
         
         # Debug logging
         if self.logger and hasattr(self.logger, 'py_logger'):
@@ -377,6 +414,9 @@ class Agent:
                 assistant_dict["tool_calls"] = [tc.model_dump() for tc in tool_calls]
             
             self.conversation.append(assistant_dict)
+            # Estimate tokens for assistant message
+            assistant_tokens = len(str(assistant_dict)) // 4
+            self.current_conversation_tokens += assistant_tokens
             
             if self.logger:
                 self.logger.log_conversation_update(self.conversation, "append_assistant")
@@ -460,6 +500,9 @@ class Agent:
                         "tool_call_id": tool_call.id,
                         "content": tool_result
                     })
+                    # Estimate tokens for tool result
+                    tool_tokens = len(str(tool_result)) // 4
+                    self.current_conversation_tokens += tool_tokens
                     
                     if self.logger:
                         self.logger.log_conversation_update(self.conversation, "append_tool_result")
