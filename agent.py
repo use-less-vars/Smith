@@ -61,6 +61,7 @@ class Agent:
         # Token warning event storage
         self._last_token_warning = None
         self._last_token_warning_count = 0
+        self._token_encoder = None
         
     def _estimate_tokens(self, text_or_message):
         """Estimate token count for a string or message dict using tiktoken."""
@@ -300,7 +301,7 @@ class Agent:
                 warning = f"[SYSTEM] Token usage warning: Conversation is nearing context window limits. Please consider pruning soon when you are at a good point."
             else:  # critical
                 formatted = self._format_tokens(total)
-                warning = f"Conversation is at critical context window limits. You MUST prune now to avoid system crash."
+                warning = f"Conversation is at a critical context window limit. You MUST prune now to avoid system crash."
             
             # Store warning to be yielded as event (BEFORE adding to conversation)
             self._last_token_warning = warning
