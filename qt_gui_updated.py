@@ -4,7 +4,7 @@ import os
 import json
 import html
 from PyQt6.QtWidgets import (
-    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
+    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
     QLabel, QLineEdit, QPushButton, QTextEdit, QListWidget,
     QGroupBox, QCheckBox, QMenuBar, QMenu, QFileDialog,
     QMessageBox, QScrollArea, QFrame, QComboBox, QSpinBox, QSplitter, QDialog, QSizePolicy
@@ -103,6 +103,242 @@ class AgenticHelpersPanel(QGroupBox):
         layout.addWidget(QLabel("(Placeholder)"))
         layout.addStretch()
         self.setLayout(layout)
+
+class AgentControlsPanel(QGroupBox):
+    """Collapsible panel for agent controls."""
+    def __init__(self, tool_classes):
+        super().__init__("Agent Controls")
+        self.tool_classes = tool_classes
+        self.tool_checkboxes = {}  # name -> QCheckBox
+        self.is_collapsed = True
+        
+        # Create toggle button for collapse/expand
+        self.toggle_button = QPushButton("▼ Show Controls")
+        self.toggle_button.setMaximumWidth(120)
+        self.toggle_button.clicked.connect(self.toggle_collapse)
+        
+        # Main layout for the panel
+        self.main_layout = QVBoxLayout()
+        self.setLayout(self.main_layout)
+        
+        # Add toggle button at top
+        self.main_layout.addWidget(self.toggle_button)
+        
+        # Create container widget for controls (hidden when collapsed)
+        self.controls_container = QWidget()
+        self.controls_layout = QGridLayout()
+        self.controls_layout.setSpacing(10)
+        self.controls_layout.setColumnStretch(1, 1)
+        self.controls_container.setLayout(self.controls_layout)
+        
+        # Row 0: Workspace controls
+        row = 0
+        self.controls_layout.addWidget(QLabel("Workspace:"), row, 0)
+        self.workspace_display = QLabel("None (unrestricted)")
+        self.workspace_display.setStyleSheet("color: blue;")
+        self.workspace_display.setWordWrap(True)
+        self.controls_layout.addWidget(self.workspace_display, row, 1)
+        
+        self.set_workspace_btn = QPushButton("Set")
+        self.set_workspace_btn.setMaximumWidth(60)
+        self.controls_layout.addWidget(self.set_workspace_btn, row, 2)
+        
+        self.clear_workspace_btn = QPushButton("Clear")
+        self.clear_workspace_btn.setMaximumWidth(60)
+        self.controls_layout.addWidget(self.clear_workspace_btn, row, 3)
+        
+        # Row 1: Token monitoring controls
+        row += 1
+        token_monitor_row = QWidget()
+        token_monitor_layout = QHBoxLayout()
+        token_monitor_row.setLayout(token_monitor_layout)
+        token_monitor_layout.setSpacing(5)
+        
+        self.token_monitor_checkbox = QCheckBox("Token warnings")
+        self.token_monitor_checkbox.setChecked(True)
+        token_monitor_layout.addWidget(self.token_monitor_checkbox)
+        
+        token_monitor_layout.addWidget(QLabel("Warning:"))
+        self.warning_threshold_spinbox = QSpinBox()
+        self.warning_threshold_spinbox.setRange(1, 200)
+        self.warning_threshold_spinbox.setValue(35)
+        self.warning_threshold_spinbox.setSingleStep(1)
+        token_monitor_layout.addWidget(self.warning_threshold_spinbox)
+        self.warning_formatted_label = QLabel("(35k)")
+        token_monitor_layout.addWidget(self.warning_formatted_label)
+        token_monitor_layout.addWidget(QLabel("tokens"))
+        
+        token_monitor_layout.addWidget(QLabel("Critical:"))
+        self.critical_threshold_spinbox = QSpinBox()
+        self.critical_threshold_spinbox.setRange(1, 200)
+        self.critical_threshold_spinbox.setValue(50)
+        self.critical_threshold_spinbox.setSingleStep(1)
+        token_monitor_layout.addWidget(self.critical_threshold_spinbox)
+        self.critical_formatted_label = QLabel("(50k)")
+        token_monitor_layout.addWidget(self.critical_formatted_label)
+        
+        self.controls_layout.addWidget(token_monitor_row, row, 0, 1, 4)
+        
+        # Row 2: Max turns control
+        row += 1
+        max_turns_row = QWidget()
+        max_turns_layout = QHBoxLayout()
+        max_turns_row.setLayout(max_turns_layout)
+        max_turns_layout.setSpacing(5)
+        
+        max_turns_layout.addWidget(QLabel("Max turns:"))
+        self.max_turns_spinbox = QSpinBox()
+        self.max_turns_spinbox.setRange(1, 500)
+        self.max_turns_spinbox.setValue(100)
+        max_turns_layout.addWidget(self.max_turns_spinbox)
+        max_turns_layout.addWidget(QLabel("turns"))
+        
+        self.controls_layout.addWidget(max_turns_row, row, 0, 1, 4)
+        
+        # Row 3: Detail combo
+        row += 1
+        detail_row = QWidget()
+        detail_layout = QHBoxLayout()
+        detail_row.setLayout(detail_layout)
+        detail_layout.setSpacing(5)
+        
+        detail_layout.addWidget(QLabel("Detail:"))
+        self.detail_combo = QComboBox()
+        self.detail_combo.addItems(["minimal", "normal", "verbose"])
+        self.detail_combo.setCurrentText("normal")
+        detail_layout.addWidget(self.detail_combo)
+        detail_layout.addStretch()
+        
+        self.controls_layout.addWidget(detail_row, row, 0, 1, 4)
+        
+        # Row 4: Tool loader (as a sub-group)
+        row += 1
+        tool_group = QGroupBox("Tools")
+        tool_layout = QGridLayout()
+        tool_group.setLayout(tool_layout)
+        
+        # Add tool checkboxes in 2 columns
+        col = 0
+        tool_row = 0
+        for i, cls in enumerate(self.tool_classes):
+            checkbox = QCheckBox(cls.__name__)
+            checkbox.setChecked(True)
+            tool_layout.addWidget(checkbox, tool_row, col)
+            self.tool_checkboxes[cls.__name__] = checkbox
+            
+            col += 1
+            if col >= 2:
+                col = 0
+                tool_row += 1
+        
+        # Add stretch to fill remaining space
+        tool_layout.setRowStretch(tool_row + 1, 1)
+        self.controls_layout.addWidget(tool_group, row, 0, 1, 4)
+        
+        # Add controls container to main layout
+        self.main_layout.addWidget(self.controls_container)
+        
+        # Initially collapse the panel
+        self.controls_container.setVisible(False)
+        
+        # Set up debounce timers for threshold changes
+        self._warning_threshold_timer = QTimer()
+        self._warning_threshold_timer.setSingleShot(True)
+        self._warning_threshold_timer.timeout.connect(self._adjust_warning_threshold)
+        self._critical_threshold_timer = QTimer()
+        self._critical_threshold_timer.setSingleShot(True)
+        self._critical_threshold_timer.timeout.connect(self._adjust_critical_threshold)
+        
+        # Connect signals
+        self.warning_threshold_spinbox.valueChanged.connect(self._on_warning_threshold_changed)
+        self.critical_threshold_spinbox.valueChanged.connect(self._on_critical_threshold_changed)
+        self.token_monitor_checkbox.stateChanged.connect(self.update_token_monitor_controls)
+        
+        # Initial updates
+        self.update_token_monitor_controls()
+        self._update_token_threshold_labels()
+    
+    def toggle_collapse(self):
+        """Toggle visibility of controls."""
+        self.is_collapsed = not self.is_collapsed
+        self.controls_container.setVisible(not self.is_collapsed)
+        if self.is_collapsed:
+            self.toggle_button.setText("▼ Show Controls")
+        else:
+            self.toggle_button.setText("▲ Hide Controls")
+        
+        # Adjust size to fit content
+        self.adjustSize()
+    
+    def get_enabled_tool_names(self):
+        return [name for name, cb in self.tool_checkboxes.items() if cb.isChecked()]
+    
+    def update_token_monitor_controls(self):
+        """Enable/disable token monitor threshold controls based on checkbox."""
+        enabled = self.token_monitor_checkbox.isChecked()
+        self.warning_threshold_spinbox.setEnabled(enabled)
+        self.critical_threshold_spinbox.setEnabled(enabled)
+    
+    def _on_warning_threshold_changed(self, value):
+        """Start debounced adjustment of warning threshold."""
+        self._warning_threshold_timer.start(500)
+    
+    def _adjust_warning_threshold(self):
+        """Ensure warning threshold is always lower than critical threshold."""
+        value = self.warning_threshold_spinbox.value()
+        critical = self.critical_threshold_spinbox.value()
+        step = self.warning_threshold_spinbox.singleStep()
+        if value >= critical:
+            # Clamp warning to critical - step (instead of adjusting critical)
+            clamped_value = critical - step
+            if clamped_value < 1:
+                clamped_value = 1
+            # Temporarily block signals to prevent infinite recursion
+            self.warning_threshold_spinbox.blockSignals(True)
+            self.warning_threshold_spinbox.setValue(clamped_value)
+            self.warning_threshold_spinbox.blockSignals(False)
+        # Update formatted labels
+        self._update_token_threshold_labels()
+    
+    def _on_critical_threshold_changed(self, value):
+        """Start debounced adjustment of critical threshold."""
+        self._critical_threshold_timer.start(500)
+    
+    def _adjust_critical_threshold(self):
+        """Ensure critical threshold is always higher than warning threshold."""
+        value = self.critical_threshold_spinbox.value()
+        warning = self.warning_threshold_spinbox.value()
+        step = self.critical_threshold_spinbox.singleStep()
+        if value <= warning:
+            # Clamp critical to warning + step (instead of adjusting warning)
+            clamped_value = warning + step
+            max_val = self.critical_threshold_spinbox.maximum()
+            if clamped_value > max_val:
+                clamped_value = max_val
+            # Temporarily block signals to prevent infinite recursion
+            self.critical_threshold_spinbox.blockSignals(True)
+            self.critical_threshold_spinbox.setValue(clamped_value)
+            self.critical_threshold_spinbox.blockSignals(False)
+        # Update formatted labels
+        self._update_token_threshold_labels()
+    
+    def _update_token_threshold_labels(self):
+        """Update formatted labels for token thresholds."""
+        # Format warning threshold (multiply by 1000 for display)
+        warning_value = self.warning_threshold_spinbox.value() * 1000
+        if warning_value >= 1000:
+            warning_text = f"({warning_value // 1000}k)"
+        else:
+            warning_text = f"({warning_value})"
+        self.warning_formatted_label.setText(warning_text)
+
+        # Format critical threshold (multiply by 1000 for display)
+        critical_value = self.critical_threshold_spinbox.value() * 1000
+        if critical_value >= 1000:
+            critical_text = f"({critical_value // 1000}k)"
+        else:
+            critical_text = f"({critical_value})"
+        self.critical_formatted_label.setText(critical_text)
 
 class StatusPanel(QGroupBox):
     """Shows current status and token usage."""
@@ -207,8 +443,7 @@ class AgentGUI(QMainWindow):
         middle_container = QWidget()
         middle_layout = QVBoxLayout()
         middle_container.setLayout(middle_layout)
-        self.tool_loader = ToolLoaderPanel(TOOL_CLASSES)
-        middle_layout.addWidget(self.tool_loader)
+
         self.helpers_panel = AgenticHelpersPanel()
         middle_layout.addWidget(self.helpers_panel)
         self.status_panel = StatusPanel()
@@ -222,99 +457,51 @@ class AgentGUI(QMainWindow):
         right_container.setLayout(right_layout)
         
         
-        # Token monitoring controls
-        token_monitor_frame = QWidget()
-        token_monitor_layout = QHBoxLayout()
-        token_monitor_frame.setLayout(token_monitor_layout)
+        # Agent Controls Panel (replaces individual controls)
+        self.agent_controls_panel = AgentControlsPanel(TOOL_CLASSES)
+        right_layout.addWidget(self.agent_controls_panel)
+
+        # Connect workspace buttons
+        self.agent_controls_panel.set_workspace_btn.clicked.connect(self.set_workspace)
+        self.agent_controls_panel.clear_workspace_btn.clicked.connect(self.clear_workspace)
+
+        # Connect token monitor checkbox to update AgentGUI's internal state
+        self.agent_controls_panel.token_monitor_checkbox.stateChanged.connect(
+            lambda state: setattr(self, '_token_monitor_enabled', state == Qt.CheckState.Checked.value)
+        )
+        # Connect threshold spinboxes to update AgentGUI's internal thresholds
+        self.agent_controls_panel.warning_threshold_spinbox.valueChanged.connect(
+            lambda value: setattr(self, 'token_monitor_warning_threshold', value * 1000)
+        )
+        self.agent_controls_panel.critical_threshold_spinbox.valueChanged.connect(
+            lambda value: setattr(self, 'token_monitor_critical_threshold', value * 1000)
+        )
+        # Set initial values
+        self._token_monitor_enabled = self.agent_controls_panel.token_monitor_checkbox.isChecked()
+        self.token_monitor_warning_threshold = self.agent_controls_panel.warning_threshold_spinbox.value() * 1000
+        self.token_monitor_critical_threshold = self.agent_controls_panel.critical_threshold_spinbox.value() * 1000
+        self.agent_controls_panel = AgentControlsPanel(TOOL_CLASSES)
+        right_layout.addWidget(self.agent_controls_panel)
         
-        self.token_monitor_checkbox = QCheckBox("Enable token warnings")
-        self.token_monitor_checkbox.setChecked(True)
-        token_monitor_layout.addWidget(self.token_monitor_checkbox)
+        # Connect workspace buttons
+        self.agent_controls_panel.set_workspace_btn.clicked.connect(self.set_workspace)
+        self.agent_controls_panel.clear_workspace_btn.clicked.connect(self.clear_workspace)
         
-        token_monitor_layout.addWidget(QLabel("Warning:"))
-        self.warning_threshold_spinbox = QSpinBox()
-        self.warning_threshold_spinbox.setRange(1, 200)
-        self.warning_threshold_spinbox.setValue(35)
-        self.warning_threshold_spinbox.setEnabled(True)
-        token_monitor_layout.addWidget(self.warning_threshold_spinbox)
-        self.warning_formatted_label = QLabel("(35k)")
-        token_monitor_layout.addWidget(self.warning_formatted_label)
-        token_monitor_layout.addWidget(QLabel("tokens"))
-        
-        token_monitor_layout.addWidget(QLabel("Critical:"))
-        self.critical_threshold_spinbox = QSpinBox()
-        self.critical_threshold_spinbox.setRange(1, 200)
-        self.critical_threshold_spinbox.setValue(50)
-        self.critical_threshold_spinbox.setEnabled(True)
-        token_monitor_layout.addWidget(self.critical_threshold_spinbox)
-        self.critical_formatted_label = QLabel("(50k)")
-        token_monitor_layout.addWidget(self.critical_formatted_label)
-        # Set step size to 1 (representing 1k tokens)
-        self.warning_threshold_spinbox.setSingleStep(1)
-        self.critical_threshold_spinbox.setSingleStep(1)
-        
-        # Debounce timers for threshold changes
-        self._warning_threshold_timer = QTimer()
-        self._warning_threshold_timer.setSingleShot(True)
-        self._warning_threshold_timer.timeout.connect(self._adjust_warning_threshold)
-        self._critical_threshold_timer = QTimer()
-        self._critical_threshold_timer.setSingleShot(True)
-        self._critical_threshold_timer.timeout.connect(self._adjust_critical_threshold)
-        
-        # Connect threshold adjustments to maintain ordering
-        self.warning_threshold_spinbox.valueChanged.connect(self._on_warning_threshold_changed)
-        self.critical_threshold_spinbox.valueChanged.connect(self._on_critical_threshold_changed)
-        # Detail level combo
-        token_monitor_layout.addWidget(QLabel("Detail:"))
-        self.detail_combo = QComboBox()
-        self.detail_combo.addItems(["minimal", "normal", "verbose"])
-        self.detail_combo.setCurrentText("normal")
-        token_monitor_layout.addWidget(self.detail_combo)
-        
-        
-        
-        token_monitor_layout.addStretch()
-        right_layout.addWidget(token_monitor_frame)
-        # Max turns control
-        max_turns_frame = QWidget()
-        max_turns_layout = QHBoxLayout()
-        max_turns_frame.setLayout(max_turns_layout)
-        
-        max_turns_layout.addWidget(QLabel("Max turns:"))
-        self.max_turns_spinbox = QSpinBox()
-        self.max_turns_spinbox.setRange(1, 500)
-        self.max_turns_spinbox.setValue(100)
-        max_turns_layout.addWidget(self.max_turns_spinbox)
-        max_turns_layout.addWidget(QLabel("turns"))
-        max_turns_layout.addStretch()
-        right_layout.addWidget(max_turns_frame)
-        
-        # Workspace safety controls
-        workspace_frame = QWidget()
-        workspace_layout = QHBoxLayout()
-        workspace_frame.setLayout(workspace_layout)
-        
-        workspace_layout.addWidget(QLabel("Workspace:"))
-        
-        self.workspace_display = QLabel("None (unrestricted)")
-        self.workspace_display.setStyleSheet("color: blue;")
-        self.workspace_display.setWordWrap(True)
-        workspace_layout.addWidget(self.workspace_display, 1)
-        
-        self.set_workspace_btn = QPushButton("Set workspace")
-        self.set_workspace_btn.clicked.connect(self.set_workspace)
-        workspace_layout.addWidget(self.set_workspace_btn)
-        
-        self.clear_workspace_btn = QPushButton("Clear")
-        self.clear_workspace_btn.clicked.connect(self.clear_workspace)
-        workspace_layout.addWidget(self.clear_workspace_btn)
-        
-        right_layout.addWidget(workspace_frame)
-        
-        # Connect token monitor checkbox to enable/disable threshold controls
-        self.token_monitor_checkbox.stateChanged.connect(self.update_token_monitor_controls)
-        self.update_token_monitor_controls()  # Set initial state
-        self._update_token_threshold_labels()  # Set initial formatted labels
+        # Connect token monitor checkbox to update AgentGUI's internal state
+        self.agent_controls_panel.token_monitor_checkbox.stateChanged.connect(
+            lambda state: setattr(self, '_token_monitor_enabled', state == Qt.CheckState.Checked.value)
+        )
+        # Connect threshold spinboxes to update AgentGUI's internal thresholds
+        self.agent_controls_panel.warning_threshold_spinbox.valueChanged.connect(
+            lambda value: setattr(self, 'token_monitor_warning_threshold', value * 1000)
+        )
+        self.agent_controls_panel.critical_threshold_spinbox.valueChanged.connect(
+            lambda value: setattr(self, 'token_monitor_critical_threshold', value * 1000)
+        )
+        # Set initial values
+        self._token_monitor_enabled = self.agent_controls_panel.token_monitor_checkbox.isChecked()
+        self.token_monitor_warning_threshold = self.agent_controls_panel.warning_threshold_spinbox.value() * 1000
+        self.token_monitor_critical_threshold = self.agent_controls_panel.critical_threshold_spinbox.value() * 1000
         
 
         
@@ -468,15 +655,15 @@ class AgentGUI(QMainWindow):
         filename, _ = QFileDialog.getSaveFileName(self, "Save Session", "", "JSON files (*.json)")
         if not filename:
             return
-        enabled_names = self.tool_loader.get_enabled_tool_names()
-        workspace_display = self.workspace_display.text()
+        enabled_names = self.agent_controls_panel.get_enabled_tool_names()
+        workspace_display = self.agent_controls_panel.workspace_display.text()
         workspace_path = None if workspace_display == "None (unrestricted)" else workspace_display
         data = {
             "history": self.last_history,
             "enabled_tools": enabled_names,
-            "token_monitor_enabled": self.token_monitor_checkbox.isChecked(),
-            "warning_threshold": self.warning_threshold_spinbox.value(),
-            "critical_threshold": self.critical_threshold_spinbox.value(),
+            "token_monitor_enabled": self.agent_controls_panel.token_monitor_checkbox.isChecked(),
+            "warning_threshold": self.agent_controls_panel.warning_threshold_spinbox.value(),
+            "critical_threshold": self.agent_controls_panel.critical_threshold_spinbox.value(),
             "turn_monitor_enabled": True,
             "turn_monitor_warning_threshold": 0.8,
             "turn_monitor_critical_threshold": 0.95,
@@ -502,12 +689,12 @@ class AgentGUI(QMainWindow):
             self.last_history = data["history"]
             enabled_names = set(data["enabled_tools"])
             # Update tool checkboxes
-            for tool_name, checkbox in self.tool_loader.tool_checkboxes.items():
+            for tool_name, checkbox in self.agent_controls_panel.tool_checkboxes.items():
                 checkbox.setChecked(tool_name in enabled_names)
             
             # Load token monitoring settings if available
             if "token_monitor_enabled" in data:
-                self.token_monitor_checkbox.setChecked(data["token_monitor_enabled"])
+                self.agent_controls_panel.token_monitor_checkbox.setChecked(data["token_monitor_enabled"])
             if "warning_threshold" in data:
                 warning_value = data["warning_threshold"]
                 # Convert old session files (values in actual tokens) to display units
@@ -515,17 +702,17 @@ class AgentGUI(QMainWindow):
                     warning_value = max(1, warning_value // 1000)
                 elif warning_value > 200:  # Out of range display value, clamp
                     warning_value = 200
-                self.warning_threshold_spinbox.setValue(warning_value)
+                self.agent_controls_panel.warning_threshold_spinbox.setValue(warning_value)
             if "critical_threshold" in data:
                 critical_value = data["critical_threshold"]
                 if critical_value >= 1000:  # Old format
                     critical_value = max(1, critical_value // 1000)
                 elif critical_value > 200:  # Out of range display value, clamp
                     critical_value = 200
-                self.critical_threshold_spinbox.setValue(critical_value)
+                self.agent_controls_panel.critical_threshold_spinbox.setValue(critical_value)
             
-            self.update_token_monitor_controls()  # Update UI state
-            self._update_token_threshold_labels()  # Update formatted labels
+            self.agent_controls_panel.update_token_monitor_controls()  # Update UI state
+            self.agent_controls_panel._update_token_threshold_labels()  # Update formatted labels
 
             # Load turn monitoring settings if available
             if "turn_monitor_enabled" in data:
@@ -538,68 +725,19 @@ class AgentGUI(QMainWindow):
             # Load workspace path if available            if "workspace_path" in data:
                 workspace_path = data["workspace_path"]
                 if workspace_path is None:
-                    self.workspace_display.setText("None (unrestricted)")
+                    self.agent_controls_panel.workspace_display.setText("None (unrestricted)")
                 else:
                     # Ensure path is normalized and absolute
                     workspace_path = os.path.normpath(workspace_path)
                     if not os.path.isabs(workspace_path):
                         workspace_path = os.path.abspath(workspace_path)
-                    self.workspace_display.setText(workspace_path)
+                    self.agent_controls_panel.workspace_display.setText(workspace_path)
             
             self.update_buttons(running=False)
             QMessageBox.information(self, "Session Loaded", f"Session loaded from {filename}")
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to load session: {e}")
     
-    def update_token_monitor_controls(self):
-        """Enable/disable token monitor threshold controls based on checkbox."""
-        enabled = self.token_monitor_checkbox.isChecked()
-        self.warning_threshold_spinbox.setEnabled(enabled)
-        self.critical_threshold_spinbox.setEnabled(enabled)
-
-    def _on_warning_threshold_changed(self, value):
-        """Start debounced adjustment of warning threshold."""
-        self._warning_threshold_timer.start(500)
-
-    def _adjust_warning_threshold(self):
-        """Ensure warning threshold is always lower than critical threshold."""
-        value = self.warning_threshold_spinbox.value()
-        critical = self.critical_threshold_spinbox.value()
-        step = self.warning_threshold_spinbox.singleStep()
-        if value >= critical:
-            # Clamp warning to critical - step (instead of adjusting critical)
-            clamped_value = critical - step
-            if clamped_value < 1:
-                clamped_value = 1
-            # Temporarily block signals to prevent infinite recursion
-            self.warning_threshold_spinbox.blockSignals(True)
-            self.warning_threshold_spinbox.setValue(clamped_value)
-            self.warning_threshold_spinbox.blockSignals(False)
-        # Update formatted labels
-        self._update_token_threshold_labels()
-
-    def _on_critical_threshold_changed(self, value):
-        """Start debounced adjustment of critical threshold."""
-        self._critical_threshold_timer.start(500)
-
-    def _adjust_critical_threshold(self):
-        """Ensure critical threshold is always higher than warning threshold."""
-        value = self.critical_threshold_spinbox.value()
-        warning = self.warning_threshold_spinbox.value()
-        step = self.critical_threshold_spinbox.singleStep()
-        if value <= warning:
-            # Clamp critical to warning + step (instead of adjusting warning)
-            clamped_value = warning + step
-            max_val = self.critical_threshold_spinbox.maximum()
-            if clamped_value > max_val:
-                clamped_value = max_val
-            # Temporarily block signals to prevent infinite recursion
-            self.critical_threshold_spinbox.blockSignals(True)
-            self.critical_threshold_spinbox.setValue(clamped_value)
-            self.critical_threshold_spinbox.blockSignals(False)
-        # Update formatted labels
-        self._update_token_threshold_labels()
-
     # ---- Agent control ----
     def run_agent(self):
         print(f"[GUI] run_agent called, controller.is_running={self.controller.is_running}, agent_idle={self.agent_idle}")
@@ -612,12 +750,12 @@ class AgentGUI(QMainWindow):
             QMessageBox.critical(self, "API Key missing", "Set DEEPSEEK_API_KEY in .env file")
             return
 
-        enabled_names = self.tool_loader.get_enabled_tool_names()
+        enabled_names = self.agent_controls_panel.get_enabled_tool_names()
         tool_name_to_class = {cls.__name__: cls for cls in TOOL_CLASSES}
         enabled_classes = [tool_name_to_class[name] for name in enabled_names]
 
         # Extract workspace path
-        workspace_display = self.workspace_display.text()
+        workspace_display = self.agent_controls_panel.workspace_display.text()
         workspace_path = None if workspace_display == "None (unrestricted)" else workspace_display
         
         # Use cached config if available (created by restart_session)
@@ -628,7 +766,7 @@ class AgentGUI(QMainWindow):
             config = AgentConfig(
                 api_key=api_key,
                 model=base_config.model,
-                max_turns=self.max_turns_spinbox.value(),
+                max_turns=self.agent_controls_panel.max_turns_spinbox.value(),
                 temperature=base_config.temperature,
                 tool_classes=enabled_classes,  # Use current tool selection
                 max_history_turns=base_config.max_history_turns,
@@ -636,9 +774,9 @@ class AgentGUI(QMainWindow):
                 keep_system_messages=base_config.keep_system_messages,
                 initial_input_tokens=self.total_input if self.last_history is not None else 0,
                 initial_output_tokens=self.total_output if self.last_history is not None else 0,
-                token_monitor_enabled=self.token_monitor_checkbox.isChecked(),
-                token_monitor_warning_threshold=self.warning_threshold_spinbox.value() * 1000,
-                token_monitor_critical_threshold=self.critical_threshold_spinbox.value() * 1000,
+                token_monitor_enabled=self.agent_controls_panel.token_monitor_checkbox.isChecked(),
+                token_monitor_warning_threshold=self.agent_controls_panel.warning_threshold_spinbox.value() * 1000,
+                token_monitor_critical_threshold=self.agent_controls_panel.critical_threshold_spinbox.value() * 1000,
                 turn_monitor_enabled=self.turn_monitor_enabled,
                 turn_monitor_warning_threshold=self.turn_monitor_warning_threshold,
                 turn_monitor_critical_threshold=self.turn_monitor_critical_threshold,
@@ -651,7 +789,7 @@ class AgentGUI(QMainWindow):
             config = AgentConfig(
                 api_key=api_key,
                 model="deepseek-reasoner",
-                max_turns=self.max_turns_spinbox.value(),
+                max_turns=self.agent_controls_panel.max_turns_spinbox.value(),
                 temperature=0.2,
                 tool_classes=enabled_classes,
                 max_history_turns=None,  # Pruning removed
@@ -659,9 +797,9 @@ class AgentGUI(QMainWindow):
                 keep_system_messages=True,
                 initial_input_tokens=self.total_input if self.last_history is not None else 0,
                 initial_output_tokens=self.total_output if self.last_history is not None else 0,
-                token_monitor_enabled=self.token_monitor_checkbox.isChecked(),
-                token_monitor_warning_threshold=self.warning_threshold_spinbox.value() * 1000,
-                token_monitor_critical_threshold=self.critical_threshold_spinbox.value() * 1000,
+                token_monitor_enabled=self.agent_controls_panel.token_monitor_checkbox.isChecked(),
+                token_monitor_warning_threshold=self.agent_controls_panel.warning_threshold_spinbox.value() * 1000,
+                token_monitor_critical_threshold=self.agent_controls_panel.critical_threshold_spinbox.value() * 1000,
                 turn_monitor_enabled=self.turn_monitor_enabled,
                 turn_monitor_warning_threshold=self.turn_monitor_warning_threshold,
                 turn_monitor_critical_threshold=self.turn_monitor_critical_threshold,
@@ -770,18 +908,18 @@ class AgentGUI(QMainWindow):
         # Create new AgentConfig with current GUI settings for next run
         api_key = os.getenv("DEEPSEEK_API_KEY")
         if api_key:
-            enabled_names = self.tool_loader.get_enabled_tool_names()
+            enabled_names = self.agent_controls_panel.tool_loader.get_enabled_tool_names()
             tool_name_to_class = {cls.__name__: cls for cls in TOOL_CLASSES}
             enabled_classes = [tool_name_to_class[name] for name in enabled_names]
             
             # Extract workspace path
-            workspace_display = self.workspace_display.text()
+            workspace_display = self.agent_controls_panel.workspace_display.text()
             workspace_path = None if workspace_display == "None (unrestricted)" else workspace_display
             # Store config for next run (similar to run_agent())
             self._cached_config = AgentConfig(
                 api_key=api_key,
                 model="deepseek-reasoner",
-                max_turns=self.max_turns_spinbox.value(),
+                max_turns=self.agent_controls_panel.max_turns_spinbox.value(),
                 temperature=0.2,
                 tool_classes=enabled_classes,
                 max_history_turns=None,  # Pruning removed
@@ -789,12 +927,12 @@ class AgentGUI(QMainWindow):
                 keep_system_messages=True,
                 initial_input_tokens=0,
                 initial_output_tokens=0,
-                token_monitor_enabled=self.token_monitor_checkbox.isChecked(),
-                token_monitor_warning_threshold=self.warning_threshold_spinbox.value() * 1000,
-                token_monitor_critical_threshold=self.critical_threshold_spinbox.value() * 1000,
+                token_monitor_enabled=self.agent_controls_panel.token_monitor_checkbox.isChecked(),
+                token_monitor_warning_threshold=self.agent_controls_panel.warning_threshold_spinbox.value() * 1000,
+                token_monitor_critical_threshold=self.agent_controls_panel.critical_threshold_spinbox.value() * 1000,
                 workspace_path=workspace_path
             )
-            print(f"[GUI] Created new config for next session with token monitoring: enabled={self.token_monitor_checkbox.isChecked()}, warning={self.warning_threshold_spinbox.value() * 1000}, critical={self.critical_threshold_spinbox.value() * 1000}")
+            print(f"[GUI] Created new config for next session with token monitoring: enabled={self.agent_controls_panel.token_monitor_checkbox.isChecked()}, warning={self.agent_controls_panel.warning_threshold_spinbox.value() * 1000}, critical={self.agent_controls_panel.critical_threshold_spinbox.value() * 1000}")
         else:
             self._cached_config = None    
     def stop_agent(self):
@@ -893,7 +1031,7 @@ class AgentGUI(QMainWindow):
 
     def display_event(self, event):
         etype = event["type"]
-        detail_level = self.detail_combo.currentText()
+        detail_level = self.agent_controls_panel.detail_combo.currentText()
         # Store conversation history if present
         print(f"[GUI] display_event: checking history, etype={etype}, has_history={'history' in event}")
         if "history" in event:
@@ -1044,7 +1182,7 @@ class AgentGUI(QMainWindow):
     # ---- Workspace methods ----
     def set_workspace(self):
         """Open dialog to select workspace directory."""
-        current_workspace = self.workspace_display.text()
+        current_workspace = self.agent_controls_panel.workspace_display.text()
         if current_workspace == "None (unrestricted)":
             start_dir = os.getcwd()
         else:
@@ -1056,28 +1194,12 @@ class AgentGUI(QMainWindow):
             new_workspace = os.path.normpath(new_workspace)
             if not os.path.isabs(new_workspace):
                 new_workspace = os.path.abspath(new_workspace)
-            self.workspace_display.setText(new_workspace)
+            self.agent_controls_panel.workspace_display.setText(new_workspace)
             
     def clear_workspace(self):
         """Clear workspace restriction."""
-        self.workspace_display.setText("None (unrestricted)")
+        self.agent_controls_panel.workspace_display.setText("None (unrestricted)")
     
-    def _update_token_threshold_labels(self):
-        """Update formatted labels for token thresholds."""
-        # Format warning threshold (multiply by 1000 for display)
-        warning_value = self.warning_threshold_spinbox.value() * 1000
-        if warning_value >= 1000:
-            warning_text = f"({warning_value // 1000}k)"
-        else:
-            warning_text = f"({warning_value})"
-        self.warning_formatted_label.setText(warning_text)
-
-        # Format critical threshold (multiply by 1000 for display)
-        critical_value = self.critical_threshold_spinbox.value() * 1000
-        if critical_value >= 1000:
-            critical_text = f"({critical_value // 1000}k)"
-        else:
-            critical_text = f"({critical_value})"
         self.critical_formatted_label.setText(critical_text)
 
 def main():
