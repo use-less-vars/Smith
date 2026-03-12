@@ -43,6 +43,7 @@ class LogEventType(Enum):
     CONVERSATION_UPDATE = "conversation_update"
     CONVERSATION_PRUNE = "conversation_prune"
     TOKEN_WARNING = "token_warning"
+    TURN_WARNING = "turn_warning"
     
     # Turn lifecycle
     TURN_START = "turn_start"
@@ -464,6 +465,21 @@ class AgentLogger:
                 "old_state": old_state,
                 "new_state": new_state,
                 "token_count": token_count,
+                "warning_message": warning_message,
+            },
+            self.current_turn
+        )
+
+    def log_turn_warning(self, old_state: str, new_state: str, turn_count: int, warning_message: str):
+        """Log turn limit warning."""
+        self._log_event(
+            LogEventType.TURN_WARNING,
+            LogLevel.WARNING,
+            f"Turn limit warning: {old_state} -> {new_state} ({turn_count} turns)",
+            {
+                "old_state": old_state,
+                "new_state": new_state,
+                "turn_count": turn_count,
                 "warning_message": warning_message,
             },
             self.current_turn

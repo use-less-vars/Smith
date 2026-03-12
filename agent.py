@@ -63,6 +63,13 @@ class Agent:
         self._last_token_warning_count = 0
         self._token_encoder = None
         
+        # Turn monitoring state
+        self.turn_state = "low"  # low, warning, critical
+        self.last_turn_warning_state = "low"
+        # Turn warning event storage
+        self._last_turn_warning = None
+        self._last_turn_warning_count = 0
+        
     def _estimate_tokens(self, text_or_message):
         """Estimate token count for a string or message dict using tiktoken."""
         if self._token_encoder is None:
@@ -122,6 +129,11 @@ class Agent:
         self.last_warning_state = "low"
         # Token warning event storage
         self._last_token_warning = None
+        # Turn monitoring state reset
+        self.turn_state = "low"
+        self.last_turn_warning_state = "low"
+        self._last_turn_warning = None
+        self._last_turn_warning_count = 0
         self._last_token_warning_count = 0
     def submit_next_query(self, query: str):
         """Submit next query to paused agent."""
@@ -322,6 +334,64 @@ class Agent:
         if new_state == "low":
             self.last_warning_state = "low"
 
+    def _check_turn_state_and_warn(self, current_turn):
+        """Check current turn count against thresholds and inject warning if state changed."""
+        if not self.config.turn_monitor_enabled:
+            return
+
+        # Determine new state based on current turn
+        max_turns = self.config.max_turns
+        warning_threshold = int(max_turns * self.config.turn_monitor_warning_threshold)
+        critical_threshold = int(max_turns * self.config.turn_monitor_critical_threshold)
+        
+        if current_turn < warning_threshold:
+            new_state = "low"
+        elif current_turn < critical_threshold:
+            new_state = "warning"
+        else:
+            new_state = "critical"
+
+        # Update current state
+        old_state = self.turn_state
+        self.turn_state = new_state
+
+        # Check if we need to warn (only warn on upward transitions to a NEW warning state)
+        state_order = {"low": 0, "warning": 1, "critical": 2}
+
+        # Warn if:
+        # 1. We're moving to a higher state
+        # 2. AND we haven't already warned for this state (last_turn_warning_state != new_state)
+        # 3. AND new_state is actually a warning state (warning or critical)
+        if (state_order[new_state] > state_order[old_state] and
+            self.last_turn_warning_state != new_state and
+            new_state in ("warning", "critical")):
+
+            # Create warning message
+            sender = "user"  # Always use user role (system warnings are ignored)
+            if new_state == "warning":
+                warning = f"[SYSTEM] Turn limit warning: Agent is nearing maximum turn limit ({current_turn}/{max_turns} turns). Please consider wrapping up soon."
+            else:  # critical
+                warning = f"Turn limit critical: Agent is at critical turn limit ({current_turn}/{max_turns} turns). You MUST finish soon or risk being cut off."
+
+            # Store warning to be yielded as event (BEFORE adding to conversation)
+            self._last_turn_warning = warning
+            self._last_turn_warning_count = current_turn
+            self.last_turn_warning_state = new_state  # Mark that we've warned for this state
+
+            if self.logger:
+                self.logger.log_turn_warning(old_state, new_state, current_turn, warning)
+
+            # Append as user message AFTER storing warning
+            warning_msg = {"role": sender, "content": warning}
+            self.conversation.append(warning_msg)
+            # Estimate tokens for warning message (including JSON structure) and update current count
+            warning_tokens = self._estimate_tokens(warning_msg)
+            self.current_conversation_tokens += warning_tokens
+
+        # Reset last_turn_warning_state if we drop below warning threshold
+        if new_state == "low":
+            self.last_turn_warning_state = "low"
+
     def process_query(self, query):
         """Process a user query, appending it to conversation and running the agent.
         Yields events as dicts."""
@@ -369,6 +439,26 @@ class Agent:
                 }
                 return
             
+            # Turn monitoring warning
+            self._check_turn_state_and_warn(turn)
+            # Yield turn warning event if generated
+            if self._last_turn_warning is not None:
+                warning = self._last_turn_warning
+                count = self._last_turn_warning_count
+                self._last_turn_warning = None
+                self._last_turn_warning_count = 0
+                yield {
+                    "type": "turn_warning",
+                    "message": warning,
+                    "turn_count": count,
+                    "usage": {
+                        "input": last_input_tokens,
+                        "output": last_output_tokens,
+                        "total_input": self.total_input_tokens,
+                        "total_output": self.total_output_tokens,
+                    }
+                }
+
             # Token monitoring warning
             self._check_token_state_and_warn()
             # Yield token warning event if generated

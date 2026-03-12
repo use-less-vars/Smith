@@ -7,7 +7,7 @@ from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QLineEdit, QPushButton, QTextEdit, QListWidget,
     QGroupBox, QCheckBox, QMenuBar, QMenu, QFileDialog,
-    QMessageBox, QScrollArea, QFrame, QComboBox, QSpinBox, QSplitter, QDialog
+    QMessageBox, QScrollArea, QFrame, QComboBox, QSpinBox, QSplitter, QDialog, QSizePolicy
 )
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QAction, QFont
@@ -158,12 +158,14 @@ class EventFrame(QFrame):
     
     def add_content_line(self, text, style=""):
         """Add a simple text line (label)."""
-        # Escape HTML entities to prevent rendering issues
-        escaped_text = html.escape(text)
-        label = QLabel(escaped_text)
+        # Unescape any HTML entities in the text for PlainText format
+        unescaped_text = html.unescape(text)
+        label = QLabel(unescaped_text)
         label.setWordWrap(True)
         label.setTextFormat(Qt.TextFormat.PlainText)
         label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        # Set size policy to allow vertical expansion for wrapped text
+        label.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred)
         if style:
             label.setStyleSheet(style)
         self.content_layout.addWidget(label)
@@ -178,8 +180,12 @@ class AgentGUI(QMainWindow):
         self.last_history = None
         self.agent_idle = False
         self._cached_config = None  # Config created by restart_session for next run
-        
-        self.init_ui()
+        # Turn monitoring defaults
+        self.turn_monitor_enabled = True
+        self.turn_monitor_warning_threshold = 0.8
+        self.turn_monitor_critical_threshold = 0.95
+
+        self.init_ui()        
         self.setup_polling()
     
     def init_ui(self):
@@ -258,15 +264,30 @@ class AgentGUI(QMainWindow):
         # Connect threshold adjustments to maintain ordering
         self.warning_threshold_spinbox.valueChanged.connect(self._on_warning_threshold_changed)
         self.critical_threshold_spinbox.valueChanged.connect(self._on_critical_threshold_changed)
-        token_monitor_layout.addWidget(QLabel("tokens"))
-        
+        # Detail level combo
         token_monitor_layout.addWidget(QLabel("Detail:"))
         self.detail_combo = QComboBox()
         self.detail_combo.addItems(["minimal", "normal", "verbose"])
         self.detail_combo.setCurrentText("normal")
         token_monitor_layout.addWidget(self.detail_combo)
+        
+        
+        
         token_monitor_layout.addStretch()
         right_layout.addWidget(token_monitor_frame)
+        # Max turns control
+        max_turns_frame = QWidget()
+        max_turns_layout = QHBoxLayout()
+        max_turns_frame.setLayout(max_turns_layout)
+        
+        max_turns_layout.addWidget(QLabel("Max turns:"))
+        self.max_turns_spinbox = QSpinBox()
+        self.max_turns_spinbox.setRange(1, 500)
+        self.max_turns_spinbox.setValue(100)
+        max_turns_layout.addWidget(self.max_turns_spinbox)
+        max_turns_layout.addWidget(QLabel("turns"))
+        max_turns_layout.addStretch()
+        right_layout.addWidget(max_turns_frame)
         
         # Workspace safety controls
         workspace_frame = QWidget()
@@ -456,6 +477,9 @@ class AgentGUI(QMainWindow):
             "token_monitor_enabled": self.token_monitor_checkbox.isChecked(),
             "warning_threshold": self.warning_threshold_spinbox.value(),
             "critical_threshold": self.critical_threshold_spinbox.value(),
+            "turn_monitor_enabled": True,
+            "turn_monitor_warning_threshold": 0.8,
+            "turn_monitor_critical_threshold": 0.95,
             "workspace_path": workspace_path
         }
         try:
@@ -502,9 +526,16 @@ class AgentGUI(QMainWindow):
             
             self.update_token_monitor_controls()  # Update UI state
             self._update_token_threshold_labels()  # Update formatted labels
-            
-            # Load workspace path if available
-            if "workspace_path" in data:
+
+            # Load turn monitoring settings if available
+            if "turn_monitor_enabled" in data:
+                self.turn_monitor_enabled = data["turn_monitor_enabled"]
+            if "turn_monitor_warning_threshold" in data:
+                self.turn_monitor_warning_threshold = data["turn_monitor_warning_threshold"]
+            if "turn_monitor_critical_threshold" in data:
+                self.turn_monitor_critical_threshold = data["turn_monitor_critical_threshold"]
+
+            # Load workspace path if available            if "workspace_path" in data:
                 workspace_path = data["workspace_path"]
                 if workspace_path is None:
                     self.workspace_display.setText("None (unrestricted)")
@@ -597,7 +628,7 @@ class AgentGUI(QMainWindow):
             config = AgentConfig(
                 api_key=api_key,
                 model=base_config.model,
-                max_turns=base_config.max_turns,
+                max_turns=self.max_turns_spinbox.value(),
                 temperature=base_config.temperature,
                 tool_classes=enabled_classes,  # Use current tool selection
                 max_history_turns=base_config.max_history_turns,
@@ -608,6 +639,9 @@ class AgentGUI(QMainWindow):
                 token_monitor_enabled=self.token_monitor_checkbox.isChecked(),
                 token_monitor_warning_threshold=self.warning_threshold_spinbox.value() * 1000,
                 token_monitor_critical_threshold=self.critical_threshold_spinbox.value() * 1000,
+                turn_monitor_enabled=self.turn_monitor_enabled,
+                turn_monitor_warning_threshold=self.turn_monitor_warning_threshold,
+                turn_monitor_critical_threshold=self.turn_monitor_critical_threshold,
                 workspace_path=workspace_path
             )
             print(f"[GUI] Using cached config with updated token monitoring: enabled={config.token_monitor_enabled}, warning={config.token_monitor_warning_threshold}, critical={config.token_monitor_critical_threshold}")
@@ -617,7 +651,7 @@ class AgentGUI(QMainWindow):
             config = AgentConfig(
                 api_key=api_key,
                 model="deepseek-reasoner",
-                max_turns=100,
+                max_turns=self.max_turns_spinbox.value(),
                 temperature=0.2,
                 tool_classes=enabled_classes,
                 max_history_turns=None,  # Pruning removed
@@ -628,6 +662,9 @@ class AgentGUI(QMainWindow):
                 token_monitor_enabled=self.token_monitor_checkbox.isChecked(),
                 token_monitor_warning_threshold=self.warning_threshold_spinbox.value() * 1000,
                 token_monitor_critical_threshold=self.critical_threshold_spinbox.value() * 1000,
+                turn_monitor_enabled=self.turn_monitor_enabled,
+                turn_monitor_warning_threshold=self.turn_monitor_warning_threshold,
+                turn_monitor_critical_threshold=self.turn_monitor_critical_threshold,
                 workspace_path=workspace_path
             )
 
@@ -636,7 +673,7 @@ class AgentGUI(QMainWindow):
                 if self.agent_idle:
                     # Agent is idle (paused), check if config has changed
                     current_config = self.controller.get_config()
-                    # Compare configs - check if token monitoring settings or tool classes changed
+                    # Compare configs - check if token monitoring settings, turn monitoring settings, or tool classes changed
                     config_changed = False
                     # Compare token monitoring settings
                     if current_config.token_monitor_enabled != config.token_monitor_enabled:
@@ -644,6 +681,13 @@ class AgentGUI(QMainWindow):
                     elif current_config.token_monitor_warning_threshold != config.token_monitor_warning_threshold:
                         config_changed = True
                     elif current_config.token_monitor_critical_threshold != config.token_monitor_critical_threshold:
+                        config_changed = True
+                    # Compare turn monitoring settings
+                    if current_config.turn_monitor_enabled != config.turn_monitor_enabled:
+                        config_changed = True
+                    elif current_config.turn_monitor_warning_threshold != config.turn_monitor_warning_threshold:
+                        config_changed = True
+                    elif current_config.turn_monitor_critical_threshold != config.turn_monitor_critical_threshold:
                         config_changed = True
                     # Compare tool classes (by name)
                     current_tool_names = {cls.__name__ for cls in (current_config.tool_classes or [])}
@@ -737,7 +781,7 @@ class AgentGUI(QMainWindow):
             self._cached_config = AgentConfig(
                 api_key=api_key,
                 model="deepseek-reasoner",
-                max_turns=100,
+                max_turns=self.max_turns_spinbox.value(),
                 temperature=0.2,
                 tool_classes=enabled_classes,
                 max_history_turns=None,  # Pruning removed
@@ -804,22 +848,27 @@ class AgentGUI(QMainWindow):
         layout.setContentsMargins(0, 0, 0, 0)
         widget.setLayout(layout)
         
+        # Unescape HTML entities in the text
+        unescaped_full_text = html.unescape(full_text)
+        
         # Determine if truncation is needed
-        if len(full_text) > MAX_RESULT_LENGTH:
-            truncated = full_text[:MAX_RESULT_LENGTH] + "..."
+        if len(unescaped_full_text) > MAX_RESULT_LENGTH:
+            truncated = unescaped_full_text[:MAX_RESULT_LENGTH] + "..."
             label = QLabel(f"Result: {truncated}")
             label.setWordWrap(True)
+            label.setTextFormat(Qt.TextFormat.PlainText)
             label.setStyleSheet("color: #006400;")
             layout.addWidget(label, 1)  # stretch factor 1
             
             button = QPushButton("Show full")
             button.setMaximumWidth(80)
             # Connect button to open a dialog with full text
-            button.clicked.connect(lambda checked, text=full_text: self._show_full_text_dialog(text))
+            button.clicked.connect(lambda checked, text=unescaped_full_text: self._show_full_text_dialog(text))
             layout.addWidget(button)
         else:
-            label = QLabel(f"Result: {full_text}")
+            label = QLabel(f"Result: {unescaped_full_text}")
             label.setWordWrap(True)
+            label.setTextFormat(Qt.TextFormat.PlainText)
             label.setStyleSheet("color: #006400;")
             layout.addWidget(label)
         
@@ -832,7 +881,9 @@ class AgentGUI(QMainWindow):
         dialog.resize(600, 400)
         layout = QVBoxLayout(dialog)
         text_edit = QTextEdit()
-        text_edit.setPlainText(text)
+        # Unescape any HTML entities in the text
+        unescaped_text = html.unescape(text)
+        text_edit.setPlainText(unescaped_text)
         text_edit.setReadOnly(True)
         layout.addWidget(text_edit)
         close_btn = QPushButton("Close")
@@ -938,6 +989,18 @@ class AgentGUI(QMainWindow):
                 self.status_panel.update_context_length(self.context_length)
             self.status_panel.update_tokens(self.total_input, self.total_output)
             # Note: agent_idle NOT set here - token warning is informational, agent continues processing
+            # However, ensure agent is marked as not idle if it's running
+            if self.controller.is_running:
+                self.agent_idle = False
+            # Update buttons to reflect current state
+            self.update_buttons(running=self.controller.is_running, idle=self.agent_idle)
+        elif etype == "turn_warning":
+            print(f"[GUI] turn_warning event received, agent_idle={self.agent_idle}, controller.is_running={self.controller.is_running}")
+            frame.add_content_line(event["message"], style="color: #FFA500; font-weight: bold;")
+            usage = event.get("usage", {})
+            self.total_input = usage.get("total_input", self.total_input)
+            self.total_output = usage.get("total_output", self.total_output)
+            # Note: agent_idle NOT set here - turn warning is informational, agent continues processing
             # However, ensure agent is marked as not idle if it's running
             if self.controller.is_running:
                 self.agent_idle = False

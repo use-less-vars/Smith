@@ -45,6 +45,11 @@ class AgentConfig(BaseModel):
     token_monitor_enabled: bool = Field(default=True, description="Enable automatic token usage warnings")
     token_monitor_warning_threshold: int = Field(default=35000, description="Token count threshold for warning (user)")
     token_monitor_critical_threshold: int = Field(default=50000, description="Token count threshold for critical warning (user)")
+
+    # Turn monitoring configuration
+    turn_monitor_enabled: bool = Field(default=True, description="Enable automatic turn limit warnings")
+    turn_monitor_warning_threshold: float = Field(default=0.8, description="Warning threshold as fraction of max_turns (e.g., 0.8 = 80%)")
+    turn_monitor_critical_threshold: float = Field(default=0.95, description="Critical threshold as fraction of max_turns (e.g., 0.95 = 95%)")
     
     # Logging configuration
     enable_logging: bool = Field(default=True, description="Enable agent logging")
