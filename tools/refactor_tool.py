@@ -155,16 +155,16 @@ class RefactorTool(ToolBase):
         try:
             file_paths = self._get_file_paths()
         except Exception as e:
-            return f"Error expanding file pattern: {e}"
+            return self._truncate_output(f"Error expanding file pattern: {e}")
         
         if not file_paths:
-            return "No files matched the pattern."
+            return self._truncate_output("No files matched the pattern.")
         
         # Map operation and params
         try:
             code_op, params = self._map_operation_and_params()
         except ValueError as e:
-            return f"Error: {e}"
+            return self._truncate_output(f"Error: {e}")
         
         # Process each file, collect results
         results = []
@@ -207,18 +207,18 @@ class RefactorTool(ToolBase):
                 summary += "\n\nDiffs:\n" + "\n".join(diffs)
             if errors:
                 summary += "\n\nErrors:\n" + "\n".join(errors)
-            return summary
+            return self._truncate_output(summary)
         
         # Otherwise, apply changes atomically: only if all files succeeded
         if errors:
-            return f"Cannot apply changes because {len(errors)} file(s) failed:\n" + "\n".join(errors)
+            return self._truncate_output(f"Cannot apply changes because {len(errors)} file(s) failed:\n" + "\n".join(errors))
         
         # Apply changes atomically
         try:
             _commit_changes_atomically(modified_contents)
         except Exception as e:
-            return f"Error applying changes atomically: {e}. No files were modified."
+            return self._truncate_output(f"Error applying changes atomically: {e}. No files were modified.")
         summary = f"Successfully modified {len(results)} file(s)."
         if diffs:
             summary += "\n\nDiffs:\n" + "\n".join(diffs)
-        return summary
+        return self._truncate_output(summary)

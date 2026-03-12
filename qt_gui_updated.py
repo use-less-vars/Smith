@@ -195,7 +195,24 @@ class AgentControlsPanel(QGroupBox):
         
         self.controls_layout.addWidget(max_turns_row, row, 0, 1, 4)
         
-        # Row 3: Detail combo
+        # Row 3: Tool output token limit
+        row += 1
+        tool_limit_row = QWidget()
+        tool_limit_layout = QHBoxLayout()
+        tool_limit_row.setLayout(tool_limit_layout)
+        tool_limit_layout.setSpacing(5)
+        
+        tool_limit_layout.addWidget(QLabel("Tool output limit:"))
+        self.tool_output_limit_spinbox = QSpinBox()
+        self.tool_output_limit_spinbox.setRange(1000, 100000)
+        self.tool_output_limit_spinbox.setValue(10000)
+        self.tool_output_limit_spinbox.setSingleStep(1000)
+        tool_limit_layout.addWidget(self.tool_output_limit_spinbox)
+        tool_limit_layout.addWidget(QLabel("tokens"))
+        
+        self.controls_layout.addWidget(tool_limit_row, row, 0, 1, 4)
+        
+        # Row 4: Detail combo
         row += 1
         detail_row = QWidget()
         detail_layout = QHBoxLayout()
@@ -758,7 +775,8 @@ class AgentGUI(QMainWindow):
                 turn_monitor_enabled=self.turn_monitor_enabled,
                 turn_monitor_warning_threshold=self.turn_monitor_warning_threshold,
                 turn_monitor_critical_threshold=self.turn_monitor_critical_threshold,
-                workspace_path=workspace_path
+                workspace_path=workspace_path,
+                tool_output_token_limit=self.agent_controls_panel.tool_output_limit_spinbox.value()
             )
             print(f"[GUI] Using cached config with updated token monitoring: enabled={config.token_monitor_enabled}, warning={config.token_monitor_warning_threshold}, critical={config.token_monitor_critical_threshold}")
             self._cached_config = None  # Clear after use
@@ -781,7 +799,8 @@ class AgentGUI(QMainWindow):
                 turn_monitor_enabled=self.turn_monitor_enabled,
                 turn_monitor_warning_threshold=self.turn_monitor_warning_threshold,
                 turn_monitor_critical_threshold=self.turn_monitor_critical_threshold,
-                workspace_path=workspace_path
+                workspace_path=workspace_path,
+                tool_output_token_limit=self.agent_controls_panel.tool_output_limit_spinbox.value()
             )
 
         try:
@@ -908,7 +927,8 @@ class AgentGUI(QMainWindow):
                 token_monitor_enabled=self.agent_controls_panel.token_monitor_checkbox.isChecked(),
                 token_monitor_warning_threshold=self.agent_controls_panel.warning_threshold_spinbox.value() * 1000,
                 token_monitor_critical_threshold=self.agent_controls_panel.critical_threshold_spinbox.value() * 1000,
-                workspace_path=workspace_path
+                workspace_path=workspace_path,
+                tool_output_token_limit=self.agent_controls_panel.tool_output_limit_spinbox.value()
             )
             print(f"[GUI] Created new config for next session with token monitoring: enabled={self.agent_controls_panel.token_monitor_checkbox.isChecked()}, warning={self.agent_controls_panel.warning_threshold_spinbox.value() * 1000}, critical={self.agent_controls_panel.critical_threshold_spinbox.value() * 1000}")
         else:

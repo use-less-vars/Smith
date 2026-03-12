@@ -34,40 +34,40 @@ class DateTimeTool(ToolBase):
         try:
             if self.operation == "current_datetime":
                 now = datetime.now()
-                return f"Current datetime: {now.isoformat()}"
+                return self._truncate_output(f"Current datetime: {now.isoformat()}")
             
             elif self.operation == "current_date":
                 today = date.today()
-                return f"Current date: {today.isoformat()}"
+                return self._truncate_output(f"Current date: {today.isoformat()}")
             
             elif self.operation == "current_time":
                 now = datetime.now()
                 current_time = now.time()
-                return f"Current time: {current_time.isoformat()}"
+                return self._truncate_output(f"Current time: {current_time.isoformat()}")
             
             elif self.operation == "format":
                 if not self.datetime_string:
-                    return "Error: datetime_string is required for format operation"
+                    return self._truncate_output("Error: datetime_string is required for format operation")
                 if not self.format_string:
-                    return "Error: format_string is required for format operation"
+                    return self._truncate_output("Error: format_string is required for format operation")
                 
                 # Try to parse the datetime string
                 parsed_dt = self._parse_datetime(self.datetime_string)
                 formatted = parsed_dt.strftime(self.format_string)
-                return f"Formatted datetime: {formatted}"
+                return self._truncate_output(f"Formatted datetime: {formatted}")
             
             elif self.operation == "parse":
                 if not self.datetime_string:
-                    return "Error: datetime_string is required for parse operation"
+                    return self._truncate_output("Error: datetime_string is required for parse operation")
                 if not self.format_string:
-                    return "Error: format_string is required for parse operation"
+                    return self._truncate_output("Error: format_string is required for parse operation")
                 
                 parsed_dt = datetime.strptime(self.datetime_string, self.format_string)
-                return f"Parsed datetime: {parsed_dt.isoformat()}"
+                return self._truncate_output(f"Parsed datetime: {parsed_dt.isoformat()}")
             
             elif self.operation == "difference":
                 if not self.datetime_string_a or not self.datetime_string_b:
-                    return "Error: both datetime_string_a and datetime_string_b are required for difference operation"
+                    return self._truncate_output("Error: both datetime_string_a and datetime_string_b are required for difference operation")
                 
                 dt_a = self._parse_datetime(self.datetime_string_a)
                 dt_b = self._parse_datetime(self.datetime_string_b)
@@ -86,13 +86,13 @@ class DateTimeTool(ToolBase):
                 minutes = (seconds % 3600) // 60
                 seconds = seconds % 60
                 
-                return f"Time difference: {days} days, {hours} hours, {minutes} minutes, {seconds} seconds ({dt_a.isoformat()} is {direction} than {dt_b.isoformat()})"
+                return self._truncate_output(f"Time difference: {days} days, {hours} hours, {minutes} minutes, {seconds} seconds ({dt_a.isoformat()} is {direction} than {dt_b.isoformat()})")
             
             else:
-                return f"Unknown operation: {self.operation}"
+                return self._truncate_output(f"Unknown operation: {self.operation}")
                 
         except Exception as e:
-            return f"Error performing datetime operation: {e}"
+            return self._truncate_output(f"Error performing datetime operation: {e}")
     
     def _parse_datetime(self, dt_string: str) -> datetime:
         """Parse a datetime string using common formats."""

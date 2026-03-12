@@ -64,9 +64,11 @@ class AgentConfig(BaseModel):
     
     # Workspace configuration for file system access restrictions
     workspace_path: Optional[str] = Field(default=None, description="Root directory for file operations (None = unrestricted)")
-    
-    class Config:
-        extra = "ignore"  # Allow backward compatibility with older configs
+
+    # Tool output limit configuration
+    tool_output_token_limit: int = Field(default=10000, description="Maximum token limit for tool outputs (default 10,000 tokens)")
+
+    class Config:        extra = "ignore"  # Allow backward compatibility with older configs
 def run_agent_stream(query: str, config: AgentConfig):
     """
     Backward compatibility wrapper that creates an Agent instance and processes the query.

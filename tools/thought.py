@@ -7,4 +7,4 @@ class Thought(ToolBase):
     content: str = Field(description="Thought content") 
 
     def execute(self) -> str:
-        return self.content
+        return self._truncate_output(self.content)

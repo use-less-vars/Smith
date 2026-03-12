@@ -6,4 +6,4 @@ class Final(ToolBase):
     content: str = Field(description="The final answer text")
 
     def execute(self) -> str:
-        return self.content
+        return self._truncate_output(self.content)

@@ -28,19 +28,19 @@ class FilePreviewTool(ToolBase):
                 validated_path = self._validate_path(str(file_path))
                 file_path = pathlib.Path(validated_path)
             except ValueError as e:
-                return f"Error: {e}"
+                return self._truncate_output(f"Error: {e}")
             if not file_path.exists():
-                return f"Error: File '{self.filename}' does not exist."
+                return self._truncate_output(f"Error: File '{self.filename}' does not exist.")
             if not file_path.is_file():
-                return f"Error: '{self.filename}' is not a file."
+                return self._truncate_output(f"Error: '{self.filename}' is not a file.")
             
             # Check file size
             try:
                 file_size = file_path.stat().st_size
                 if file_size > self.max_file_size:
-                    return f"Error: File is too large ({file_size:,} bytes > {self.max_file_size:,} bytes limit)."
+                    return self._truncate_output(f"Error: File is too large ({file_size:,} bytes > {self.max_file_size:,} bytes limit).")
             except OSError:
-                return f"Error: Cannot access file '{self.filename}'."
+                return self._truncate_output(f"Error: Cannot access file '{self.filename}'.")
             
             # Apply safety limits to head_lines and tail_lines
             head_lines = min(self.head_lines, self.MAX_HEAD_LINES)
@@ -60,7 +60,7 @@ class FilePreviewTool(ToolBase):
             # Read file lines
             lines = self._read_file_lines(file_path)
             if not lines:
-                return f"File '{self.filename}' is empty or unreadable."
+                return self._truncate_output(f"File '{self.filename}' is empty or unreadable.")
             
             total_lines = len(lines)
             
@@ -94,12 +94,10 @@ class FilePreviewTool(ToolBase):
                 output_lines.append(f"               and {tail_start}-{total_lines}")
             
             output = "\n".join(output_lines)
-            if len(output) > self.MAX_OUTPUT_CHARS:
-                output = output[:self.MAX_OUTPUT_CHARS] + "\n... (output truncated, too large)"
-            return output
+            return self._truncate_output(output)
             
         except Exception as e:
-            return f"Error previewing file '{self.filename}': {e}"
+            return self._truncate_output(f"Error previewing file '{self.filename}': {e}")
     
     def _read_file_lines(self, file_path: pathlib.Path) -> list:
         """Read file lines with proper error handling."""

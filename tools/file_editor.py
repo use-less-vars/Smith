@@ -128,11 +128,12 @@ class FileEditor(ToolBase):
             output += f"Total files processed: {len(target_files)}\n"
             output += f"Successful: {success_count}, Failed: {error_count}\n\n"
             output += "Detailed results:\n" + "\n".join(results)
-            return output
+            return self._truncate_output(output)
         else:
             # Single file: return the result directly (without filename prefix)
             # The result already includes filename in its message
-            return results[0].split(": ", 1)[1] if ": " in results[0] else results[0]
+            result = results[0].split(": ", 1)[1] if ": " in results[0] else results[0]
+            return self._truncate_output(result)
 
     # Helper methods that accept filename parameter
     def _execute_read(self, filename: str) -> str:

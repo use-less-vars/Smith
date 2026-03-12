@@ -276,9 +276,9 @@ class FieldViewer(ToolBase):
         try:
             # Validate file exists
             if not os.path.exists(self.file_path):
-                return f"Error: File '{self.file_path}' does not exist."
+                return self._truncate_output(f"Error: File '{self.file_path}' does not exist.")
             if not os.path.isfile(self.file_path):
-                return f"Error: '{self.file_path}' is not a file."
+                return self._truncate_output(f"Error: '{self.file_path}' is not a file.")
             
             # Read file content
             try:
@@ -290,18 +290,18 @@ class FieldViewer(ToolBase):
                     with open(self.file_path, 'r', encoding='latin-1') as f:
                         content = f.read()
                 except Exception as e:
-                    return f"Error reading file '{self.file_path}': {e}"
+                    return self._truncate_output(f"Error reading file '{self.file_path}': {e}")
             except Exception as e:
-                return f"Error reading file '{self.file_path}': {e}"
+                return self._truncate_output(f"Error reading file '{self.file_path}': {e}")
             
             # Parse with LibCST and metadata
             try:
                 module = cst.parse_module(content)
                 wrapper = cst.metadata.MetadataWrapper(module)
             except cst.ParserSyntaxError as e:
-                return f"Syntax error in file '{self.file_path}': {e}"
+                return self._truncate_output(f"Syntax error in file '{self.file_path}': {e}")
             except Exception as e:
-                return f"Failed to parse file '{self.file_path}': {e}"
+                return self._truncate_output(f"Failed to parse file '{self.file_path}': {e}")
             
             # Analyze imports
             import_analyzer = ImportAnalyzer()
@@ -320,17 +320,17 @@ class FieldViewer(ToolBase):
                     # Suggest closest matches
                     available = [m['name'] for m in models]
                     suggestion = self._suggest_closest(self.class_name, available)
-                    return f"Class '{self.class_name}' not found.{suggestion}"
+                    return self._truncate_output(f"Class '{self.class_name}' not found.{suggestion}")
                 models = matching_models
             
             # Prepare output based on format
             if self.format.lower() == 'json':
-                return self._format_json(models)
+                return self._truncate_output(self._format_json(models))
             else:
-                return self._format_text(models)
+                return self._truncate_output(self._format_text(models))
                 
         except Exception as e:
-            return f"Unexpected error in FieldViewer: {e}"
+            return self._truncate_output(f"Unexpected error in FieldViewer: {e}")
     
     def _suggest_closest(self, target: str, options: List[str]) -> str:
         """Suggest closest match from options."""

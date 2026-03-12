@@ -603,6 +603,8 @@ class Agent:
                             tool_args = arguments.copy()
                             if self.config.workspace_path is not None:
                                 tool_args['workspace_path'] = self.config.workspace_path
+                            if self.config.tool_output_token_limit is not None:
+                                tool_args['token_limit'] = self.config.tool_output_token_limit
                             tool_instance = tool_class(**tool_args)
                             tool_result = tool_instance.execute()
                             # Check if this is a Final tool

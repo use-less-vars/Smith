@@ -161,21 +161,21 @@ class CodeModifier(ToolBase):
             validated_path = self._validate_path(self.file_path)
             actual_path = validated_path
         except ValueError as e:
-            return f"Error: {e}"
+            return self._truncate_output(f"Error: {e}")
 
         if not os.path.exists(actual_path):
-            return f"Error: File {actual_path} does not exist."
+            return self._truncate_output(f"Error: File {actual_path} does not exist.")
 
         try:
             with open(actual_path, 'r', encoding='utf-8') as f:
                 source = f.read()
         except Exception as e:
-            return f"Error reading file: {e}"
+            return self._truncate_output(f"Error reading file: {e}")
 
         try:
             module = cst.parse_module(source)
         except Exception as e:
-            return f"Error parsing file: {e}"
+            return self._truncate_output(f"Error parsing file: {e}")
 
         if self.operation == "add_function":
             new_module, msg = self._add_function(module)
@@ -190,10 +190,10 @@ class CodeModifier(ToolBase):
         elif self.operation == "modify_function":
             new_module, msg = self._modify_function(module)
         else:
-            return f"Error: Unsupported operation {self.operation}"
+            return self._truncate_output(f"Error: Unsupported operation {self.operation}")
 
         if new_module is None:
-            return msg  # error message
+            return self._truncate_output(msg)  # error message
 
         # Write back
         new_source = new_module.code
@@ -201,9 +201,9 @@ class CodeModifier(ToolBase):
             with open(actual_path, 'w', encoding='utf-8') as f:
                 f.write(new_source)
         except Exception as e:
-            return f"Error writing file: {e}"
+            return self._truncate_output(f"Error writing file: {e}")
 
-        return f"Successfully performed {self.operation} on {self.file_path}. {msg}"
+        return self._truncate_output(f"Successfully performed {self.operation} on {self.file_path}. {msg}")
 
     # --------------------------------------------------------------------------
     # Helpers

@@ -60,18 +60,18 @@ class DirectoryTreeTool(ToolBase):
                 validated_path = self._validate_path(str(dir_path))
                 dir_path = pathlib.Path(validated_path)
             except ValueError as e:
-                return f"Error: {e}"
+                return self._truncate_output(f"Error: {e}")
             if not dir_path.exists():
-                return f"Error: Directory '{self.directory}' does not exist."
+                return self._truncate_output(f"Error: Directory '{self.directory}' does not exist.")
             if not dir_path.is_dir():
-                return f"Error: '{self.directory}' is not a directory."
+                return self._truncate_output(f"Error: '{self.directory}' is not a directory.")
 
             if self.format == 'list':
                 return self._execute_list_format(dir_path)
             else:
                 return self._execute_tree_format(dir_path)
         except Exception as e:
-            return f"Error generating directory tree: {e}"
+            return self._truncate_output(f"Error generating directory tree: {e}")
 
     
     def _build_tree(self, dir_path: pathlib.Path, current_depth: int) -> Dict[str, Any]:
@@ -346,7 +346,7 @@ class DirectoryTreeTool(ToolBase):
         summary = self._generate_summary(tree_data)
         output_lines.extend(summary)
 
-        return "\n".join(output_lines)
+        return self._truncate_output("\n".join(output_lines))
     def _collect_file_entries(self, dir_path: pathlib.Path) -> List[Tuple[str, int, float]]:
         """Collect file entries matching criteria, respecting max_results."""
         import os
@@ -399,7 +399,7 @@ class DirectoryTreeTool(ToolBase):
         entries = self._collect_file_entries(dir_path)
 
         if not entries:
-            return f"No files matching pattern '{self.pattern}' in directory '{self.directory}' (max_depth={self.max_depth})."
+            return self._truncate_output(f"No files matching pattern '{self.pattern}' in directory '{self.directory}' (max_depth={self.max_depth}).")
 
         # Sort entries
         if self.sort_by == 'name':
@@ -411,7 +411,7 @@ class DirectoryTreeTool(ToolBase):
             # Sort by modification time descending (newest first), unknown times last
             entries.sort(key=lambda x: (x[2] == -1, -x[2] if x[2] != -1 else 0))
         else:
-            return f"Error: Invalid sort_by value '{self.sort_by}'. Must be 'name', 'size', or 'modified'."
+            return self._truncate_output(f"Error: Invalid sort_by value '{self.sort_by}'. Must be 'name', 'size', or 'modified'.")
 
         # Build output lines
         lines = []
@@ -444,4 +444,4 @@ class DirectoryTreeTool(ToolBase):
         output = header + "\n" + "\n".join(lines)
         if truncated:
             output += f"\n... and more files (truncated, max_results={self.max_results})"
-        return output
+        return self._truncate_output(output)

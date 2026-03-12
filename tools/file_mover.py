@@ -88,12 +88,12 @@ class FileMover(ToolBase):
                 validated_destination = self._validate_path(str(destination))
                 destination = Path(validated_destination)
             except ValueError as e:
-                return f"Error: {e}"
+                return self._truncate_output(f"Error: {e}")
             
             # Expand sources
             sources = self._expand_sources()
             if not sources:
-                return "No files or directories matched the source specification."
+                return self._truncate_output("No files or directories matched the source specification.")
             
             # Validate all sources are within workspace
             validated_sources = []
@@ -102,13 +102,13 @@ class FileMover(ToolBase):
                     validated_path = self._validate_path(str(source))
                     validated_sources.append(Path(validated_path))
                 except ValueError as e:
-                    return f"Error: {e}"
+                    return self._truncate_output(f"Error: {e}")
             sources = validated_sources
             
             # Validate all sources exist before moving anything
             for source in sources:
                 if not source.exists():
-                    return f"Error: Source path '{source}' does not exist"
+                    return self._truncate_output(f"Error: Source path '{source}' does not exist")
             
             # Determine if this is a batch move (multiple sources)
             is_batch = len(sources) > 1
@@ -120,7 +120,7 @@ class FileMover(ToolBase):
                     destination.mkdir(parents=True, exist_ok=True)
                 # Ensure destination is a directory (or we will treat it as such)
                 if destination.exists() and not destination.is_dir():
-                    return f"Error: Destination '{destination}' exists and is not a directory (cannot move multiple items into a file)."
+                    return self._truncate_output(f"Error: Destination '{destination}' exists and is not a directory (cannot move multiple items into a file).")
             
             # If preserving structure and batch, compute common parent
             common_parent = None
@@ -163,10 +163,10 @@ class FileMover(ToolBase):
             # Generate success message
             if len(moved_items) == 1:
                 src, dest, typ = moved_items[0]
-                return f"Successfully moved {typ} from '{src}' to '{dest}'"
+                return self._truncate_output(f"Successfully moved {typ} from '{src}' to '{dest}'")
             else:
                 details = "\n".join([f"  - {typ}: '{src}' -> '{dest}'" for src, dest, typ in moved_items])
-                return f"Successfully moved {len(moved_items)} items:\n{details}"
+                return self._truncate_output(f"Successfully moved {len(moved_items)} items:\n{details}")
             
         except Exception as e:
-            return f"Error moving file(s): {e}"
+            return self._truncate_output(f"Error moving file(s): {e}")

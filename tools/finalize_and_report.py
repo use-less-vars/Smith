@@ -41,7 +41,7 @@ class FinalizeAndReport(Final):
             with open(filepath, 'w', encoding='utf-8') as f:
                 f.write(report_body)
         except Exception as e:
-            return f"Failed to write report: {e}"
+            return self._truncate_output(f"Failed to write report: {e}")
         
         # Return final message (content inherited from Final)
-        return self.content
+        return self._truncate_output(self.content)

@@ -18,23 +18,23 @@ class DirectoryCreator(ToolBase):
                 validated_path = self._validate_path(str(directory))
                 directory = Path(validated_path)
             except ValueError as e:
-                return f"Error: {e}"
+                return self._truncate_output(f"Error: {e}")
             
             # Check if directory already exists
             if directory.exists():
                 if self.exist_ok:
-                    return f"Directory '{self.directory_path}' already exists (exist_ok=True)"
+                    return self._truncate_output(f"Directory '{self.directory_path}' already exists (exist_ok=True)")
                 else:
-                    return f"Error: Directory '{self.directory_path}' already exists and exist_ok=False"
+                    return self._truncate_output(f"Error: Directory '{self.directory_path}' already exists and exist_ok=False")
             
             # Create the directory
             directory.mkdir(parents=self.parents, exist_ok=self.exist_ok)
             
             # Verify it was created
             if directory.exists():
-                return f"Successfully created directory '{self.directory_path}'"
+                return self._truncate_output(f"Successfully created directory '{self.directory_path}'")
             else:
-                return f"Error: Failed to create directory '{self.directory_path}'"
+                return self._truncate_output(f"Error: Failed to create directory '{self.directory_path}'")
                 
         except Exception as e:
-            return f"Error creating directory: {e}"
+            return self._truncate_output(f"Error creating directory: {e}")

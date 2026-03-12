@@ -262,7 +262,7 @@ class ApplyEdits(ToolBase):
         try:
             file_paths = self._get_file_paths()
         except ValueError as e:
-            return f"Error: {e}"
+            return self._truncate_output(f"Error: {e}")
         
         results = []
         diffs = []
@@ -283,6 +283,6 @@ class ApplyEdits(ToolBase):
         summary = f"Processed {len(file_paths)} file(s).\n" + "\n".join(results)
         if diffs:
             summary += "\n\nDiffs:\n" + "\n".join(diffs)
-        return summary
+        return self._truncate_output(summary)
 
 

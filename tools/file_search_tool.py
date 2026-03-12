@@ -231,9 +231,7 @@ class FileSearchTool(ToolBase):
                 header += f" in directory '{self.directory}'"
             header += f" (case_sensitive={self.case_sensitive}, max_results={self.max_results}):"
             output = header + "\n" + "\n".join(output_lines)
-            if len(output) > self.MAX_OUTPUT_CHARS:
-                output = output[:self.MAX_OUTPUT_CHARS] + "\n... (output truncated, too large)"
-            return output
+            return self._truncate_output(output)
             
         except Exception as e:
-            return f"Error searching files: {e}"
+            return self._truncate_output(f"Error searching files: {e}")

@@ -1,8 +1,10 @@
 # tools/base.py
 from pydantic import BaseModel, Field
-from typing import Literal, Any, Optional
+from typing import Literal, Any, Optional, ClassVar
 import os
 from pathlib import Path
+import tiktoken
+import sys
 
 class ToolBase(BaseModel):
     """
@@ -11,6 +13,7 @@ class ToolBase(BaseModel):
     They must implement execute() returning a string.
     """
     workspace_path: Optional[str] = Field(default=None, description="Root directory for file operations (None = unrestricted)")
+    token_limit: Optional[int] = Field(default=None, description="Maximum token limit for tool output (None = no limit)")
 
     def execute(self) -> str:
         raise NotImplementedError
@@ -18,6 +21,47 @@ class ToolBase(BaseModel):
     def model_dump_tool(self) -> dict:
         """Dump all fields except 'execute' method."""
         return self.model_dump(exclude={'execute'})
+    
+    def _estimate_tokens(self, text: str) -> int:
+        """Estimate token count for text using tiktoken."""
+        try:
+            # Use cl100k_base encoding (same as GPT-4, GPT-3.5-turbo)
+            encoding = tiktoken.get_encoding("cl100k_base")
+            return len(encoding.encode(text))
+        except Exception:
+            # Fallback approximation: ~4 chars per token
+            return len(text) // 4
+    
+    def _truncate_output(self, output: str, limit: Optional[int] = None) -> str:
+        """Truncate output to token limit if specified."""
+        if limit is None:
+            limit = self.token_limit
+        if limit is None or limit <= 0:
+            return output
+        
+        # Estimate tokens
+        estimated_tokens = self._estimate_tokens(output)
+        if estimated_tokens <= limit:
+            return output
+        
+        # Need to truncate - first get approximate character limit
+        # Average tokens per char ~ 0.25, but we need to be safe
+        # Use binary search to find proper truncation point
+        target_chars = int(limit * 4)  # Approximate upper bound
+        truncated = output[:target_chars]
+        
+        # Ensure we don't cut in middle of multi-byte char or line
+        # Find last newline before limit
+        last_newline = truncated.rfind('\n')
+        if last_newline > target_chars * 0.8:  # If we have a recent newline
+            truncated = truncated[:last_newline]
+        
+        # Re-estimate and adjust if still over limit
+        while self._estimate_tokens(truncated) > limit and len(truncated) > 10:
+            truncated = truncated[:-100]  # Remove 100 chars at a time
+        
+        # Add truncation notice
+        return truncated + f"\n... (output truncated to {limit} tokens, original was {estimated_tokens} tokens)"
 
     def _validate_path(self, path: str) -> str:
         """

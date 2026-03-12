@@ -23,9 +23,9 @@ class FileSummaryTool(ToolBase):
             # Resolve the file path
             file_path = pathlib.Path(self.filename)
             if not file_path.exists():
-                return f"Error: File '{self.filename}' does not exist."
+                return self._truncate_output(f"Error: File '{self.filename}' does not exist.")
             if not file_path.is_file():
-                return f"Error: '{self.filename}' is not a file."
+                return self._truncate_output(f"Error: '{self.filename}' is not a file.")
             
             # Read file content
             try:
@@ -37,9 +37,9 @@ class FileSummaryTool(ToolBase):
                     with open(file_path, 'r', encoding='latin-1') as f:
                         content = f.read()
                 except Exception as e:
-                    return f"Error reading file '{self.filename}': {e}"
+                    return self._truncate_output(f"Error reading file '{self.filename}': {e}")
             except Exception as e:
-                return f"Error reading file '{self.filename}': {e}"
+                return self._truncate_output(f"Error reading file '{self.filename}': {e}")
             
             # Get total line count
             total_lines = len(content.splitlines())
@@ -48,9 +48,9 @@ class FileSummaryTool(ToolBase):
             try:
                 tree = ast.parse(content, filename=str(file_path))
             except SyntaxError as e:
-                return f"Error parsing Python file '{self.filename}': {e}"
+                return self._truncate_output(f"Error parsing Python file '{self.filename}': {e}")
             except Exception as e:
-                return f"Error parsing file '{self.filename}': {e}"
+                return self._truncate_output(f"Error parsing file '{self.filename}': {e}")
             
             # Initialize results
             imports = []
@@ -191,11 +191,11 @@ class FileSummaryTool(ToolBase):
             output_lines.append(f"  Methods: {total_methods}")
             output_lines.append(f"  Functions: {len(functions)}")
             
-            return "\n".join(output_lines)
+            return self._truncate_output("\n".join(output_lines))
             
         except Exception as e:
             logger.exception(f"Error in FileSummaryTool: {e}")
-            return f"Error analyzing file '{self.filename}': {e}"
+            return self._truncate_output(f"Error analyzing file '{self.filename}': {e}")
     
     def _extract_function_args(self, func_node: ast.FunctionDef) -> Dict[str, Any]:
         """Extract function arguments information."""

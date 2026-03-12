@@ -12,4 +12,4 @@ class SummarizeTool(ToolBase):
     def execute(self) -> str:
         # The actual pruning will be handled by the agent upon detection of this tool.
         # Return a confirmation message.
-        return f"Summary tool called: will keep {self.keep_recent_turns} recent turns and insert summary."
+        return self._truncate_output(f"Summary tool called: will keep {self.keep_recent_turns} recent turns and insert summary.")

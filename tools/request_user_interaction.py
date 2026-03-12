@@ -8,4 +8,4 @@ class RequestUserInteraction(ToolBase):
 
     def execute(self) -> str:
         # Return the message; the agent controller will detect this tool and pause for user input
-        return self.message
+        return self._truncate_output(self.message)
