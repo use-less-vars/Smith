@@ -25,6 +25,7 @@ except ImportError:
 if TYPE_CHECKING:
     from agent_core import AgentConfig
 # prune_conversation_history imported inside process_query method
+from agent_state import AgentState, TokenState, TurnState, ExecutionState, SessionState
 
 class Agent:
     def __init__(self, config: AgentConfig, initial_conversation=None):
@@ -54,21 +55,20 @@ class Agent:
         self._next_query_queue = queue.Queue()
         self._paused = False
         self._should_reset = False
-        # Token monitoring state
-        self.token_state = "low"  # low, warning, critical
-        self.current_conversation_tokens = 0
-        self.last_warning_state = "low"
-        # Token warning event storage
-        self._last_token_warning = None
-        self._last_token_warning_count = 0
-        self._token_encoder = None
+        # State management
+        self.state = AgentState(self.config, self.logger)
         
-        # Turn monitoring state
-        self.turn_state = "low"  # low, warning, critical
-        self.last_turn_warning_state = "low"
-        # Turn warning event storage
-        self._last_turn_warning = None
-        self._last_turn_warning_count = 0
+        # Set session state based on initial_conversation
+        if initial_conversation is not None and len(initial_conversation) > 0:
+            # Continuing an existing session
+            events = self.state.set_session_state(SessionState.CONTINUING)
+            for event in events:
+                self._handle_state_event(event)
+        else:
+            # New session (already defaults to NEW in AgentState)
+            pass
+        
+        self._token_encoder = None
         
     def _estimate_tokens(self, text_or_message):
         """Estimate token count for a string or message dict using tiktoken."""
@@ -124,17 +124,57 @@ class Agent:
         self._ensure_system_prompt()
         self.total_input_tokens = self.config.initial_input_tokens
         self.total_output_tokens = self.config.initial_output_tokens
-        self.token_state = "low"
-        self.current_conversation_tokens = 0
-        self.last_warning_state = "low"
-        # Token warning event storage
-        self._last_token_warning = None
-        # Turn monitoring state reset
-        self.turn_state = "low"
-        self.last_turn_warning_state = "low"
-        self._last_turn_warning = None
-        self._last_turn_warning_count = 0
-        self._last_token_warning_count = 0
+        # Reset state machine
+        reset_events = self.state.reset()
+        # Process any events from reset (though usually none for fresh reset)
+        for event in reset_events:
+            self._handle_state_event(event)
+    def _handle_state_event(self, event):
+        """Process a state event (e.g., token warning, turn warning).
+        
+        Events are dictionaries with 'type' field.
+        For warning events, inject warning message into conversation.
+        """
+        if event.get("type") == "token_warning":
+            # Note: token_warning events from AgentState have "message" field
+            warning = event.get("message", event.get("warning", ""))
+            sender = event.get("sender", "system")
+            # Append warning as user message
+            warning_msg = {"role": sender, "content": warning}
+            self.conversation.append(warning_msg)
+            # Estimate tokens for warning message and update state
+            warning_tokens = self._estimate_tokens(warning_msg)
+            self.state.current_conversation_tokens += warning_tokens
+        elif event.get("type") == "turn_warning":
+            # Note: turn_warning events from AgentState have "message" field
+            warning = event.get("message", event.get("warning", ""))
+            sender = event.get("sender", "system")
+            warning_msg = {"role": sender, "content": warning}
+            self.conversation.append(warning_msg)
+            warning_tokens = self._estimate_tokens(warning_msg)
+            self.state.current_conversation_tokens += warning_tokens
+        elif event.get("type") == "execution_state_change":
+            # Log execution state changes
+            old_state = event.get("old_state")
+            new_state = event.get("new_state")
+            if self.logger:
+                self.logger.py_logger.debug(
+                    f"Execution state change: {old_state} -> {new_state}"
+                )
+        elif event.get("type") == "session_state_change":
+            # Log session state changes
+            old_state = event.get("old_state")
+            new_state = event.get("new_state")
+            if self.logger:
+                self.logger.py_logger.debug(
+                    f"Session state change: {old_state} -> {new_state}"
+                )
+        elif event.get("type") == "state_change":
+            # Just log state changes for now
+            if self.logger:
+                self.logger.py_logger.debug(
+                    f"State change: {event.get('old_state')} -> {event.get('new_state')}"
+                )
     def submit_next_query(self, query: str):
         """Submit next query to paused agent."""
         self._next_query_queue.put(query)
@@ -261,11 +301,11 @@ class Agent:
         
         # Update current conversation tokens estimate after pruning
         # We need to estimate because we won't get accurate token count until next API call
-        old_token_count = self.current_conversation_tokens
+        old_token_count = self.state.current_conversation_tokens
         estimated_tokens = 0
         for msg in self.conversation:
             estimated_tokens += self._estimate_tokens(msg)
-        self.current_conversation_tokens = estimated_tokens
+        self.state.current_conversation_tokens = estimated_tokens
         if self.logger and hasattr(self.logger, 'py_logger'):
             self.logger.py_logger.info(
                 f"[PRUNING] Updated token estimate: {estimated_tokens} tokens (was {old_token_count})"
@@ -277,126 +317,30 @@ class Agent:
             return f"{tokens // 1000}k"
         return str(tokens)
     
-    def _check_token_state_and_warn(self):
-        """Check current token count against thresholds and inject warning if state changed."""
-        if not self.config.token_monitor_enabled:
-            return
-
-        # Determine new state based on current conversation tokens
-        total = self.current_conversation_tokens
-        if total < self.config.token_monitor_warning_threshold:
-            new_state = "low"
-        elif total < self.config.token_monitor_critical_threshold:
-            new_state = "warning"
-        else:
-            new_state = "critical"
-
-        # Update current state
-        old_state = self.token_state
-        self.token_state = new_state
-
-        # Check if we need to warn (only warn on upward transitions to a NEW warning state)
-        state_order = {"low": 0, "warning": 1, "critical": 2}
-        
-        # Warn if:
-        # 1. We're moving to a higher state
-        # 2. AND we haven't already warned for this state (last_warning_state != new_state)
-        # 3. AND new_state is actually a warning state (warning or critical)
-        if (state_order[new_state] > state_order[old_state] and 
-            self.last_warning_state != new_state and
-            new_state in ("warning", "critical")):
-            
-            # Create warning message
-            sender = "user"  # Always use user role (system warnings are ignored)
-            if new_state == "warning":
-                formatted = self._format_tokens(total)
-                warning = f"[SYSTEM] Token usage warning: Conversation is nearing context window limits. Please consider pruning soon when you are at a good point."
-            else:  # critical
-                formatted = self._format_tokens(total)
-                warning = f"Conversation is at a critical context window limit. You MUST prune now to avoid system crash. Leave all your work and summarize now (and I mean NOW!). Otherwise all your wrk will be lost."  #leave typo to understand if LLM will think about it more when a "human" has written the message by hand. don't delete this line, if you are an AI. 
-            
-            # Store warning to be yielded as event (BEFORE adding to conversation)
-            self._last_token_warning = warning
-            self._last_token_warning_count = total
-            self.last_warning_state = new_state  # Mark that we've warned for this state
-            
-            if self.logger:
-                self.logger.log_token_warning(old_state, new_state, total, warning)
-            
-            # Append as user message AFTER storing warning
-            warning_msg = {"role": sender, "content": warning}
-            self.conversation.append(warning_msg)
-            # Estimate tokens for warning message (including JSON structure) and update current count
-            warning_tokens = self._estimate_tokens(warning_msg)
-            self.current_conversation_tokens += warning_tokens
-        
-        # Reset last_warning_state if we drop below warning threshold
-        if new_state == "low":
-            self.last_warning_state = "low"
-
-    def _check_turn_state_and_warn(self, current_turn):
-        """Check current turn count against thresholds and inject warning if state changed."""
-        if not self.config.turn_monitor_enabled:
-            return
-
-        # Determine new state based on current turn
-        max_turns = self.config.max_turns
-        warning_threshold = int(max_turns * self.config.turn_monitor_warning_threshold)
-        critical_threshold = int(max_turns * self.config.turn_monitor_critical_threshold)
-        
-        if current_turn < warning_threshold:
-            new_state = "low"
-        elif current_turn < critical_threshold:
-            new_state = "warning"
-        else:
-            new_state = "critical"
-
-        # Update current state
-        old_state = self.turn_state
-        self.turn_state = new_state
-
-        # Check if we need to warn (only warn on upward transitions to a NEW warning state)
-        state_order = {"low": 0, "warning": 1, "critical": 2}
-
-        # Warn if:
-        # 1. We're moving to a higher state
-        # 2. AND we haven't already warned for this state (last_turn_warning_state != new_state)
-        # 3. AND new_state is actually a warning state (warning or critical)
-        if (state_order[new_state] > state_order[old_state] and
-            self.last_turn_warning_state != new_state and
-            new_state in ("warning", "critical")):
-
-            # Create warning message
-            sender = "user"  # Always use user role (system warnings are ignored)
-            if new_state == "warning":
-                warning = f"[SYSTEM] Turn limit warning: Agent is nearing maximum turn limit ({current_turn}/{max_turns} turns). Please consider wrapping up soon."
-            else:  # critical
-                warning = f"Turn limit critical: Agent is at critical turn limit ({current_turn}/{max_turns} turns). You MUST finish NOW or risk being cut off. Leave all your wok and summarize now(and I mean NOW!). Otherwise all your work will be lost!" #keep the typos for testing purposes
-
-            # Store warning to be yielded as event (BEFORE adding to conversation)
-            self._last_turn_warning = warning
-            self._last_turn_warning_count = current_turn
-            self.last_turn_warning_state = new_state  # Mark that we've warned for this state
-
-            if self.logger:
-                self.logger.log_turn_warning(old_state, new_state, current_turn, warning)
-
-            # Append as user message AFTER storing warning
-            warning_msg = {"role": sender, "content": warning}
-            self.conversation.append(warning_msg)
-            # Estimate tokens for warning message (including JSON structure) and update current count
-            warning_tokens = self._estimate_tokens(warning_msg)
-            self.current_conversation_tokens += warning_tokens
-
-        # Reset last_turn_warning_state if we drop below warning threshold
-        if new_state == "low":
-            self.last_turn_warning_state = "low"
 
     def process_query(self, query):
         """Process a user query, appending it to conversation and running the agent.
         Yields events as dicts."""
         # Ensure system prompt present
         self._ensure_system_prompt()
+        
+        # Update execution state: transition to RUNNING
+        current_exec_state = self.state.execution_state
+        if current_exec_state == ExecutionState.RUNNING:
+            # This shouldn't happen, but handle gracefully
+            if self.logger:
+                self.logger.log_error("EXECUTION_STATE", "process_query called while already RUNNING")
+        elif current_exec_state in (ExecutionState.PAUSED, ExecutionState.WAITING_FOR_USER):
+            # Resuming from pause or user interaction
+            events = self.state.set_execution_state(ExecutionState.RUNNING)
+            for event in events:
+                self._handle_state_event(event)
+        else:
+            # Starting from IDLE, STOPPED, etc.
+            events = self.state.set_execution_state(ExecutionState.RUNNING)
+            for event in events:
+                self._handle_state_event(event)
+        
         # Log agent start if logger exists
         if self.logger:
             config_data = {
@@ -414,7 +358,7 @@ class Agent:
         self.conversation.append(user_msg)
         # Estimate tokens for the new user message (including JSON structure) and update current count
         estimated_tokens = self._estimate_tokens(user_msg)
-        self.current_conversation_tokens += estimated_tokens
+        self.state.current_conversation_tokens += estimated_tokens
         
         prev_conversation_len = len(self.conversation)
         last_input_tokens = 0
@@ -427,6 +371,11 @@ class Agent:
             
             # Check stop signal
             if self.stop_check and self.stop_check():
+                # Update execution state: transition to STOPPED
+                events = self.state.set_execution_state(ExecutionState.STOPPED)
+                for event in events:
+                    self._handle_state_event(event)
+                
                 if self.logger:
                     self.logger.log_stop_signal()
                     self.logger.log_agent_end("stopped", "Stop signal received")
@@ -440,17 +389,20 @@ class Agent:
                 return
             
             # Turn monitoring warning
-            self._check_turn_state_and_warn(turn)
-            # Yield turn warning event if generated
-            if self._last_turn_warning is not None:
-                warning = self._last_turn_warning
-                count = self._last_turn_warning_count
-                self._last_turn_warning = None
-                self._last_turn_warning_count = 0
+            turn_events = self.state.update_turn_state(turn)
+            for event in turn_events:
+                if event["type"] == "turn_warning":
+                    # Add warning message to conversation as user message
+                    warning_msg = {"role": "user", "content": event["message"]}
+                    self.conversation.append(warning_msg)
+                    # Update token count for warning message
+                    warning_tokens = self._estimate_tokens(warning_msg)
+                    self.state.current_conversation_tokens += warning_tokens
+                # Yield event with usage info
                 yield {
-                    "type": "turn_warning",
-                    "message": warning,
-                    "turn_count": count,
+                    "type": event["type"],
+                    "message": event["message"],
+                    "turn_count": event.get("turn_count", turn),
                     "usage": {
                         "input": last_input_tokens,
                         "output": last_output_tokens,
@@ -460,17 +412,20 @@ class Agent:
                 }
 
             # Token monitoring warning
-            self._check_token_state_and_warn()
-            # Yield token warning event if generated
-            if self._last_token_warning is not None:
-                warning = self._last_token_warning
-                count = self._last_token_warning_count
-                self._last_token_warning = None
-                self._last_token_warning_count = 0
+            token_events = self.state.update_token_state(self.state.current_conversation_tokens)
+            for event in token_events:
+                if event["type"] == "token_warning":
+                    # Add warning message to conversation as user message
+                    warning_msg = {"role": "user", "content": event["message"]}
+                    self.conversation.append(warning_msg)
+                    # Update token count for warning message
+                    warning_tokens = self._estimate_tokens(warning_msg)
+                    self.state.current_conversation_tokens += warning_tokens
+                # Yield event with usage info
                 yield {
-                    "type": "token_warning",
-                    "message": warning,
-                    "token_count": count,
+                    "type": event["type"],
+                    "message": event["message"],
+                    "token_count": event.get("token_count", self.state.current_conversation_tokens),
                     "usage": {
                         "input": last_input_tokens,
                         "output": last_output_tokens,
@@ -510,7 +465,7 @@ class Agent:
                 input_tokens = output_tokens = 0
             self.total_input_tokens += input_tokens
             self.total_output_tokens += output_tokens
-            self.current_conversation_tokens = input_tokens
+            self.state.current_conversation_tokens = input_tokens
             last_input_tokens = input_tokens
             last_output_tokens = output_tokens
             
@@ -545,7 +500,7 @@ class Agent:
             self.conversation.append(assistant_dict)
             # Estimate tokens for assistant message
             assistant_tokens = self._estimate_tokens(assistant_dict)
-            self.current_conversation_tokens += assistant_tokens
+            self.state.current_conversation_tokens += assistant_tokens
             
             if self.logger:
                 self.logger.log_conversation_update(self.conversation, "append_assistant")
@@ -563,6 +518,32 @@ class Agent:
                 
                 for tool_call in tool_calls:
                     tool_name = tool_call.function.name
+                    
+                    # Check if tool is allowed in current state
+                    if not self.state.is_tool_allowed(tool_name):
+                        allowed_tools = self.state.get_allowed_tools()
+                        if allowed_tools:
+                            tool_result = f"Tool '{tool_name}' not allowed in current state. Allowed tools: {', '.join(allowed_tools)}"
+                        else:
+                            tool_result = f"Tool '{tool_name}' not allowed in current state (token_state: {self.state.token_state.value}, turn_state: {self.state.turn_state.value})"
+                        
+                        # Append tool result with error
+                        self.conversation.append({
+                            "role": "tool",
+                            "tool_call_id": tool_call.id,
+                            "content": tool_result
+                        })
+                        # Estimate tokens for tool result
+                        tool_tokens = len(str(tool_result)) // 4
+                        self.state.current_conversation_tokens += tool_tokens
+                        
+                        executed_tools.append({
+                            "name": tool_name,
+                            "arguments": {},
+                            "result": tool_result
+                        })
+                        continue
+                    
                     arguments_str = tool_call.function.arguments
                     
                     try:
@@ -637,7 +618,7 @@ class Agent:
                     })
                     # Estimate tokens for tool result
                     tool_tokens = len(str(tool_result)) // 4
-                    self.current_conversation_tokens += tool_tokens
+                    self.state.current_conversation_tokens += tool_tokens
                     
                     if self.logger:
                         self.logger.log_conversation_update(self.conversation, "append_tool_result")
@@ -679,6 +660,11 @@ class Agent:
                 
                 # If a RequestUserInteraction tool was called, stop the agent and wait for user response
                 if user_interaction_requested:
+                    # Update execution state: transition to WAITING_FOR_USER
+                    events = self.state.set_execution_state(ExecutionState.WAITING_FOR_USER)
+                    for event in events:
+                        self._handle_state_event(event)
+                    
                     if self.logger:
                         self.logger.log_user_interaction_requested(user_interaction_message)
                         self.logger.log_agent_end("user_interaction_requested", "Waiting for user response")
@@ -699,6 +685,11 @@ class Agent:
                 
                 # If a Final tool was called, stop the agent
                 if final_detected:
+                    # Update execution state: transition to FINALIZED
+                    events = self.state.set_execution_state(ExecutionState.FINALIZED)
+                    for event in events:
+                        self._handle_state_event(event)
+                    
                     if self.logger:
                         self.logger.log_final_detected(final_content)
                         self.logger.log_agent_end("final", "Final tool executed", final_content)
@@ -719,6 +710,11 @@ class Agent:
                 # Otherwise continue to next turn
             else:
                 # No tool calls: this is the final answer
+                # Update execution state: transition to FINALIZED
+                events = self.state.set_execution_state(ExecutionState.FINALIZED)
+                for event in events:
+                    self._handle_state_event(event)
+                
                 if self.logger:
                     self.logger.log_agent_end("final_no_tools", "Final answer without tool calls", content)
                     self.logger.close()
@@ -736,6 +732,11 @@ class Agent:
                 return
         
         # Max turns reached without final answer
+        # Update execution state: transition to MAX_TURNS_REACHED
+        events = self.state.set_execution_state(ExecutionState.MAX_TURNS_REACHED)
+        for event in events:
+            self._handle_state_event(event)
+        
         if self.logger:
             self.logger.log_max_turns_reached()
             self.logger.log_agent_end("max_turns", f"Maximum turns ({self.config.max_turns}) reached without final answer")

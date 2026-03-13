@@ -54,6 +54,8 @@ class LogEventType(Enum):
     FINAL_DETECTED = "final_detected"
     STOP_SIGNAL = "stop_signal"
     MAX_TURNS_REACHED = "max_turns_reached"
+    EXECUTION_STATE_CHANGE = "execution_state_change"
+    SESSION_STATE_CHANGE = "session_state_change"
     ERROR = "error"
 
 
@@ -522,6 +524,32 @@ class AgentLogger:
             LogLevel.WARNING,
             f"Maximum turns ({self.config.max_turns}) reached",
             {"max_turns": self.config.max_turns},
+            self.current_turn
+        )
+    
+    def log_execution_state_change(self, old_state: str, new_state: str):
+        """Log execution state change."""
+        self._log_event(
+            LogEventType.EXECUTION_STATE_CHANGE,
+            LogLevel.DEBUG,
+            f"Execution state changed: {old_state} -> {new_state}",
+            {
+                "old_state": old_state,
+                "new_state": new_state
+            },
+            self.current_turn
+        )
+    
+    def log_session_state_change(self, old_state: str, new_state: str):
+        """Log session state change."""
+        self._log_event(
+            LogEventType.SESSION_STATE_CHANGE,
+            LogLevel.DEBUG,
+            f"Session state changed: {old_state} -> {new_state}",
+            {
+                "old_state": old_state,
+                "new_state": new_state
+            },
             self.current_turn
         )
     
