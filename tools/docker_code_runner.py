@@ -1,7 +1,10 @@
 # tools/docker_code_runner.py
+import json
 import os
 import time
-from typing import Literal, Optional, Dict
+import datetime
+import uuid
+from typing import Literal, Optional, Dict, Any
 from pydantic import Field
 from .base import ToolBase
 
@@ -37,6 +40,30 @@ class DockerCodeRunner(ToolBase):
     - Read/write access to all project files
     - Environment variable support
     - Working directory specification
+    
+    Output format:
+    Returns JSON with structure:
+    {
+      "success": bool,
+      "exit_code": int,
+      "stdout": str,
+      "stderr": str,
+      "command": str,
+      "duration": float,
+      "timed_out": bool,
+      "error": str (optional)
+    }
+    
+    Template variables:
+    Command supports template variables using {variable_name} syntax.
+    Built-in variables:
+    - {workspace}: Workspace directory path
+    - {timestamp}: ISO timestamp
+    - {date}: Current date (YYYY-MM-DD)
+    - {time}: Current time (HH:MM:SS)
+    - {random_id}: Random 8-character hex string
+    
+    User variables can be provided via the 'variables' parameter.
     """
     tool: Literal["DockerCodeRunner"] = "DockerCodeRunner"
     
@@ -75,11 +102,75 @@ class DockerCodeRunner(ToolBase):
         default=50000,
         description="CPU quota in microseconds (default 50000 = 50ms per 100ms period)"
     )
+    variables: Optional[Dict[str, str]] = Field(
+        default=None,
+        description="Template variables to substitute in command. Format: {'name': 'value'}"
+    )
+    
+    def _substitute_variables(self, command: str) -> str:
+        """Substitute template variables in command string."""
+        # Built-in variables
+        builtins = {
+            "workspace": self.workspace_path or os.getcwd(),
+            "timestamp": datetime.datetime.now().isoformat(),
+            "date": datetime.datetime.now().strftime("%Y-%m-%d"),
+            "time": datetime.datetime.now().strftime("%H:%M:%S"),
+            "random_id": uuid.uuid4().hex[:8],
+        }
+        
+        # Start with builtins
+        variables = builtins.copy()
+        
+        # Add user variables if provided
+        if self.variables:
+            variables.update(self.variables)
+        
+        # Perform substitution
+        result = command
+        for var_name, var_value in variables.items():
+            placeholder = "{" + var_name + "}"
+            result = result.replace(placeholder, str(var_value))
+        
+        return result
+    
+    def _build_json_response(
+        self,
+        success: bool,
+        exit_code: int = 0,
+        stdout: str = "",
+        stderr: str = "",
+        command: str = "",
+        duration: float = 0.0,
+        error: str = "",
+        timed_out: bool = False
+    ) -> str:
+        """Build structured JSON response for Docker execution."""
+        response = {
+            "success": success,
+            "exit_code": exit_code,
+            "stdout": stdout,
+            "stderr": stderr,
+            "command": command,
+            "duration": duration,
+            "timed_out": timed_out,
+            "error": error
+        }
+        # Remove empty optional fields
+        if not error:
+            response.pop("error")
+        return json.dumps(response, indent=2)
     
     def execute(self) -> str:
+        start_time = time.time()
+        duration = 0.0
+        
         if not DOCKER_AVAILABLE:
-            return self._truncate_output(
-                "Error: Docker Python SDK not installed. Install with 'pip install docker'."
+            duration = time.time() - start_time
+            return self._build_json_response(
+                success=False,
+                exit_code=-1,
+                error="Docker Python SDK not installed. Install with 'pip install docker'.",
+                duration=duration
             )
         
         # Validate workspace path
@@ -94,8 +185,12 @@ class DockerCodeRunner(ToolBase):
             # Ensure working_dir is safe (no path traversal)
             rel_path = os.path.normpath(self.working_dir)
             if rel_path.startswith("..") or os.path.isabs(rel_path):
-                return self._truncate_output(
-                    f"Error: working_dir '{self.working_dir}' must be relative to workspace and not traverse upwards."
+                duration = time.time() - start_time
+                return self._build_json_response(
+                    success=False,
+                    exit_code=-1,
+                    error=f"working_dir '{self.working_dir}' must be relative to workspace and not traverse upwards.",
+                    duration=duration
                 )
             workdir = os.path.join("/workspace", rel_path)
         
@@ -106,8 +201,24 @@ class DockerCodeRunner(ToolBase):
             sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)) + '/..')
             from docker_executor import DockerExecutor
         except ImportError as e:
-            return self._truncate_output(
-                f"Error: Could not import DockerExecutor: {e}. Make sure docker package is installed and docker_executor.py exists."
+            duration = time.time() - start_time
+            return self._build_json_response(
+                success=False,
+                exit_code=-1,
+                error=f"Could not import DockerExecutor: {e}. Make sure docker package is installed and docker_executor.py exists.",
+                duration=duration
+            )
+        
+        # Substitute variables in command
+        try:
+            actual_command = self._substitute_variables(self.command)
+        except Exception as e:
+            duration = time.time() - start_time
+            return self._build_json_response(
+                success=False,
+                exit_code=-1,
+                error=f"Failed to substitute variables in command: {e}",
+                duration=duration
             )
         
         try:
@@ -122,29 +233,55 @@ class DockerCodeRunner(ToolBase):
             
             # Execute command with optional environment and working directory
             stdout, stderr, exit_code = executor.execute(
-                command=self.command,
+                command=actual_command,
                 timeout=self.timeout,
                 workdir=workdir,
                 environment=self.environment
             )
             
-            # Format output
-            result_lines = []
-            result_lines.append(f"Command: {self.command}")
-            result_lines.append(f"Exit code: {exit_code}")
-            if stdout:
-                result_lines.append("--- stdout ---")
-                result_lines.append(stdout.rstrip())
-            if stderr:
-                result_lines.append("--- stderr ---")
-                result_lines.append(stderr.rstrip())
+            duration = time.time() - start_time
             
-            return self._truncate_output("\n".join(result_lines))
+            # Check for timeout (docker_executor returns -2 for timeout)
+            timed_out = exit_code == -2
+            # Also check stderr for timeout message as additional safeguard
+            if not timed_out and "timed out" in stderr.lower():
+                timed_out = True
+            
+            return self._build_json_response(
+                success=exit_code == 0,
+                exit_code=exit_code,
+                stdout=stdout,
+                stderr=stderr,
+                command=actual_command,
+                duration=duration,
+                timed_out=timed_out
+            )
             
         except DockerException as e:
-            return self._truncate_output(f"Docker error: {e}")
+            duration = time.time() - start_time
+            return self._build_json_response(
+                success=False,
+                exit_code=-1,
+                error=f"Docker error: {e}",
+                duration=duration
+            )
+        except TimeoutError as e:
+            duration = time.time() - start_time
+            return self._build_json_response(
+                success=False,
+                exit_code=-2,
+                error=f"Command timed out after {self.timeout} seconds",
+                duration=duration,
+                timed_out=True
+            )
         except Exception as e:
-            return self._truncate_output(f"Unexpected error: {e}")
+            duration = time.time() - start_time
+            return self._build_json_response(
+                success=False,
+                exit_code=-1,
+                error=f"Unexpected error: {e}",
+                duration=duration
+            )
     
     def _build_image(self, client, image_name):
         """Build Docker image from docker/executor.Dockerfile"""

@@ -7,7 +7,7 @@ from .final import Final
 
 
 class FinalizeAndReport(Final):
-    """Write a timestamped report into ./reports folder and finalize. The agent stops after execution. Use when you want to provide a final answer and save detailed work to a report file."""
+    """Write a timestamped report into ./reports folder and finalize after having performed work. The agent stops after execution. Use when you want to provide a final answer and save detailed work to a report file."""
     content: str = Field(default="Report written successfully.", description="The final answer text")
     report_body: Optional[str] = Field(default=None, description="The body/content of the report to write to file. If not provided, defaults to the content field.")
     report_title: Optional[str] = Field(default=None, description="Optional title for the report file name")

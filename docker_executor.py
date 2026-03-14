@@ -2,6 +2,8 @@ import docker
 import hashlib
 import os
 import time
+import threading
+import queue
 
 class DockerExecutor:
     def __init__(self, workspace_path, image="agent-executor",
@@ -69,6 +71,9 @@ class DockerExecutor:
             stdout = output[0].decode() if output[0] else ""
             stderr = output[1].decode() if output[1] else ""
             return stdout, stderr, exit_code
+        except TimeoutError as e:
+            # Timeout occurred - container was killed and recreated
+            return "", f"Command timed out after {timeout} seconds", -2
         except docker.errors.APIError as e:
             return "", str(e), -1
 
@@ -82,8 +87,7 @@ class DockerExecutor:
             self.container = None
 
     def _exec_with_timeout(self, command, timeout=30, workdir="/workspace", environment=None):
-        """Execute command with timeout support, trying multiple approaches."""
-        # Approach 1: exec_run with timeout (docker-py >= 4.0)
+        """Execute command with timeout support using threading."""
         exec_kwargs = {
             "cmd": ["/bin/sh", "-c", command],
             "demux": True,
@@ -92,23 +96,46 @@ class DockerExecutor:
         if environment:
             exec_kwargs["environment"] = environment
 
-        try:
-            # Try with timeout parameter
-            exec_kwargs_with_timeout = exec_kwargs.copy()
-            exec_kwargs_with_timeout["timeout"] = timeout
-            exit_code, output = self.container.exec_run(**exec_kwargs_with_timeout)
-            return exit_code, output
-        except TypeError as e:
-            if "timeout" in str(e):
-                # Timeout parameter not supported, fallback without timeout
-                if not self._timeout_warning_printed:
-                    print(f"Warning: Docker Python SDK version does not support timeout parameter. "
-                          f"Command may hang indefinitely. Consider upgrading docker-py: pip install --upgrade docker")
-                    self._timeout_warning_printed = True
+        # Use a queue to pass result from thread
+        result_queue = queue.Queue()
+        
+        def run_exec():
+            try:
                 exit_code, output = self.container.exec_run(**exec_kwargs)
-                return exit_code, output
-            else:
-                raise
+                result_queue.put((exit_code, output, None))
+            except Exception as e:
+                result_queue.put((None, None, e))
+        
+        # Start thread
+        exec_thread = threading.Thread(target=run_exec)
+        exec_thread.daemon = True
+        exec_thread.start()
+        
+        # Wait for thread to complete with timeout
+        exec_thread.join(timeout)
+        
+        if exec_thread.is_alive():
+            # Timeout occurred - try to kill the container to stop the command
+            try:
+                if self.container:
+                    self.container.kill()
+                    self.container = None
+            except Exception:
+                pass
+            # Recreate container for future use
+            self._ensure_container()
+            raise TimeoutError(f"Command timed out after {timeout} seconds")
+        
+        # Get result from queue
+        if result_queue.empty():
+            # Thread finished but didn't put result (shouldn't happen)
+            raise RuntimeError("Execution thread finished but no result")
+        
+        exit_code, output, error = result_queue.get()
+        if error:
+            raise error
+        
+        return exit_code, output
     def __del__(self):
         self.close()
     def _ensure_image(self):
