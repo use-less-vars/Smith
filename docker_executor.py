@@ -4,18 +4,23 @@ import os
 import time
 
 class DockerExecutor:
-    def __init__(self, workspace_path, image="agent-executor", 
-                 network="none", mem_limit="512m", cpu_quota=50000):
+    def __init__(self, workspace_path, image="agent-executor",
+                 network="none", mem_limit="512m", cpu_quota=50000, force_rebuild=False):
         self.workspace_path = os.path.abspath(workspace_path)
         self.image = image
         self.network = network
         self.mem_limit = mem_limit
         self.cpu_quota = cpu_quota
+        self.force_rebuild = force_rebuild
         self.client = docker.from_env()
         self.container = None
         self.last_used = time.time()
+        self._timeout_warning_printed = False
 
     def _ensure_container(self):
+        # Ensure the Docker image exists
+        self._ensure_image()
+        
         if self.container:
             try:
                 self.container.reload()
@@ -51,15 +56,15 @@ class DockerExecutor:
             )
         self.last_used = time.time()
 
-    def execute(self, command, timeout=30):
+    def execute(self, command, timeout=30, workdir="/workspace", environment=None):
         self._ensure_container()
         self.last_used = time.time()
         try:
-            exit_code, output = self.container.exec_run(
-                ["/bin/sh", "-c", command],
-                demux=True,
-                workdir="/workspace",
-                timeout=timeout
+            exit_code, output = self._exec_with_timeout(
+                command=command,
+                timeout=timeout,
+                workdir=workdir,
+                environment=environment
             )
             stdout = output[0].decode() if output[0] else ""
             stderr = output[1].decode() if output[1] else ""
@@ -76,5 +81,69 @@ class DockerExecutor:
                 pass
             self.container = None
 
+    def _exec_with_timeout(self, command, timeout=30, workdir="/workspace", environment=None):
+        """Execute command with timeout support, trying multiple approaches."""
+        # Approach 1: exec_run with timeout (docker-py >= 4.0)
+        exec_kwargs = {
+            "cmd": ["/bin/sh", "-c", command],
+            "demux": True,
+            "workdir": workdir,
+        }
+        if environment:
+            exec_kwargs["environment"] = environment
+
+        try:
+            # Try with timeout parameter
+            exec_kwargs_with_timeout = exec_kwargs.copy()
+            exec_kwargs_with_timeout["timeout"] = timeout
+            exit_code, output = self.container.exec_run(**exec_kwargs_with_timeout)
+            return exit_code, output
+        except TypeError as e:
+            if "timeout" in str(e):
+                # Timeout parameter not supported, fallback without timeout
+                if not self._timeout_warning_printed:
+                    print(f"Warning: Docker Python SDK version does not support timeout parameter. "
+                          f"Command may hang indefinitely. Consider upgrading docker-py: pip install --upgrade docker")
+                    self._timeout_warning_printed = True
+                exit_code, output = self.container.exec_run(**exec_kwargs)
+                return exit_code, output
+            else:
+                raise
     def __del__(self):
         self.close()
+    def _ensure_image(self):
+        """Build Docker image if it doesn't exist locally or force_rebuild is True."""
+        if self.force_rebuild:
+            self.close()
+            self._build_image()
+            return
+        try:
+            self.client.images.get(self.image)
+            return
+        except docker.errors.ImageNotFound:
+            pass
+        self._build_image()
+    
+    def _build_image(self):
+        """Build Docker image from docker/executor.Dockerfile."""
+        dockerfile_dir = os.path.join(os.path.dirname(__file__), "docker")
+        if not os.path.exists(dockerfile_dir):
+            dockerfile_dir = os.path.join(self.workspace_path, "docker")
+        dockerfile_path = os.path.join(dockerfile_dir, "executor.Dockerfile")
+        if not os.path.exists(dockerfile_path):
+            raise RuntimeError(f"Dockerfile not found at {dockerfile_path}")
+
+        print(f"Building Docker image {self.image} from {dockerfile_path}")
+        image, build_logs = self.client.images.build(
+            path=dockerfile_dir,
+            dockerfile="executor.Dockerfile",
+            tag=self.image,
+            rm=True,
+            pull=False
+        )
+        for chunk in build_logs:
+            if "stream" in chunk:
+                line = chunk["stream"].strip()
+                if line:
+                    print(f"Build: {line}")
+        return image
