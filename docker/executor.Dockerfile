@@ -5,6 +5,9 @@ FROM python:3.11-slim
 COPY requirements.txt /tmp/requirements.txt
 RUN pip install --no-cache-dir -r /tmp/requirements.txt
 
+# Install git
+RUN apt-get update && apt-get install -y git && apt-get clean
+
 # Create a non-root user (UID 1000, can be changed)
 RUN useradd -m -u 1000 agent && \
     mkdir /workspace && chown agent:agent /workspace

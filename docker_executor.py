@@ -176,14 +176,19 @@ class DockerExecutor:
     
     def _build_image(self):
         """Build Docker image from docker/executor.Dockerfile."""
-        dockerfile_dir = os.path.join(os.path.dirname(__file__), "docker")
-        if not os.path.exists(dockerfile_dir):
-            dockerfile_dir = os.path.join(self.workspace_path, "docker")
-        dockerfile_path = os.path.join(dockerfile_dir, "executor.Dockerfile")
+        dockerfile_dir = self.workspace_path
+        dockerfile_path = os.path.join(dockerfile_dir, "docker", "executor.Dockerfile")
         if not os.path.exists(dockerfile_path):
             raise RuntimeError(f"Dockerfile not found at {dockerfile_path}")
 
+        import os
         print(f"Building Docker image {self.image} from {dockerfile_path}")
+        print(f"Build context directory: {dockerfile_dir}")
+        print(f"Absolute path: {os.path.abspath(dockerfile_dir)}")
+        print(f"Requirements.txt exists: {os.path.exists(os.path.join(dockerfile_dir, 'requirements.txt'))}")
+        print(f"Files in build context:")
+        for f in os.listdir(dockerfile_dir):
+            print(f"  {f}")
         image, build_logs = self.client.images.build(
             path=dockerfile_dir,
             dockerfile="executor.Dockerfile",
