@@ -429,6 +429,7 @@ class AgentControlsPanel(QGroupBox):
         config["workspace_path"] = workspace_path
         config["tool_output_limit"] = self.tool_output_limit_spinbox.value()
         config["model"] = self.model_combo.currentText()
+        config["detail"] = self.detail_combo.currentText()
         config["enabled_tools"] = [name for name, cb in self.tool_checkboxes.items() if cb.isChecked()]
         return config
     
@@ -468,6 +469,11 @@ class AgentControlsPanel(QGroupBox):
             index = self.model_combo.findText(config["model"])
             if index >= 0:
                 self.model_combo.setCurrentIndex(index)
+        # Detail level
+        if "detail" in config:
+            index = self.detail_combo.findText(config["detail"])
+            if index >= 0:
+                self.detail_combo.setCurrentIndex(index)
         # Enabled tools
         if "enabled_tools" in config:
             enabled_names = set(config["enabled_tools"])
@@ -777,19 +783,19 @@ class AgentGUI(QMainWindow):
         self.agent_controls_panel.set_workspace_btn.clicked.connect(self.set_workspace)
         self.agent_controls_panel.clear_workspace_btn.clicked.connect(self.clear_workspace)
         
-        # Connect all controls to auto-save configuration
-        self.agent_controls_panel.temperature_spinbox.valueChanged.connect(self._schedule_config_save)
-        self.agent_controls_panel.max_turns_spinbox.valueChanged.connect(self._schedule_config_save)
-        self.agent_controls_panel.tool_output_limit_spinbox.valueChanged.connect(self._schedule_config_save)
-        self.agent_controls_panel.model_combo.currentTextChanged.connect(self._schedule_config_save)
-        self.agent_controls_panel.detail_combo.currentTextChanged.connect(self._schedule_config_save)
-        self.agent_controls_panel.token_monitor_checkbox.stateChanged.connect(self._schedule_config_save)
-        self.agent_controls_panel.warning_threshold_spinbox.valueChanged.connect(self._schedule_config_save)
-        self.agent_controls_panel.critical_threshold_spinbox.valueChanged.connect(self._schedule_config_save)
+        # Connect all controls to configuration update
+        self.agent_controls_panel.temperature_spinbox.valueChanged.connect(self._handle_config_change)
+        self.agent_controls_panel.max_turns_spinbox.valueChanged.connect(self._handle_config_change)
+        self.agent_controls_panel.tool_output_limit_spinbox.valueChanged.connect(self._handle_config_change)
+        self.agent_controls_panel.model_combo.currentTextChanged.connect(self._handle_config_change)
+        self.agent_controls_panel.detail_combo.currentTextChanged.connect(self._handle_config_change)
+        self.agent_controls_panel.token_monitor_checkbox.stateChanged.connect(self._handle_config_change)
+        self.agent_controls_panel.warning_threshold_spinbox.valueChanged.connect(self._handle_config_change)
+        self.agent_controls_panel.critical_threshold_spinbox.valueChanged.connect(self._handle_config_change)
         
         # Connect tool checkboxes
         for checkbox in self.agent_controls_panel.tool_checkboxes.values():
-            checkbox.stateChanged.connect(self._schedule_config_save)
+            checkbox.stateChanged.connect(self._handle_config_change)
         
         # Add a stretch before the agent output area
         right_layout.addStretch(1)
@@ -1222,6 +1228,19 @@ class AgentGUI(QMainWindow):
         except Exception as e:
             print(f"[GUI] Error saving config: {e}")
     
+    def _handle_config_change(self):
+        """Handle configuration change from UI controls."""
+        # Skip if we're loading config (to avoid duplicate updates)
+        if self._loading_config:
+            return
+        
+        # Get current config from controls panel
+        config = self.agent_controls_panel.get_config_dict()
+        # Update presenter config
+        self.presenter.update_config(config)
+        # Schedule save to ConfigService
+        self._schedule_config_save()
+        
     def _schedule_config_save(self):
         """Schedule a debounced configuration save."""
         if not self._loading_config:
@@ -1244,12 +1263,12 @@ class AgentGUI(QMainWindow):
             if not os.path.isabs(new_workspace):
                 new_workspace = os.path.abspath(new_workspace)
             self.agent_controls_panel.workspace_display.setText(new_workspace)
-            self._schedule_config_save()
+            self._handle_config_change()
     
     def clear_workspace(self):
         """Clear workspace restriction."""
         self.agent_controls_panel.workspace_display.setText("None (unrestricted)")
-        self._schedule_config_save()
+        self._handle_config_change()
     
     # ----- Menu Bar -----
     

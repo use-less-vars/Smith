@@ -138,12 +138,16 @@ class AgentPresenter(QObject):
         Returns:
             AgentConfig instance ready for use with controller
         """
-        config = config_dict or self._config
+        # Merge config_dict with current config if provided
+        if config_dict is not None:
+            config = {**self._config, **config_dict}
+        else:
+            config = self._config
         
-        # Get API key from environment
-        api_key = os.getenv("OPENAI_API_KEY")
+        # Get API key from config or environment (try OPENAI_API_KEY then DEEPSEEK_API_KEY)
+        api_key = config.get("api_key") or os.getenv("OPENAI_API_KEY") or os.getenv("DEEPSEEK_API_KEY")
         if not api_key:
-            print("[Presenter] WARNING: OPENAI_API_KEY not found in environment")
+            raise ValueError("Neither OPENAI_API_KEY nor DEEPSEEK_API_KEY environment variables are set, and no api_key in config. Please set one of them or add api_key to config.")
         
         # Create tools list from enabled tool names
         enabled_tools = config.get("enabled_tools", [])
