@@ -509,19 +509,52 @@ class EventFrame(QFrame):
         
         self.setLayout(layout)
     
-    def add_content_line(self, text, style=""):
+    def add_content_line(self, text, style="", use_markdown=False):
         """Add a simple text line (label)."""
         # Unescape any HTML entities in the text for PlainText format
         unescaped_text = html.unescape(text)
-        label = QLabel(unescaped_text)
-        label.setWordWrap(True)
-        label.setTextFormat(Qt.TextFormat.PlainText)
+        
+        if use_markdown:
+            # Convert markdown to HTML and use rich text format
+            html_text = self._markdown_to_html(unescaped_text)
+            label = QLabel(html_text)
+            label.setWordWrap(True)
+            label.setTextFormat(Qt.TextFormat.RichText)
+        else:
+            # Use plain text format
+            label = QLabel(unescaped_text)
+            label.setWordWrap(True)
+            label.setTextFormat(Qt.TextFormat.PlainText)
+        
         label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         # Set size policy to allow vertical expansion for wrapped text
         label.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred)
         if style:
             label.setStyleSheet(style)
         self.content_layout.addWidget(label)
+    
+    def _markdown_to_html(self, text):
+        """Convert basic markdown to HTML."""
+        import re
+        
+        # Escape HTML special characters
+        escaped = html.escape(text)
+        
+        # Convert markdown to HTML
+        # Bold: **text** or __text__
+        escaped = re.sub(r'\*\*(.*?)\*\*', r'<b>\1</b>', escaped)
+        escaped = re.sub(r'__(.*?)__', r'<b>\1</b>', escaped)
+        # Italic: *text* or _text_
+        escaped = re.sub(r'\*(?!\*)(.*?)\*(?!\*)', r'<i>\1</i>', escaped)
+        escaped = re.sub(r'_(?!_)(.*?)_(?!_)', r'<i>\1</i>', escaped)
+        # Strikethrough: ~~text~~
+        escaped = re.sub(r'~~(.*?)~~', r'<s>\1</s>', escaped)
+        # Inline code: `code`
+        escaped = re.sub(r'`(.*?)`', r'<code>\1</code>', escaped)
+        # Line breaks
+        escaped = escaped.replace('\n', '<br/>')
+        
+        return escaped
 
 class AgentGUI(QMainWindow):
     def __init__(self):
@@ -1240,11 +1273,11 @@ class AgentGUI(QMainWindow):
             # Show assistant's natural language content (if any)
             assistant_content = event.get("assistant_content", "")
             if assistant_content and detail_level != "minimal":
-                frame.add_content_line(f"Assistant: {assistant_content}", style="color: #000000;")
+                frame.add_content_line(f"Assistant: {assistant_content}", style="color: #000000;", use_markdown=True)
 
             # Show reasoning
             if detail_level != "minimal" and "reasoning" in event and event["reasoning"]:
-                frame.add_content_line(f"Reasoning: {event['reasoning']}", style="color: #666666;")
+                frame.add_content_line(f"Reasoning: {event['reasoning']}", style="color: #666666;", use_markdown=True)
 
             # Show tool calls
             for tc in event.get("tool_calls", []):
@@ -1271,7 +1304,7 @@ class AgentGUI(QMainWindow):
         elif etype == "final":
             frame.add_content_line(f"Final answer: {event['content']}", style="font-weight: bold; color: #000080;")
             if detail_level != "minimal" and "reasoning" in event and event["reasoning"]:
-                frame.add_content_line(f"Reasoning: {event['reasoning']}", style="color: #666666;")
+                frame.add_content_line(f"Reasoning: {event['reasoning']}", style="color: #666666;", use_markdown=True)
             usage = event.get("usage", {})
             self.total_input = usage.get("total_input", self.total_input)
             self.total_output = usage.get("total_output", self.total_output)

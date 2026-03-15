@@ -7,13 +7,14 @@ import queue
 
 class DockerExecutor:
     def __init__(self, workspace_path, image="agent-executor",
-                 network="none", mem_limit="512m", cpu_quota=50000, force_rebuild=False):
+                  network="none", mem_limit="512m", cpu_quota=50000, force_rebuild=False, idle_timeout=300):
         self.workspace_path = os.path.abspath(workspace_path)
         self.image = image
         self.network = network
         self.mem_limit = mem_limit
         self.cpu_quota = cpu_quota
         self.force_rebuild = force_rebuild
+        self.idle_timeout = idle_timeout
         self.client = docker.from_env()
         self.container = None
         self.last_used = time.time()
@@ -37,8 +38,21 @@ class DockerExecutor:
 
         try:
             self.container = self.client.containers.get(container_name)
-            if self.container.status != "running":
-                self.container.start()
+            # Handle non-running container states
+            if self.container.status == "dead":
+                # Dead container cannot be started, remove and recreate
+                self.container.remove()
+                self.container = None
+                raise docker.errors.NotFound(f"Container {container_name} was dead and removed")
+            elif self.container.status != "running":
+                # Exited or created container, try to start
+                try:
+                    self.container.start()
+                except docker.errors.APIError:
+                    # Failed to start, remove and recreate
+                    self.container.remove()
+                    self.container = None
+                    raise docker.errors.NotFound(f"Container {container_name} failed to start and was removed")
         except docker.errors.NotFound:
             self.container = self.client.containers.run(
                 image=self.image,
@@ -59,6 +73,10 @@ class DockerExecutor:
         self.last_used = time.time()
 
     def execute(self, command, timeout=30, workdir="/workspace", environment=None):
+        # Check idle timeout and close container if expired
+        if self.container and (time.time() - self.last_used) > self.idle_timeout:
+            self.close()
+        
         self._ensure_container()
         self.last_used = time.time()
         try:
@@ -78,7 +96,8 @@ class DockerExecutor:
             return "", str(e), -1
 
     def close(self):
-        if self.container:
+        # Safely check if container attribute exists and is not None
+        if hasattr(self, 'container') and self.container:
             try:
                 self.container.stop()
                 self.container.remove()
@@ -137,7 +156,11 @@ class DockerExecutor:
         
         return exit_code, output
     def __del__(self):
-        self.close()
+        try:
+            self.close()
+        except Exception:
+            # Ignore errors during cleanup
+            pass
     def _ensure_image(self):
         """Build Docker image if it doesn't exist locally or force_rebuild is True."""
         if self.force_rebuild:

@@ -5,7 +5,7 @@ import time
 import datetime
 import uuid
 from typing import Literal, Optional, Dict, Any
-from pydantic import Field
+from pydantic import Field, field_validator, model_validator
 from .base import ToolBase
 
 try:
@@ -64,11 +64,23 @@ class DockerCodeRunner(ToolBase):
     - {random_id}: Random 8-character hex string
     
     User variables can be provided via the 'variables' parameter.
+
+    Multi-step scripts:
+    - Use the 'script' field to provide multi-step scripts (multiple commands).
+    - Script is written to a temporary file and executed with the specified interpreter.
+    - The 'interpreter' field determines which interpreter to use (default: 'bash').
+    - If 'script' is provided, the 'command' field is ignored.
+
+    Container pooling:
+    - Containers are pooled and reused across executions for performance.
+    - Idle containers are automatically closed after the idle_timeout period (default 300s).
+    - This reduces Docker container overhead while maintaining security isolation.
     """
     tool: Literal["DockerCodeRunner"] = "DockerCodeRunner"
     
-    command: str = Field(
-        description="Shell command to execute inside the container (passed to /bin/sh -c)"
+    command: Optional[str] = Field(
+        default=None,
+        description="Shell command to execute inside the container (passed to /bin/sh -c). If script is provided, this field is ignored."
     )
     timeout: int = Field(
         default=30,
@@ -106,7 +118,26 @@ class DockerCodeRunner(ToolBase):
         default=None,
         description="Template variables to substitute in command. Format: {'name': 'value'}"
     )
+    script: Optional[str] = Field(
+        default=None,
+        description="Multi-step script to execute. If provided, command field is ignored. Script is written to a temporary file and executed with the specified interpreter."
+    )
+    interpreter: str = Field(
+        default="bash",
+        description="Interpreter to use for executing script (e.g., 'bash', 'python3', 'sh'). Default: 'bash'"
+    )
+    idle_timeout: int = Field(
+        default=300,
+        description="Idle timeout in seconds for container pooling. Container will be closed after this period of inactivity. Default: 300 seconds (5 minutes)."
+    )
     
+    @model_validator(mode='after')
+    def validate_command_or_script(self):
+        # Ensure at least one of command or script is provided
+        if self.command is None and self.script is None:
+            raise ValueError('Either command or script must be provided')
+        return self
+
     def _substitute_variables(self, command: str) -> str:
         """Substitute template variables in command string."""
         # Built-in variables
@@ -132,9 +163,41 @@ class DockerCodeRunner(ToolBase):
             result = result.replace(placeholder, str(var_value))
         
         return result
-    
-    def _build_json_response(
-        self,
+
+    def _prepare_script_command(self, script_content: str, interpreter: str) -> str:
+        """Convert script content to a shell command that writes and executes the script."""
+        # Generate a random delimiter that doesn't appear in script content
+        import random
+        import string
+        
+        # Try up to 10 times to find a unique delimiter
+        for _ in range(10):
+            delimiter = ''.join(random.choices(string.ascii_uppercase + string.digits, k=16))
+            if delimiter not in script_content:
+                break
+        else:
+            # Fallback delimiter
+            delimiter = 'SCRIPT_EOF'
+        
+        # Write script using heredoc, make executable, run with interpreter
+        # Use /tmp directory with random name
+        script_path = f"/tmp/script_{uuid.uuid4().hex[:8]}.sh"
+        
+        # Build command:
+        # 1. Write script content to file using heredoc
+        # 2. Make executable
+        # 3. Execute with specified interpreter
+        command = f'''cat > "{script_path}" << '{delimiter}'
+{script_content}
+{delimiter}
+chmod +x "{script_path}"
+"{interpreter}" "{script_path}"'''
+        
+        # If interpreter is 'bash' or 'sh', we could also directly run the script
+        # But using interpreter ensures proper execution.
+        return command
+
+    def _build_json_response(        self,
         success: bool,
         exit_code: int = 0,
         stdout: str = "",
@@ -209,15 +272,23 @@ class DockerCodeRunner(ToolBase):
                 duration=duration
             )
         
-        # Substitute variables in command
+        # Determine actual command to execute (script takes precedence)
+        actual_command = None
         try:
-            actual_command = self._substitute_variables(self.command)
+            if self.script is not None:
+                # Substitute variables in script content
+                script_content = self._substitute_variables(self.script)
+                # Convert script to executable command
+                actual_command = self._prepare_script_command(script_content, self.interpreter)
+            else:
+                # Use command field
+                actual_command = self._substitute_variables(self.command)
         except Exception as e:
             duration = time.time() - start_time
             return self._build_json_response(
                 success=False,
                 exit_code=-1,
-                error=f"Failed to substitute variables in command: {e}",
+                error=f"Failed to prepare command/script: {e}",
                 duration=duration
             )
         
@@ -228,7 +299,8 @@ class DockerCodeRunner(ToolBase):
                 network=self.network,
                 mem_limit=self.mem_limit,
                 cpu_quota=self.cpu_quota,
-                force_rebuild=self.build
+                force_rebuild=self.build,
+                idle_timeout=self.idle_timeout
             )
             
             # Execute command with optional environment and working directory
