@@ -16,6 +16,7 @@ from dotenv import load_dotenv
 from agent_controller import AgentController
 from agent_core import AgentConfig
 from tools import TOOL_CLASSES, SIMPLIFIED_TOOL_CLASSES
+from config_service import create_agent_config_service
 
 load_dotenv()
 
@@ -692,10 +693,10 @@ class AgentGUI(QMainWindow):
         self._auto_scroll_enabled = True
         self._user_scrolled_away = False
         
-        # Configuration auto-save timer
-        self._config_save_timer = QTimer()
-        self._config_save_timer.setSingleShot(True)
-        self._config_save_timer.timeout.connect(self.save_config)
+        # Configuration service
+        self.config_service = create_agent_config_service()
+        # Add config change listener
+        self.config_service.add_listener(self.on_config_changed)
         self._loading_config = False  # Flag to prevent save during load
 
         self.init_ui()        
@@ -882,40 +883,51 @@ class AgentGUI(QMainWindow):
         
         self.create_menu_bar()
     def load_config(self):
-        """Load configuration from file."""
+        """Load configuration from file and apply to UI."""
         self._loading_config = True
         try:
-            config_path = "agent_config.json"
-            if os.path.exists(config_path):
-                try:
-                    with open(config_path, 'r') as f:
-                        config = json.load(f)
-                    # Apply configuration to controls panel
-                    self.agent_controls_panel.set_config_dict(config)
-                    print(f"[GUI] Loaded configuration from {config_path}")
-                except Exception as e:
-                    print(f"[GUI] Error loading config: {e}")
-            else:
-                print(f"[GUI] No config file found at {config_path}, using defaults")
+            # ConfigService already loads on initialization
+            config = self.config_service.get_all()
+            # Apply configuration to controls panel
+            self.agent_controls_panel.set_config_dict(config)
+            print(f"[GUI] Loaded configuration from {self.config_service.config_path}")
+        except Exception as e:
+            print(f"[GUI] Error loading config: {e}")
         finally:
             self._loading_config = False
     def _schedule_config_save(self):
-        """Schedule a configuration save (debounced)."""
+        """Update configuration using ConfigService (debounced internally)."""
         if self._loading_config:
             return  # Don't save while loading config
-        self._config_save_timer.start(1000)  # 1 second debounce
+        self._update_config_from_ui()
     
     def save_config(self):
         """Save current configuration to file."""
         config = self.agent_controls_panel.get_config_dict()
-        config_path = "agent_config.json"
-        try:
-            with open(config_path, 'w') as f:
-                json.dump(config, f, indent=2)
-            print(f"[GUI] Saved configuration to {config_path}")
-        except Exception as e:
-            print(f"[GUI] Error saving config: {e}")
-    
+        # Update config service with current UI state
+        self.config_service.update(config, notify=False, save=True)
+        print(f"[GUI] Saved configuration via ConfigService")
+
+    def on_config_changed(self, key, old_value, new_value):
+        """Handle configuration changes from ConfigService.
+        
+        This method is called when any configuration value changes.
+        It can be used to update other parts of the UI or trigger actions.
+        """
+        if key is None:
+            # Full config reload - update UI
+            self.load_config()
+            return
+        
+        # Handle specific key changes
+        # For now, just log the change
+        print(f"[GUI] Config changed: {key} = {new_value} (was {old_value})")
+
+    def _update_config_from_ui(self):
+        """Update ConfigService with current UI state."""
+        config = self.agent_controls_panel.get_config_dict()
+        self.config_service.update(config, notify=False, save=True)
+
     def create_menu_bar(self):
         menubar = self.menuBar()
         file_menu = menubar.addMenu("File")
@@ -1229,12 +1241,10 @@ class AgentGUI(QMainWindow):
         self.context_length = 0
         self.status_panel.update_context_length(self.context_length)
         self.status_panel.update_tokens(self.total_input, self.total_output)
-        # Force save any pending configuration changes
+        # Force save any pending configuration changes immediately
         self.save_config()
-        # Ensure any pending debounced saves are executed immediately
-        if self._config_save_timer.isActive():
-            self._config_save_timer.stop()
-            self._save_current_config_to_file()
+        # Ensure ConfigService saves immediately (bypasses debouncing)
+        self.config_service.save(immediate=True)
 
         # Update buttons - agent is not running
         self.update_buttons(running=False)

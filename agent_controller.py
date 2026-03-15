@@ -5,14 +5,18 @@ import traceback
 from agent_core import AgentConfig
 from agent import Agent
 from typing import Optional, List, Dict, Any
+from PyQt6.QtCore import QObject, pyqtSignal
 
-class AgentController:
+class AgentController(QObject):
     """
     Runs the agent in a background thread and provides thread‑safe control
     via start/stop/pause/resume and a queue for receiving events.
     """
+    # Signals
+    event_occurred = pyqtSignal(dict)
 
     def __init__(self):
+        super().__init__()
         # Thread‑safe queue for passing events from agent thread to main thread
         self.event_queue = queue.Queue()
 
@@ -146,7 +150,7 @@ class AgentController:
             self.pause()
         else:
             # Agent is idle, send paused event directly
-            self.event_queue.put({"type": "paused"})
+            self._emit_event({"type": "paused"})
     def restart_session(self):
         """Restart agent with cleared history."""
         if not self.is_running:
@@ -181,6 +185,13 @@ class AgentController:
             return self.event_queue.get(block=block, timeout=timeout)
         except queue.Empty:
             return None
+
+    def _emit_event(self, event):
+        """Emit event both to queue and signal."""
+        # Put into queue for compatibility
+        self.event_queue.put(event)
+        # Emit signal for presenter
+        self.event_occurred.emit(event)
 
     def _run(self):
         """Internal method that runs in the background thread."""
@@ -219,7 +230,7 @@ class AgentController:
                     continue
                 if query == "[PAUSE]":
                     print("[Controller] Pause requested")
-                    self.event_queue.put({"type": "paused"})
+                    self._emit_event({"type": "paused"})
                     continue
 
                 print(f"[Controller] Processing query: {query[:50]}...")
@@ -228,7 +239,7 @@ class AgentController:
                 for event in agent.process_query(query):
                     print(f"[Controller] Event: {event['type']}")
                     # Put each event into the queue for the GUI to pick up
-                    self.event_queue.put(event)
+                    self._emit_event(event)
 
                     # If this is a terminal event, decide what to do
                     if event["type"] in ("stopped", "error", "max_turns"):
@@ -239,14 +250,14 @@ class AgentController:
                         # Agent has completed this query, pause and wait for next query
                         # Yield a paused event to inform GUI
                         print("[Controller] Sending paused event")
-                        self.event_queue.put({"type": "paused"})
+                        self._emit_event({"type": "paused"})
                         break
                     # For other events (turn), continue processing
                     # Check if pause requested after a turn
                     if event["type"] == "turn" and self._pause_requested:
                         print("[Controller] Pause requested, breaking after turn")
                         self._pause_requested = False
-                        self.event_queue.put({"type": "paused"})
+                        self._emit_event({"type": "paused"})
                         break
 
                 self._processing_query = False
@@ -258,12 +269,12 @@ class AgentController:
             # Catch any unexpected exception and send an error event
             print(f"[Controller] Exception in _run: {e}")
             traceback.print_exc()
-            self.event_queue.put({
+            self._emit_event({
                 "type": "error",
                 "message": str(e),
                 "traceback": traceback.format_exc()   # helpful for debugging
             })
         finally:
             # Signal that the thread is finishing
-            self.event_queue.put({"type": "thread_finished"})
+            self._emit_event({"type": "thread_finished"})
             self._running = False

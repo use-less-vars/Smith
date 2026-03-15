@@ -1,0 +1,298 @@
+# config_service.py
+"""
+Configuration management service with debounced saves and change notifications.
+"""
+
+import os
+import json
+import threading
+from typing import Dict, Any, Optional, Callable
+from datetime import datetime
+
+
+class ConfigService:
+    """
+    Manages application configuration with automatic saving and change notifications.
+    
+    Features:
+    - JSON file persistence
+    - Debounced auto-save (prevents frequent disk writes)
+    - Change callbacks/observers
+    - Default values with validation
+    """
+    
+    def __init__(self, config_path: str, default_config: Optional[Dict[str, Any]] = None):
+        """
+        Initialize config service.
+        
+        Args:
+            config_path: Path to JSON config file
+            default_config: Default configuration values
+        """
+        self.config_path = config_path
+        self.default_config = default_config or {}
+        self._config = self.default_config.copy()
+        self._listeners = []
+        self._save_timer = None
+        self._save_delay = 2.0  # seconds
+        self._lock = threading.Lock()
+        
+        # Load existing config or create with defaults
+        self.load()
+    
+    def load(self) -> bool:
+        """
+        Load configuration from file.
+        
+        Returns:
+            True if loaded successfully, False otherwise
+        """
+        try:
+            if os.path.exists(self.config_path):
+                with open(self.config_path, 'r') as f:
+                    loaded = json.load(f)
+                
+                with self._lock:
+                    # Merge loaded config with defaults
+                    self._config = self.default_config.copy()
+                    self._config.update(loaded)
+                
+                print(f"[ConfigService] Loaded config from {self.config_path}")
+                self._notify_listeners()
+                return True
+            else:
+                print(f"[ConfigService] Config file not found, using defaults")
+                with self._lock:
+                    self._config = self.default_config.copy()
+                return False
+                
+        except Exception as e:
+            print(f"[ConfigService] Error loading config: {e}")
+            with self._lock:
+                self._config = self.default_config.copy()
+            return False
+    
+    def save(self, immediate: bool = False) -> bool:
+        """
+        Save configuration to file.
+        
+        Args:
+            immediate: If True, save immediately; otherwise use debounced save
+            
+        Returns:
+            True if saved (or scheduled), False on error
+        """
+        if immediate:
+            return self._do_save()
+        else:
+            self._schedule_save()
+            return True
+    
+    def _do_save(self) -> bool:
+        """Perform actual file save."""
+        try:
+            with self._lock:
+                config_to_save = self._config.copy()
+            
+            # Ensure directory exists
+            os.makedirs(os.path.dirname(os.path.abspath(self.config_path)), exist_ok=True)
+            
+            with open(self.config_path, 'w') as f:
+                json.dump(config_to_save, f, indent=2)
+            
+            print(f"[ConfigService] Saved config to {self.config_path}")
+            return True
+            
+        except Exception as e:
+            print(f"[ConfigService] Error saving config: {e}")
+            return False
+    
+    def _schedule_save(self):
+        """Schedule a debounced save."""
+        if self._save_timer is not None:
+            self._save_timer.cancel()
+        
+        self._save_timer = threading.Timer(self._save_delay, self._do_save)
+        self._save_timer.daemon = True
+        self._save_timer.start()
+    
+    def get(self, key: str, default: Any = None) -> Any:
+        """
+        Get configuration value.
+        
+        Args:
+            key: Configuration key
+            default: Default value if key doesn't exist
+            
+        Returns:
+            Configuration value or default
+        """
+        with self._lock:
+            return self._config.get(key, default)
+    
+    def set(self, key: str, value: Any, notify: bool = True, save: bool = True) -> None:
+        """
+        Set configuration value.
+        
+        Args:
+            key: Configuration key
+            value: New value
+            notify: Whether to notify listeners
+            save: Whether to trigger save (debounced)
+        """
+        with self._lock:
+            old_value = self._config.get(key)
+            if old_value != value:
+                self._config[key] = value
+                
+                if notify:
+                    self._notify_listeners(key, old_value, value)
+                
+                if save:
+                    self.save()
+    
+    def update(self, updates: Dict[str, Any], notify: bool = True, save: bool = True) -> None:
+        """
+        Update multiple configuration values.
+        
+        Args:
+            updates: Dictionary of key-value updates
+            notify: Whether to notify listeners
+            save: Whether to trigger save (debounced)
+        """
+        changed = False
+        changes = {}
+        
+        with self._lock:
+            for key, value in updates.items():
+                old_value = self._config.get(key)
+                if old_value != value:
+                    self._config[key] = value
+                    changes[key] = (old_value, value)
+                    changed = True
+        
+        if changed:
+            if notify:
+                for key, (old_val, new_val) in changes.items():
+                    self._notify_listeners(key, old_val, new_val)
+            
+            if save:
+                self.save()
+    
+    def get_all(self) -> Dict[str, Any]:
+        """
+        Get all configuration values.
+        
+        Returns:
+            Copy of current configuration
+        """
+        with self._lock:
+            return self._config.copy()
+    
+    def add_listener(self, callback: Callable[[str, Any, Any], None]) -> None:
+        """
+        Add a configuration change listener.
+        
+        Args:
+            callback: Function called when config changes
+                Signature: callback(key: str, old_value: Any, new_value: Any)
+        """
+        self._listeners.append(callback)
+    
+    def remove_listener(self, callback: Callable[[str, Any, Any], None]) -> None:
+        """Remove a configuration change listener."""
+        try:
+            self._listeners.remove(callback)
+        except ValueError:
+            pass
+    
+    def _notify_listeners(self, key: Optional[str] = None, old_value: Any = None, new_value: Any = None):
+        """Notify all listeners of configuration changes."""
+        if key is None:
+            # Full config reload
+            for listener in self._listeners:
+                try:
+                    listener(None, None, None)
+                except Exception as e:
+                    print(f"[ConfigService] Error in listener: {e}")
+        else:
+            # Specific key change
+            for listener in self._listeners:
+                try:
+                    listener(key, old_value, new_value)
+                except Exception as e:
+                    print(f"[ConfigService] Error in listener: {e}")
+    
+    def validate(self, schema: Optional[Dict[str, Any]] = None) -> bool:
+        """
+        Validate configuration against schema.
+        
+        Args:
+            schema: Validation schema (optional, basic type checking if not provided)
+            
+        Returns:
+            True if valid, False otherwise
+        """
+        # TODO: Implement proper schema validation
+        # For now, basic implementation
+        with self._lock:
+            for key, value in self._config.items():
+                # Basic type checking could be added here
+                pass
+        return True
+    
+    def reset_to_defaults(self) -> None:
+        """Reset configuration to defaults."""
+        with self._lock:
+            self._config = self.default_config.copy()
+        
+        self._notify_listeners()
+        self.save(immediate=True)
+    
+    def __enter__(self):
+        """Context manager support."""
+        return self
+    
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        """Ensure pending saves are executed."""
+        if self._save_timer is not None:
+            self._save_timer.cancel()
+            self._do_save()
+    
+    def __del__(self):
+        """Destructor - ensure pending saves are executed."""
+        if self._save_timer is not None:
+            self._save_timer.cancel()
+            try:
+                self._do_save()
+            except:
+                pass
+
+
+# Factory function for agent configuration
+def create_agent_config_service(config_path: str = "agent_config.json") -> ConfigService:
+    """
+    Create a ConfigService with default agent configuration.
+    
+    Args:
+        config_path: Path to config file
+        
+    Returns:
+        ConfigService instance with agent defaults
+    """
+    from tools import SIMPLIFIED_TOOL_CLASSES
+    
+    default_config = {
+        "temperature": 0.2,
+        "max_turns": 100,
+        "token_monitor_enabled": True,
+        "warning_threshold": 35,  # in thousands
+        "critical_threshold": 50,  # in thousands
+        "workspace_path": None,
+        "tool_output_limit": 10000,
+        "model": "deepseek-reasoner",
+        "detail": "normal",
+        "enabled_tools": [cls.__name__ for cls in SIMPLIFIED_TOOL_CLASSES]
+    }
+    
+    return ConfigService(config_path, default_config)
