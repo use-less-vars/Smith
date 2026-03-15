@@ -19,6 +19,9 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QAction, QFont, QColor, QShortcut, QKeySequence
 
+# Log version constants
+CURRENT_LOG_VERSION = "1.0"
+
 
 class LogViewer(QMainWindow):
     """Main window for log viewer."""
@@ -185,7 +188,7 @@ class LogViewer(QMainWindow):
                     if not line:
                         continue
                     try:
-                        entry = json.loads(line)
+                        entry = self._migrate_entry(json.loads(line))
                         self.all_entries.append(entry)
                     except json.JSONDecodeError as e:
                         print(f"Error parsing line {line_num}: {e}")
@@ -193,6 +196,29 @@ class LogViewer(QMainWindow):
             self.statusBar().showMessage(f"Loaded {len(self.all_entries)} entries from {file_path.name}")
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to load log file: {e}")
+    
+    def _migrate_entry(self, entry):
+        """
+        Migrate a log entry to current version format.
+        Returns the migrated entry.
+        """
+        # Ensure version field exists
+        if "version" not in entry:
+            entry["version"] = "0"  # Legacy version
+        
+        # Apply migration steps based on version
+        version = entry["version"]
+        
+        # Migration from version "0" to "1.0"
+        if version == "0":
+            # No structural changes needed, just update version
+            entry["version"] = CURRENT_LOG_VERSION
+        
+        # Future migrations can be added here
+        # elif version == "1.0":
+        #     # Migrate to 1.1 etc.
+        
+        return entry
     
     def display_log_entries(self):
         """Display log entries in the table."""

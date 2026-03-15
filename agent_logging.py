@@ -16,6 +16,10 @@ if TYPE_CHECKING:
     from agent_core import AgentConfig
 
 
+# Session file version
+CURRENT_SESSION_VERSION = "1.0"
+
+
 class LogLevel(Enum):
     """Logging verbosity levels."""
     DEBUG = "DEBUG"
@@ -189,6 +193,7 @@ class AgentLogger:
                 # Add common metadata
                 event["timestamp"] = datetime.now().isoformat()
                 event["session_id"] = self.session_id
+                event["version"] = CURRENT_SESSION_VERSION
                 
                 # Write as JSON line
                 json_line = json.dumps(event, ensure_ascii=False) + "\n"

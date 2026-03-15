@@ -15,12 +15,12 @@ import json
 import html
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
-    QLabel, QLineEdit, QPushButton, QTextEdit, QListWidget,
-    QGroupBox, QCheckBox, QMenuBar, QMenu, QFileDialog,
-    QMessageBox, QScrollArea, QFrame, QComboBox, QSpinBox, QDoubleSpinBox, QSplitter, QDialog, QSizePolicy
+    QLabel, QLineEdit, QPushButton, QTextEdit, QListWidget, QListView, QStyledItemDelegate,
+    QGroupBox, QCheckBox, QMenuBar, QMenu, QFileDialog, QStyleOptionViewItem,
+    QMessageBox, QScrollArea, QFrame, QComboBox, QSpinBox, QDoubleSpinBox, QSplitter, QDialog, QSizePolicy,QStyle
 )
-from PyQt6.QtCore import Qt, QTimer, pyqtSlot
-from PyQt6.QtGui import QAction, QFont
+from PyQt6.QtCore import Qt, QTimer, pyqtSlot, QAbstractListModel, QModelIndex, QVariant, QRect, QPoint, QSize, QSortFilterProxyModel
+from PyQt6.QtGui import QAction, QFont, QTextDocument, QColor, QPainter, QPalette, QAbstractTextDocumentLayout
 from dotenv import load_dotenv
 
 from agent_presenter import AgentPresenter, AgentState
@@ -514,68 +514,61 @@ class StatusPanel(QGroupBox):
         self.context_label.setText(f"Context: {text} tokens")
 
 
-class EventFrame(QFrame):
-    """A frame that holds a single event with structured content lines."""
-    def __init__(self, title, event_type, parent=None):
-        super().__init__(parent)
-        self.setFrameStyle(QFrame.Shape.Box)
-        self.setLineWidth(1)
-        layout = QVBoxLayout()
-        layout.setSpacing(2)
-        
-        # Title
-        title_label = QLabel(f"<b>{title}</b>")
-        title_label.setStyleSheet("background-color: #e0e0e0; padding: 3px;")
-        layout.addWidget(title_label)
-        
-        # Content area
-        self.content_layout = QVBoxLayout()
-        self.content_layout.setSpacing(2)
-        layout.addLayout(self.content_layout)
-        
-        self.setLayout(layout)
+class MarkdownRenderer:
+    """Render markdown to HTML using Qt's built-in markdown support with fallback."""
     
-    def add_content_line(self, text, style="", use_markdown=False):
-        """Add a simple text line (label)."""
-        # Unescape any HTML entities in the text for PlainText format
+    @staticmethod
+    def markdown_to_html(text, style=""):
+        """
+        Convert markdown text to HTML.
+        
+        Args:
+            text: Markdown text to convert
+            style: Optional CSS style string to apply to the content
+            
+        Returns:
+            HTML string with markdown converted to HTML
+        """
+        # First unescape any HTML entities
+        import html
         unescaped_text = html.unescape(text)
         
-        if use_markdown:
-            # Convert markdown to HTML and use rich text format
-            html_text = self._markdown_to_html(unescaped_text)
+        # Try Qt's built-in markdown support first
+        try:
+            doc = QTextDocument()
+            doc.setMarkdown(unescaped_text)
+            html_result = doc.toHtml()
             
-            # If style is provided, wrap the HTML in a span with inline style
-            # This avoids style sheet overriding HTML formatting
-            if style:
-                # Parse style to ensure it's safe for inline CSS
-                # For now, just wrap with span if style looks simple
-                # (contains only color, font-weight, etc.)
-                # Use single quotes for style attribute to avoid issues with double quotes in style
-                html_text = f"<span style='{style}'>{html_text}</span>"
+            # Extract just the body content (Qt adds full HTML document)
+            # Look for <body> tag
+            body_start = html_result.find('<body>')
+            body_end = html_result.find('</body>')
+            if body_start != -1 and body_end != -1:
+                # Extract body content plus 6 for '<body>'
+                body_content = html_result[body_start + 6:body_end]
+                # Also need to include any styles in the head
+                # For simplicity, we'll just use the body content
+                html_result = body_content.strip()
             
-            label = QLabel(html_text)
-            label.setWordWrap(True)
-            label.setTextFormat(Qt.TextFormat.RichText)
-            # Don't apply style sheet for markdown labels - already handled inline
-        else:
-            # Use plain text format
-            label = QLabel(unescaped_text)
-            label.setWordWrap(True)
-            label.setTextFormat(Qt.TextFormat.PlainText)
-            if style:
-                label.setStyleSheet(style)
-        
-        label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        # Set size policy to allow vertical expansion for wrapped text
-        label.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred)
-        self.content_layout.addWidget(label)
+            # Apply style if provided
+            if style and html_result:
+                # Wrap in span with inline style
+                html_result = f'<span style="{style}">{html_result}</span>'
+            
+            return html_result
+            
+        except Exception:
+            # Fall back to custom markdown parser
+            return MarkdownRenderer._fallback_markdown_to_html(unescaped_text, style)
     
-    def _markdown_to_html(self, text):
-        """Convert basic markdown to HTML with headers, lists, links, etc."""
+    @staticmethod
+    def _fallback_markdown_to_html(text, style=""):
+        """Custom markdown parser as fallback when Qt's markdown fails."""
         import re
+        import html as html_module
         
         # Escape HTML special characters
-        escaped = html.escape(text)
+        escaped = html_module.escape(text)
         
         # Process line by line for block elements
         lines = escaped.split('\n')
@@ -601,7 +594,7 @@ class EventFrame(QFrame):
                 continue
             
             # Horizontal rule: --- or *** (three or more)
-            if re.match(r'^---+\s*$', line) or re.match(r'^\*\*\*+\s*$', line):
+            if re.match(r'^---+s*$', line) or re.match(r'^\*\*\*+\s*$', line):
                 if in_paragraph:
                     result_lines.append('<br/>')
                     in_paragraph = False
@@ -707,7 +700,373 @@ class EventFrame(QFrame):
         # Links: [text](url)
         escaped = re.sub(r'\[([^\]]+)\]\(([^)]+)\)', r'<a href="\2">\1</a>', escaped)
         
+        # Apply style if provided
+        if style:
+            escaped = f'<span style="{style}">{escaped}</span>'
+        
         return escaped
+
+
+class EventModel(QAbstractListModel):
+    """Model for storing and displaying events in a list view."""
+    
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.events = []  # List of event dictionaries
+    
+    def rowCount(self, parent=QModelIndex()):
+        return len(self.events)
+    
+    def data(self, index, role=Qt.ItemDataRole.DisplayRole):
+        if not index.isValid() or index.row() >= len(self.events):
+            return QVariant()
+        
+        event = self.events[index.row()]
+        
+        if role == Qt.ItemDataRole.DisplayRole:
+            # Return a simple text representation for debugging
+            return f"{event.get('type', 'unknown')}: {event.get('content', '')[:50]}..."
+        elif role == Qt.ItemDataRole.UserRole:
+            # Return the full event dictionary for the delegate
+            return event
+        
+        return QVariant()
+    
+    def add_event(self, event):
+        """Add an event to the model."""
+        position = len(self.events)
+        self.beginInsertRows(QModelIndex(), position, position)
+        self.events.append(event)
+        self.endInsertRows()
+    
+    def clear(self):
+        """Clear all events from the model."""
+        if self.events:
+            self.beginRemoveRows(QModelIndex(), 0, len(self.events) - 1)
+            self.events.clear()
+            self.endRemoveRows()
+
+
+class EventFilterProxyModel(QSortFilterProxyModel):
+    """Filter proxy model for event search and filtering."""
+    
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.filter_text = ""
+        self.filter_type = "all"
+        
+    def set_filter(self, text="", event_type="all"):
+        """Set filter criteria."""
+        self.filter_text = text.lower()
+        self.filter_type = event_type
+        self.invalidateFilter()
+        
+    def filterAcceptsRow(self, source_row, source_parent):
+        """Override to filter rows based on text and type."""
+        model = self.sourceModel()
+        if not model:
+            return True
+            
+        index = model.index(source_row, 0, source_parent)
+        event = model.data(index, Qt.ItemDataRole.UserRole)
+        if not event:
+            return False
+            
+        # Type filter
+        if self.filter_type != "all":
+            if event.get("type") != self.filter_type:
+                return False
+                
+        # Text filter
+        if self.filter_text:
+            # Search in content, reasoning, tool names, etc.
+            search_text = self.filter_text
+            content = event.get("content", "").lower()
+            reasoning = event.get("reasoning", "").lower()
+            # Also search in tool calls
+            tool_calls = event.get("tool_calls", [])
+            tool_text = " ".join([tc.get("name", "") + " " + str(tc.get("arguments", "")) for tc in tool_calls]).lower()            
+            if (search_text not in content and 
+                search_text not in reasoning and
+                search_text not in tool_text):
+                # Also check type
+                if search_text not in event.get("type", "").lower():
+                    return False
+                    
+        return True
+
+
+class EventDelegate(QStyledItemDelegate):
+    """Delegate for rendering events in the list view."""
+    
+    def __init__(self, parent=None):
+        super().__init__(parent)
+    
+    def paint(self, painter, option, index):
+        """Paint the event using HTML rendering."""
+        # Get event data from model
+        event = index.data(Qt.ItemDataRole.UserRole)
+        if not event:
+            super().paint(painter, option, index)
+            return
+        
+        # Setup painter
+        painter.save()
+        
+        # Draw background
+        if option.state & QStyle.StateFlag.State_Selected:
+            painter.fillRect(option.rect, option.palette.highlight())
+        else:
+            painter.fillRect(option.rect, option.palette.base())
+        
+        # Create text document with HTML content
+        doc = QTextDocument()
+        doc.setHtml(self._event_to_html(event))
+        
+        # Adjust document width to fit within cell
+        doc.setTextWidth(option.rect.width() - 10)  # 5px margin each side
+        
+        # Translate painter to rectangle position
+        painter.translate(option.rect.topLeft() + QPoint(5, 5))
+        
+        # Draw the document
+        doc.drawContents(painter)
+        
+        painter.restore()
+    
+    def sizeHint(self, option, index):
+        """Calculate size needed for the event."""
+        event = index.data(Qt.ItemDataRole.UserRole)
+        if not event:
+            return super().sizeHint(option, index)
+        
+        doc = QTextDocument()
+        doc.setHtml(self._event_to_html(event))
+        doc.setTextWidth(option.rect.width() - 10)  # Same as paint
+        
+        return QSize(int(doc.idealWidth()) + 10, int(doc.size().height()) + 10)
+    
+    def _event_to_html(self, event):
+        """Convert event dictionary to HTML representation."""
+        etype = event.get('type', 'unknown')
+        detail_level = event.get('_detail_level', 'normal')
+        
+        # Helper to add a content line
+        lines = []
+        
+        def add_line(text, style='', use_markdown=False, title=''):
+            # Unescape any HTML entities
+            unescaped_text = html.unescape(text)
+            if use_markdown:
+                html_text = MarkdownRenderer.markdown_to_html(unescaped_text, style)
+                lines.append(html_text)
+            else:
+                # Escape HTML special characters
+                escaped_text = html.escape(unescaped_text)
+                if title:
+                    lines.append(f'<div style="{style}" title="{html.escape(title)}">{escaped_text}</div>')
+                else:
+                    if style:
+                        lines.append(f'<div style="{style}">{escaped_text}</div>')
+                    else:
+                        lines.append(f'<div>{escaped_text}</div>')
+        
+        # Title bar
+        html_content = f'<div style="font-weight: bold; background-color: #e0e0e0; padding: 3px;">{html.escape(etype.upper())}</div>'
+        
+        # Content container
+        html_content += '<div style="padding: 5px;">'
+        
+        if etype == "turn":
+            turn = event.get("turn", "?")
+            add_line(f"Turn {turn}", style="font-weight: bold;")
+            
+            assistant_content = event.get("assistant_content", "")
+            if assistant_content and detail_level != "minimal":
+                add_line(f"Assistant: {assistant_content}", style="color: #000000;", use_markdown=True)
+                
+            # Show reasoning
+            if detail_level != "minimal" and "reasoning" in event and event["reasoning"]:
+                add_line(f"Reasoning: {event['reasoning']}", style="color: #666666;", use_markdown=True)
+                
+            # Show tool calls
+            for tc in event.get("tool_calls", []):
+                if detail_level == "minimal":
+                    add_line(f"🛠️ {tc['name']}", style="color: #0000FF;")
+                else:
+                    add_line(f"🛠️ {tc['name']}", style="color: #0000FF; font-weight: bold;")
+                    if detail_level == "verbose":
+                        add_line(f"  Arguments: {tc['arguments']}", style="color: #0000AA;")
+                
+                # Result
+                result_text = tc.get('result', '')
+                # Truncate if needed
+                unescaped_result = html.unescape(result_text)
+                if len(unescaped_result) > MAX_RESULT_LENGTH:
+                    truncated = unescaped_result[:MAX_RESULT_LENGTH] + "..."
+                    add_line(f"Result: {truncated}", style="color: #006400;", title=unescaped_result)
+                else:
+                    add_line(f"Result: {unescaped_result}", style="color: #006400;")
+                    
+        elif etype == "final":
+            add_line(f"Final answer: {event['content']}", style="font-weight: bold; color: #000080;", use_markdown=True)
+            if detail_level != "minimal" and "reasoning" in event and event["reasoning"]:
+                add_line(f"Reasoning: {event['reasoning']}", style="color: #666666;", use_markdown=True)
+                
+        elif etype == "user_query":
+            add_line(f"User query: {event.get('content', '')}", style="font-weight: bold; color: #8B008B;", use_markdown=True)
+            
+        elif etype == "stopped":
+            add_line("Agent stopped by user.", style="color: #FF8C00;")
+        elif etype == "user_interaction_requested":
+            add_line(f"Agent requests interaction: {event.get('message', '')}", style="color: #008080;")
+        elif etype == "token_warning":
+            add_line(event.get("message", ""), style="color: #FFA500; font-weight: bold;")
+        elif etype == "turn_warning":
+            add_line(event.get("message", ""), style="color: #FFA500; font-weight: bold;")
+        elif etype == "paused":
+            add_line("Agent paused, ready for next query.", style="color: #808080;")
+        elif etype == "max_turns":
+            add_line("Max turns reached without final answer.", style="color: #FF8C00;")
+        elif etype == "error":
+            add_line(f"ERROR: {event.get('message')}", style="color: #FF0000; font-weight: bold;")
+            if "traceback" in event and detail_level == "verbose":
+                add_line(event['traceback'], style="color: #FF0000;")
+        elif etype == "thread_finished":
+            add_line("Background thread finished.", style="color: #808080;")
+        else:
+            add_line(str(event))
+            
+        # Append lines
+        for line in lines:
+            html_content += line
+            
+        html_content += '</div>'
+        return html_content
+    
+    def _event_to_plain_text(self, event):
+        """Convert event dictionary to plain text representation for copying."""
+        etype = event.get('type', 'unknown')
+        detail_level = event.get('_detail_level', 'normal')
+        
+        lines = []
+        
+        def add_line(text):
+            # Unescape any HTML entities
+            unescaped_text = html.unescape(text)
+            lines.append(unescaped_text)
+        
+        # Title/type
+        lines.append(f"{etype.upper()}")
+        lines.append("=" * len(etype))
+        
+        if etype == "turn":
+            turn = event.get("turn", "?")
+            add_line(f"Turn {turn}")
+            
+            assistant_content = event.get("assistant_content", "")
+            if assistant_content and detail_level != "minimal":
+                add_line(f"Assistant: {assistant_content}")
+                
+            # Show reasoning
+            if detail_level != "minimal" and "reasoning" in event and event["reasoning"]:
+                add_line(f"Reasoning: {event['reasoning']}")
+                
+            # Show tool calls
+            for tc in event.get("tool_calls", []):
+                if detail_level == "minimal":
+                    add_line(f"Tool: {tc['name']}")
+                else:
+                    add_line(f"Tool: {tc['name']}")
+                    if detail_level == "verbose":
+                        add_line(f"  Arguments: {tc['arguments']}")
+                
+                # Result
+                result_text = tc.get('result', '')
+                unescaped_result = html.unescape(result_text)
+                if len(unescaped_result) > MAX_RESULT_LENGTH:
+                    truncated = unescaped_result[:MAX_RESULT_LENGTH] + "..."
+                    add_line(f"Result: {truncated}")
+                else:
+                    add_line(f"Result: {unescaped_result}")
+                    
+        elif etype == "final":
+            add_line(f"Final answer: {event['content']}")
+            if detail_level != "minimal" and "reasoning" in event and event["reasoning"]:
+                add_line(f"Reasoning: {event['reasoning']}")
+                
+        elif etype == "user_query":
+            add_line(f"User query: {event.get('content', '')}")
+            
+        elif etype == "stopped":
+            add_line("Agent stopped by user.")
+        elif etype == "user_interaction_requested":
+            add_line(f"Agent requests interaction: {event.get('message', '')}")
+        elif etype == "token_warning":
+            add_line(event.get("message", ""))
+        elif etype == "turn_warning":
+            add_line(event.get("message", ""))
+        elif etype == "paused":
+            add_line("Agent paused, ready for next query.")
+        elif etype == "max_turns":
+            add_line("Max turns reached without final answer.")
+        elif etype == "error":
+            add_line(f"ERROR: {event.get('message')}")
+            if "traceback" in event and detail_level == "verbose":
+                add_line(event['traceback'])
+        elif etype == "thread_finished":
+            add_line("Background thread finished.")
+        else:
+            add_line(str(event))
+            
+        return '\n'.join(lines)
+
+
+class EventFrame(QFrame):
+    """A frame that holds a single event with structured content lines."""
+    def __init__(self, title, event_type, parent=None):
+        super().__init__(parent)
+        self.setFrameStyle(QFrame.Shape.Box)
+        self.setLineWidth(1)
+        layout = QVBoxLayout()
+        layout.setSpacing(2)
+        
+        # Title
+        title_label = QLabel(f"<b>{title}</b>")
+        title_label.setStyleSheet("background-color: #e0e0e0; padding: 3px;")
+        layout.addWidget(title_label)
+        
+        # Content area
+        self.content_layout = QVBoxLayout()
+        self.content_layout.setSpacing(2)
+        layout.addLayout(self.content_layout)
+        
+        self.setLayout(layout)
+    
+    def add_content_line(self, text, style="", use_markdown=False):
+        """Add a simple text line (label)."""
+        # Unescape any HTML entities in the text for PlainText format
+        unescaped_text = html.unescape(text)
+        
+        if use_markdown:
+            # Convert markdown to HTML using Qt's built-in markdown support
+            html_text = MarkdownRenderer.markdown_to_html(unescaped_text, style)            
+            label = QLabel(html_text)
+            label.setWordWrap(True)
+            label.setTextFormat(Qt.TextFormat.RichText)
+            # Don't apply style sheet for markdown labels - already handled inline
+        else:
+            # Use plain text format
+            label = QLabel(unescaped_text)
+            label.setWordWrap(True)
+            label.setTextFormat(Qt.TextFormat.PlainText)
+            if style:
+                label.setStyleSheet(style)
+        
+        label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        # Set size policy to allow vertical expansion for wrapped text
+        label.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred)
+        self.content_layout.addWidget(label)        
 
 
 # --- Main GUI class (refactored to use Presenter) ---
@@ -731,12 +1090,18 @@ class AgentGUI(QMainWindow):
         # Smart scrolling tracking
         self._auto_scroll_enabled = True
         self._user_scrolled_away = False
+        self._programmatic_scroll = False
         
         # Configuration auto-save timer
         self._config_save_timer = QTimer()
         self._config_save_timer.setSingleShot(True)
         self._config_save_timer.timeout.connect(self.save_config)
         self._loading_config = False  # Flag to prevent save during load
+        
+        # Event history and pagination
+        self.event_history = []  # All events stored as dictionaries
+        self.visible_event_widgets = []  # Widgets currently displayed
+        self.max_visible_events = 100  # Maximum events to show at once
         
         self.init_ui()
         self.setup_signal_connections()
@@ -797,26 +1162,46 @@ class AgentGUI(QMainWindow):
         for checkbox in self.agent_controls_panel.tool_checkboxes.values():
             checkbox.stateChanged.connect(self._handle_config_change)
         
-        # Add a stretch before the agent output area
-        right_layout.addStretch(1)
+        # Create filter controls for event list
+        filter_widget = QWidget()
+        filter_layout = QHBoxLayout()
+        filter_widget.setLayout(filter_layout)
         
-        # Create output area for agent events
-        self.output_scroll_area = QScrollArea()
-        self.output_scroll_area.setWidgetResizable(True)
-        self.output_scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        self.output_scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        filter_layout.addWidget(QLabel("Filter:"))
+        self.filter_lineedit = QLineEdit()
+        self.filter_lineedit.setPlaceholderText("Search events...")
+        self.filter_lineedit.textChanged.connect(self._apply_filter)
+        filter_layout.addWidget(self.filter_lineedit, 1)  # Stretch
         
-        self.output_container = QWidget()
-        self.output_layout = QVBoxLayout()
-        self.output_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
-        self.output_container.setLayout(self.output_layout)
+        filter_layout.addWidget(QLabel("Type:"))
+        self.filter_type_combo = QComboBox()
+        self.filter_type_combo.addItems(["all", "turn", "final", "user_query", "stopped", 
+                                         "user_interaction_requested", "token_warning", 
+                                         "turn_warning", "paused", "max_turns", "error", 
+                                         "thread_finished"])
+        self.filter_type_combo.currentTextChanged.connect(self._apply_filter)
+        filter_layout.addWidget(self.filter_type_combo)
         
-        self.output_scroll_area.setWidget(self.output_container)
-        right_layout.addWidget(self.output_scroll_area, 4)  # Larger stretch factor
+        right_layout.addWidget(filter_widget)
+
+        # Create output area for agent events using virtual scrolling
+        self.event_model = EventModel()
+        self.filter_proxy_model = EventFilterProxyModel()
+        self.filter_proxy_model.setSourceModel(self.event_model)
         
+        self.event_list_view = QListView()
+        self.event_list_view.setModel(self.filter_proxy_model)
+        self.event_list_view.setItemDelegate(EventDelegate())
+        self.event_list_view.setVerticalScrollMode(QListView.ScrollMode.ScrollPerPixel)
+        self.event_list_view.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.event_list_view.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.event_list_view.setSelectionMode(QListView.SelectionMode.SingleSelection)
+        self.event_list_view.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.event_list_view.customContextMenuRequested.connect(self._on_event_context_menu)
+
+        right_layout.addWidget(self.event_list_view, 4)  # Larger stretch factor        
         # Monitor scrollbar to track user scrolling
-        self.output_scroll_area.verticalScrollBar().valueChanged.connect(self._on_scrollbar_value_changed)
-        
+        self.event_list_view.verticalScrollBar().valueChanged.connect(self._on_scrollbar_value_changed)        
         # Query input and buttons at bottom
         query_frame = QFrame()
         query_frame.setFrameStyle(QFrame.Shape.Box)
@@ -871,6 +1256,7 @@ class AgentGUI(QMainWindow):
         self.presenter.state_changed.connect(self.on_state_changed)
         self.presenter.event_received.connect(self.display_event)
         self.presenter.tokens_updated.connect(self.on_tokens_updated)
+        self.presenter.context_updated.connect(self.on_context_updated)
         self.presenter.status_message.connect(self.on_status_message)
         self.presenter.error_occurred.connect(self.on_error_occurred)
         self.presenter.config_changed.connect(self.on_config_changed)
@@ -915,89 +1301,63 @@ class AgentGUI(QMainWindow):
         if "history" in event:
             self.last_history = event["history"]
         
-        frame = EventFrame(etype.upper(), etype)
+        # Add detail level to event for rendering
+        event_with_detail = event.copy()
+        event_with_detail["_detail_level"] = detail_level
         
-        # Note: This is a simplified version. The full display_event logic
-        # from the original GUI would be migrated here. For brevity,
-        # we're implementing the core structure.
+        # Add event to model for virtual scrolling
+        self.event_model.add_event(event_with_detail)
         
-        if etype == "turn":
-            turn = event.get("turn", "?")
-            frame.add_content_line(f"Turn {turn}", style="font-weight: bold;")
-            
-            # Show assistant's natural language content (if any)
-            assistant_content = event.get("assistant_content", "")
-            if assistant_content and detail_level != "minimal":
-                frame.add_content_line(f"Assistant: {assistant_content}", style="color: #000000;", use_markdown=True)
-            
-            # Show reasoning
-            if detail_level != "minimal" and "reasoning" in event and event["reasoning"]:
-                frame.add_content_line(f"Reasoning: {event['reasoning']}", style="color: #666666;", use_markdown=True)
-            
-            # Show tool calls
-            for tc in event.get("tool_calls", []):
-                if detail_level == "minimal":
-                    frame.add_content_line(f"🛠️ {tc['name']}", style="color: #0000FF;")
-                else:
-                    frame.add_content_line(f"🛠️ {tc['name']}", style="color: #0000FF; font-weight: bold;")
-                    if detail_level == "verbose":
-                        frame.add_content_line(f"  Arguments: {tc['arguments']}", style="color: #0000AA;")
-                    
-                    result_widget = self._create_result_widget(tc['result'], tc['result'])
-                    frame.content_layout.addWidget(result_widget)
-        
-        elif etype == "final":
-            frame.add_content_line(f"Final answer: {event['content']}", style="font-weight: bold; color: #000080;", use_markdown=True)
-            if detail_level != "minimal" and "reasoning" in event and event["reasoning"]:
-                frame.add_content_line(f"Reasoning: {event['reasoning']}", style="color: #666666;", use_markdown=True)
-        
-        elif etype == "stopped":
-            frame.add_content_line("Agent stopped by user.", style="color: #FF8C00;")
-        
-        elif etype == "user_interaction_requested":
-            frame.add_content_line(f"Agent requests interaction: {event.get('message', '')}", style="color: #008080;")
-            # Optionally auto-focus the query input
+        # Handle any UI interactions
+        if etype == "user_interaction_requested":
+            # Auto-focus the query input
             self.query_entry.setFocus()
         
-        elif etype == "token_warning":
-            frame.add_content_line(event["message"], style="color: #FFA500; font-weight: bold;")
+        # Update token counts if present in event
+        if "context_length" in event:
+            self.context_length = event["context_length"]
+            self.status_panel.update_context_length(self.context_length)
         
-        elif etype == "turn_warning":
-            frame.add_content_line(event["message"], style="color: #FFA500; font-weight: bold;")
+        # Support both naming conventions for token counts
+        input_tokens = None
+        output_tokens = None
+        if "total_input_tokens" in event and "total_output_tokens" in event:
+            input_tokens = event["total_input_tokens"]
+            output_tokens = event["total_output_tokens"]
+        elif "total_input" in event and "total_output" in event:
+            input_tokens = event["total_input"]
+            output_tokens = event["total_output"]
         
-        elif etype == "paused":
-            frame.add_content_line("Agent paused, ready for next query.", style="color: #808080;")
-        
-        elif etype == "max_turns":
-            frame.add_content_line("Max turns reached without final answer.", style="color: #FF8C00;")
-        
-        elif etype == "error":
-            frame.add_content_line(f"ERROR: {event.get('message')}", style="color: #FF0000; font-weight: bold;")
-            if "traceback" in event and detail_level == "verbose":
-                frame.add_content_line(event['traceback'], style="color: #FF0000;")
-        
-        elif etype == "thread_finished":
-            frame.add_content_line("Background thread finished.", style="color: #808080;")
-        
-        else:
-            frame.add_content_line(str(event))
-        
-        self.output_layout.addWidget(frame)
-        self.output_container.updateGeometry()
-        self._scroll_to_bottom()
-    
+        if input_tokens is not None and output_tokens is not None:
+            self.total_input = input_tokens
+            self.total_output = output_tokens
+            self.status_panel.update_tokens(self.total_input, self.total_output)
+
+        # Auto-scroll to bottom
+        self._scroll_to_bottom()    
     @pyqtSlot(int, int)
     def on_tokens_updated(self, total_input, total_output):
         """Handle token count updates."""
         self.total_input = total_input
         self.total_output = total_output
         self.status_panel.update_tokens(total_input, total_output)
-    
+
+    @pyqtSlot(int)
+    def on_context_updated(self, context_length):
+        """Handle context token count updates."""
+        self.context_length = context_length
+        self.status_panel.update_context_length(context_length)
+
     @pyqtSlot(str)
     def on_status_message(self, message):
         """Handle status messages."""
         print(f"[GUI] Status: {message}")
         # Could update a status bar if we add one
+    def _apply_filter(self):
+        """Apply filter based on search text and event type selection."""
+        filter_text = self.filter_lineedit.text()
+        filter_type = self.filter_type_combo.currentText()
+        self.filter_proxy_model.set_filter(filter_text, filter_type)
     
     @pyqtSlot(str, str)
     def on_error_occurred(self, error_message, traceback):
@@ -1058,11 +1418,8 @@ class AgentGUI(QMainWindow):
         """Restart a fresh session with current GUI settings."""
         self.presenter.restart_session()
         
-        # Clear output area
-        for i in reversed(range(self.output_layout.count())):
-            widget = self.output_layout.itemAt(i).widget()
-            if widget is not None:
-                widget.setParent(None)
+        # Clear event model (virtual scrolling)
+        self.event_model.clear()
         
         # Reset token counters
         self.total_input = 0
@@ -1115,10 +1472,13 @@ class AgentGUI(QMainWindow):
     
     def display_user_query(self, query):
         """Display a user query in the output area."""
-        frame = EventFrame("USER", "user_query")
-        frame.add_content_line(f"Query: {query}", style="color: #006400; font-weight: bold;")
-        self.output_layout.addWidget(frame)
-        self.output_container.updateGeometry()
+        # Create a synthetic event for user query
+        event = {
+            "type": "user_query",
+            "content": query,
+            "_detail_level": self.agent_controls_panel.detail_combo.currentText()
+        }
+        self.event_model.add_event(event)
         self._scroll_to_bottom()
     
     def _create_result_widget(self, result_text, full_text):
@@ -1181,17 +1541,59 @@ class AgentGUI(QMainWindow):
             QTimer.singleShot(0, self._do_scroll_to_bottom)
     
     def _do_scroll_to_bottom(self):
-        scrollbar = self.output_scroll_area.verticalScrollBar()
-        scrollbar.setValue(scrollbar.maximum())
+        """Programmatically scroll to bottom."""
+        self._programmatic_scroll = True
+        try:
+            scrollbar = self.event_list_view.verticalScrollBar()
+            scrollbar.setValue(scrollbar.maximum())
+        finally:
+            self._programmatic_scroll = False
     
     def _on_scrollbar_value_changed(self, value):
         """Track if user has scrolled away from bottom."""
-        scrollbar = self.output_scroll_area.verticalScrollBar()
+        # Ignore scroll position changes during programmatic scrolling
+        if self._programmatic_scroll:
+            return
+        
+        scrollbar = self.event_list_view.verticalScrollBar()
         max_val = scrollbar.maximum()
         # If user is within 10 pixels of bottom, consider them at bottom
         self._user_scrolled_away = value < max_val - 10
         # Auto-scroll enabled when user at bottom
         self._auto_scroll_enabled = not self._user_scrolled_away
+    
+    def _on_event_context_menu(self, position):
+        """Show context menu for event list with copy option."""
+        index = self.event_list_view.indexAt(position)
+        if not index.isValid():
+            return
+        
+        # Get the event data
+        event = index.data(Qt.ItemDataRole.UserRole)
+        if not event:
+            return
+        
+        # Create context menu
+        menu = QMenu()
+        copy_action = menu.addAction("Copy")
+        
+        # Show menu and get selected action
+        selected_action = menu.exec(self.event_list_view.viewport().mapToGlobal(position))
+        
+        if selected_action == copy_action:
+            # Extract plain text from event using the delegate
+            delegate = self.event_list_view.itemDelegate()
+            if hasattr(delegate, '_event_to_plain_text'):
+                plain_text = delegate._event_to_plain_text(event)
+                if plain_text:
+                    clipboard = QApplication.clipboard()
+                    clipboard.setText(plain_text)
+            else:
+                # Fallback: just convert event dict to string
+                import json
+                plain_text = json.dumps(event, indent=2)
+                clipboard = QApplication.clipboard()
+                clipboard.setText(plain_text)
     
     # ----- Configuration Management -----
     

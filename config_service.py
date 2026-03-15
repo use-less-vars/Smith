@@ -21,21 +21,28 @@ class ConfigService:
     - Default values with validation
     """
     
-    def __init__(self, config_path: str, default_config: Optional[Dict[str, Any]] = None):
+    def __init__(self, config_path: str, default_config: Optional[Dict[str, Any]] = None, 
+                 schema: Optional[Dict[str, Any]] = None):
         """
         Initialize config service.
         
         Args:
             config_path: Path to JSON config file
             default_config: Default configuration values
+            schema: Validation schema for configuration keys
         """
         self.config_path = config_path
         self.default_config = default_config or {}
+        self.schema = schema or {}
         self._config = self.default_config.copy()
         self._listeners = []
         self._save_timer = None
         self._save_delay = 2.0  # seconds
         self._lock = threading.Lock()
+        
+        # Validate default config against schema
+        if self.schema:
+            self._validate_config(self.default_config, "default configuration")
         
         # Load existing config or create with defaults
         self.load()
@@ -51,6 +58,16 @@ class ConfigService:
             if os.path.exists(self.config_path):
                 with open(self.config_path, 'r') as f:
                     loaded = json.load(f)
+                
+                # Validate loaded config before applying
+                if self.schema:
+                    test_config = self.default_config.copy()
+                    test_config.update(loaded)
+                    if not self._validate_config(test_config, "loaded configuration"):
+                        print(f"[ConfigService] Loaded config failed validation, using defaults")
+                        with self._lock:
+                            self._config = self.default_config.copy()
+                        return False
                 
                 with self._lock:
                     # Merge loaded config with defaults
@@ -130,7 +147,7 @@ class ConfigService:
         with self._lock:
             return self._config.get(key, default)
     
-    def set(self, key: str, value: Any, notify: bool = True, save: bool = True) -> None:
+    def set(self, key: str, value: Any, notify: bool = True, save: bool = True, validate: bool = True) -> None:
         """
         Set configuration value.
         
@@ -139,7 +156,16 @@ class ConfigService:
             value: New value
             notify: Whether to notify listeners
             save: Whether to trigger save (debounced)
+            validate: Whether to validate against schema before setting
         """
+        # Validate before setting if schema exists
+        if validate and self.schema:
+            test_config = self.get_all().copy()
+            test_config[key] = value
+            if not self._validate_config(test_config, f"set operation for key '{key}'"):
+                print(f"[ConfigService] Validation failed for key '{key}', value not set")
+                return
+        
         with self._lock:
             old_value = self._config.get(key)
             if old_value != value:
@@ -151,7 +177,7 @@ class ConfigService:
                 if save:
                     self.save()
     
-    def update(self, updates: Dict[str, Any], notify: bool = True, save: bool = True) -> None:
+    def update(self, updates: Dict[str, Any], notify: bool = True, save: bool = True, validate: bool = True) -> None:
         """
         Update multiple configuration values.
         
@@ -159,7 +185,16 @@ class ConfigService:
             updates: Dictionary of key-value updates
             notify: Whether to notify listeners
             save: Whether to trigger save (debounced)
+            validate: Whether to validate against schema before updating
         """
+        # Validate all updates before applying if schema exists
+        if validate and self.schema:
+            test_config = self.get_all().copy()
+            test_config.update(updates)
+            if not self._validate_config(test_config, "bulk update operation"):
+                print("[ConfigService] Validation failed for bulk update, no changes applied")
+                return
+        
         changed = False
         changes = {}
         
@@ -233,12 +268,77 @@ class ConfigService:
         Returns:
             True if valid, False otherwise
         """
-        # TODO: Implement proper schema validation
-        # For now, basic implementation
-        with self._lock:
-            for key, value in self._config.items():
-                # Basic type checking could be added here
-                pass
+        return self._validate_config(self._config, "current configuration", schema)
+    
+    def _validate_config(self, config: Dict[str, Any], context: str = "configuration", 
+                         schema: Optional[Dict[str, Any]] = None) -> bool:
+        """
+        Validate configuration against schema.
+        
+        Args:
+            config: Configuration dictionary to validate
+            context: Description of what's being validated (for error messages)
+            schema: Validation schema (optional, uses self.schema if not provided)
+            
+        Returns:
+            True if valid, False otherwise
+        """
+        validation_schema = schema or self.schema
+        if not validation_schema:
+            return True
+        
+        errors = []
+        
+        for key, rules in validation_schema.items():
+            if key not in config:
+                if not rules.get('optional', False):
+                    errors.append(f"Required key '{key}' missing")
+                continue
+            
+            value = config[key]
+            
+            # Type validation
+            if 'type' in rules:
+                expected_type = rules['type']
+                if expected_type == 'int':
+                    if not isinstance(value, int):
+                        errors.append(f"Key '{key}' must be int, got {type(value).__name__}")
+                elif expected_type == 'float':
+                    if not isinstance(value, (int, float)):
+                        errors.append(f"Key '{key}' must be float, got {type(value).__name__}")
+                elif expected_type == 'str':
+                    if not isinstance(value, str):
+                        errors.append(f"Key '{key}' must be str, got {type(value).__name__}")
+                elif expected_type == 'bool':
+                    if not isinstance(value, bool):
+                        errors.append(f"Key '{key}' must be bool, got {type(value).__name__}")
+                elif expected_type == 'list':
+                    if not isinstance(value, list):
+                        errors.append(f"Key '{key}' must be list, got {type(value).__name__}")
+                elif expected_type == 'none':
+                    if value is not None:
+                        errors.append(f"Key '{key}' must be None, got {type(value).__name__}")
+            
+            # Range validation for numbers
+            if isinstance(value, (int, float)):
+                if 'min' in rules and value < rules['min']:
+                    errors.append(f"Key '{key}' must be >= {rules['min']}, got {value}")
+                if 'max' in rules and value > rules['max']:
+                    errors.append(f"Key '{key}' must be <= {rules['max']}, got {value}")
+            
+            # Choices validation
+            if 'choices' in rules and value not in rules['choices']:
+                errors.append(f"Key '{key}' must be one of {rules['choices']}, got {value}")
+        
+        # Check for unknown keys
+        for key in config.keys():
+            if key not in validation_schema:
+                errors.append(f"Unknown configuration key '{key}'")
+        
+        if errors:
+            print(f"[ConfigService] Validation errors in {context}:\n" + "\n".join(errors))
+            return False
+        
         return True
     
     def reset_to_defaults(self) -> None:
@@ -295,4 +395,17 @@ def create_agent_config_service(config_path: str = "agent_config.json") -> Confi
         "enabled_tools": [cls.__name__ for cls in SIMPLIFIED_TOOL_CLASSES]
     }
     
-    return ConfigService(config_path, default_config)
+    schema = {
+        "temperature": {"type": "float", "min": 0.0, "max": 2.0},
+        "max_turns": {"type": "int", "min": 1, "max": 500},
+        "token_monitor_enabled": {"type": "bool"},
+        "warning_threshold": {"type": "int", "min": 1, "max": 200},
+        "critical_threshold": {"type": "int", "min": 1, "max": 200},
+        "workspace_path": {"type": "none", "optional": True},
+        "tool_output_limit": {"type": "int", "min": 1000, "max": 100000},
+        "model": {"type": "str", "choices": ["deepseek-reasoner", "gpt-4", "claude-3", "llama-3"]},
+        "detail": {"type": "str", "choices": ["minimal", "normal", "verbose"]},
+        "enabled_tools": {"type": "list"}
+    }
+    
+    return ConfigService(config_path, default_config, schema)

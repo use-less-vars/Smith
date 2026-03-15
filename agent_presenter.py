@@ -35,6 +35,7 @@ class AgentPresenter(QObject):
         event_received(event: dict): Emitted when a new event arrives from controller
         tokens_updated(total_input: int, total_output: int): Emitted when token counts update
         status_message(message: str): Emitted for status updates
+        context_updated(context_length: int): Emitted when context token count updates
         error_occurred(error: str, traceback: str): Emitted for errors
         config_changed(config: dict): Emitted when configuration changes
     """
@@ -43,6 +44,7 @@ class AgentPresenter(QObject):
     state_changed = pyqtSignal(AgentState)
     event_received = pyqtSignal(dict)
     tokens_updated = pyqtSignal(int, int)
+    context_updated = pyqtSignal(int)
     status_message = pyqtSignal(str)
     error_occurred = pyqtSignal(str, str)
     config_changed = pyqtSignal(dict)
@@ -269,13 +271,26 @@ class AgentPresenter(QObject):
         # Update state based on event type
         if event_type == "turn":
             # Update token counts if available
+            # Support both naming conventions: total_input_tokens/total_output_tokens and total_input/total_output
+            input_tokens = None
+            output_tokens = None
+            
             if "total_input_tokens" in event and "total_output_tokens" in event:
-                self.total_input = event["total_input_tokens"]
-                self.total_output = event["total_output_tokens"]
+                input_tokens = event["total_input_tokens"]
+                output_tokens = event["total_output_tokens"]
+            elif "total_input" in event and "total_output" in event:
+                input_tokens = event["total_input"]
+                output_tokens = event["total_output"]
+            
+            if input_tokens is not None and output_tokens is not None:
+                self.total_input = input_tokens
+                self.total_output = output_tokens
                 self.tokens_updated.emit(self.total_input, self.total_output)
             
+            # Update context length if available
             if "context_length" in event:
                 self.context_length = event["context_length"]
+                self.context_updated.emit(self.context_length)
             
         elif event_type == "user_interaction_requested":
             self.state = AgentState.WAITING_FOR_USER
