@@ -1,0 +1,213 @@
+"""
+OpenAI-compatible provider implementation.
+Works with OpenAI, DeepSeek, OpenCode/Big Pickle, and any OpenAI-compatible API.
+"""
+from typing import Dict, List, Any, Optional
+import time
+import logging
+
+from openai import OpenAI, APIError, RateLimitError
+import tiktoken
+
+from .base import LLMProvider, ProviderConfig, LLMResponse
+from .exceptions import ProviderError, RateLimitExceeded, AuthenticationError
+
+logger = logging.getLogger(__name__)
+
+class OpenAICompatibleProvider(LLMProvider):
+    """
+    Provider for OpenAI-compatible APIs.
+    Supports: OpenAI, DeepSeek, OpenCode/Big Pickle, Local LLMs with OpenAI interface.
+    """
+    
+    # Provider-specific pricing (per 1M tokens) - update as needed
+    PRICING = {
+        "gpt-4": {"input": 30.0, "output": 60.0},
+        "gpt-4-turbo": {"input": 10.0, "output": 30.0},
+        "gpt-3.5-turbo": {"input": 0.5, "output": 1.5},
+        "deepseek-reasoner": {"input": 0.14, "output": 0.28},  # Example pricing
+        "opencode/big-pickle": {"input": 0.0, "output": 0.0},  # Currently free 
+    }
+    
+    def __init__(self, config: ProviderConfig):
+        super().__init__(config)
+        
+        # Initialize OpenAI client
+        client_kwargs = {
+            "api_key": config.api_key,
+            "timeout": config.timeout,
+            "max_retries": config.max_retries,
+        }
+        
+        if config.base_url:
+            client_kwargs["base_url"] = config.base_url
+        
+        if config.extra_headers:
+            client_kwargs["default_headers"] = config.extra_headers
+        
+        self.client = OpenAI(**client_kwargs)
+        
+        # Initialize tokenizer for token counting (lazy loading)
+        self.encoding = None
+        # We'll try to load tiktoken only when needed
+        # This avoids network dependencies during initialization
+
+    def _load_encoding(self):
+        """Lazily load tiktoken encoding for token counting"""
+        if self.encoding is not None:
+            return
+        
+        try:
+            # Try to get encoding for the model
+            self.encoding = tiktoken.encoding_for_model(self.config.model)
+            logger.debug(f"Loaded tokenizer for model: {self.config.model}")
+        except KeyError:
+            # Model not recognized by tiktoken, try to map to known encoding
+            try:
+                # Map known model families to encodings
+                model_lower = self.config.model.lower()
+                if "gpt-4" in model_lower or "gpt-3.5" in model_lower:
+                    self.encoding = tiktoken.get_encoding("cl100k_base")
+                elif "deepseek" in model_lower:
+                    self.encoding = tiktoken.get_encoding("cl100k_base")
+                elif "opencode" in model_lower or "big-pickle" in model_lower:
+                    self.encoding = tiktoken.get_encoding("cl100k_base")
+                else:
+                    # Unknown model, fallback to cl100k_base (most common)
+                    self.encoding = tiktoken.get_encoding("cl100k_base")
+            except Exception as e:
+                logger.warning(f"Failed to load tokenizer: {e}. Token counting will be approximate.")
+                self.encoding = None
+        except Exception as e:
+            logger.warning(f"Failed to load tokenizer: {e}. Token counting will be approximate.")
+            self.encoding = None
+
+    def chat_completion(
+        self, 
+        messages: List[Dict[str, str]], 
+        tools: Optional[List[Dict]] = None,
+        **kwargs
+    ) -> LLMResponse:
+        """Execute chat completion with OpenAI-compatible API"""
+        start_time = time.time()
+        
+        try:
+            # Prepare completion kwargs
+            completion_kwargs = {
+                "model": self.config.model,
+                "messages": messages,
+                "temperature": kwargs.get("temperature", self.config.temperature),
+                **kwargs
+            }
+            
+            if self.config.max_tokens:
+                completion_kwargs["max_tokens"] = self.config.max_tokens
+            
+            # Add tools if provided
+            if tools:
+                completion_kwargs["tools"] = self.format_tools(tools)
+                completion_kwargs["tool_choice"] = kwargs.get("tool_choice", "auto")
+            
+            # Make API call
+            response = self.client.chat.completions.create(**completion_kwargs)
+            
+            # Parse response
+            llm_response = self.parse_response(response, start_time)
+            
+            # Track usage
+            self.track_usage(llm_response)
+            
+            return llm_response
+            
+        except RateLimitError as e:
+            raise RateLimitExceeded(f"Rate limit exceeded: {e}")
+        except APIError as e:
+            if "authentication" in str(e).lower() or "api key" in str(e).lower():
+                raise AuthenticationError(f"Authentication failed: {e}")
+            raise ProviderError(f"API error: {e}")
+        except Exception as e:
+            raise ProviderError(f"Unexpected error: {e}")
+    
+    def parse_response(self, raw_response: Any, start_time: float) -> LLMResponse:
+        """Parse OpenAI-compatible response"""
+        latency = (time.time() - start_time) * 1000
+        
+        message = raw_response.choices[0].message
+        
+        # Extract tool calls if present
+        tool_calls = None
+        if hasattr(message, 'tool_calls') and message.tool_calls:
+            tool_calls = [
+                {
+                    "id": tc.id,
+                    "type": "function",
+                    "function": {
+                        "name": tc.function.name,
+                        "arguments": tc.function.arguments
+                    }
+                }
+                for tc in message.tool_calls
+            ]
+        
+        # Extract usage
+        usage = {}
+        if hasattr(raw_response, 'usage'):
+            usage = {
+                "prompt_tokens": raw_response.usage.prompt_tokens,
+                "completion_tokens": raw_response.usage.completion_tokens,
+                "total_tokens": raw_response.usage.total_tokens
+            }
+        
+        return LLMResponse(
+            content=message.content or "",
+            tool_calls=tool_calls,
+            usage=usage,
+            raw_response=raw_response,
+            provider=self.provider_name,
+            model=self.config.model,
+            latency_ms=latency
+        )
+    
+    def count_tokens(self, messages: List[Dict], tools: Optional[List] = None) -> int:
+        """Count tokens using tiktoken"""
+        # Lazy load encoding if needed
+        if self.encoding is None:
+            self._load_encoding()
+        
+        if self.encoding is None:
+            # If no tokenizer available, return approximate count
+            text = ""
+            for msg in messages:
+                text += f"{msg.get('role', '')}: {msg.get('content', '')}\n"
+            
+            if tools:
+                text += str(tools)
+            
+            # Approximate: 4 chars per token
+            return len(text) // 4
+        
+        try:
+            text = ""
+            for msg in messages:
+                text += f"{msg.get('role', '')}: {msg.get('content', '')}\n"
+            
+            if tools:
+                text += str(tools)
+            
+            return len(self.encoding.encode(text))
+        except Exception as e:
+            logger.warning(f"Token counting failed: {e}")
+            return 0
+    
+    def _calculate_cost(self, response: LLMResponse) -> float:
+        """Calculate cost based on model pricing"""
+        model = self.config.model
+        pricing = self.PRICING.get(model, self.PRICING.get("gpt-3.5-turbo"))
+        
+        prompt_tokens = response.usage.get("prompt_tokens", 0)
+        completion_tokens = response.usage.get("completion_tokens", 0)
+        
+        cost = (prompt_tokens * pricing["input"] / 1_000_000) + \
+               (completion_tokens * pricing["output"] / 1_000_000)
+        
+        return cost
