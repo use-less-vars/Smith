@@ -330,12 +330,14 @@ chmod +x "{script_path}"
                 timed_out=timed_out
             )
             
-        except DockerException as e:
+        except Exception as e:
+            import traceback
+            traceback.print_exc()   # This will print the stack trace to the console
             duration = time.time() - start_time
             return self._build_json_response(
                 success=False,
                 exit_code=-1,
-                error=f"Docker error: {e}",
+                error=f"Unexpected error: {e}\n{traceback.format_exc()}",
                 duration=duration
             )
         except TimeoutError as e:
