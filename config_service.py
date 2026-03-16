@@ -390,9 +390,13 @@ def create_agent_config_service(config_path: str = "agent_config.json") -> Confi
         "critical_threshold": 50,  # in thousands
         "workspace_path": None,
         "tool_output_limit": 10000,
+        "provider_type": "openai_compatible",
+        "api_key": "",
+        "base_url": "https://api.deepseek.com",
         "model": "deepseek-reasoner",
         "detail": "normal",
-        "enabled_tools": [cls.__name__ for cls in SIMPLIFIED_TOOL_CLASSES]
+        "enabled_tools": [cls.__name__ for cls in SIMPLIFIED_TOOL_CLASSES],
+        "provider_config": {}
     }
     
     schema = {
@@ -403,9 +407,13 @@ def create_agent_config_service(config_path: str = "agent_config.json") -> Confi
         "critical_threshold": {"type": "int", "min": 1, "max": 200},
         "workspace_path": {"type": "none", "optional": True},
         "tool_output_limit": {"type": "int", "min": 1000, "max": 100000},
+        "provider_type": {"type": "str", "choices": ["openai_compatible", "anthropic", "openai"]},
+        "api_key": {"type": "str", "optional": True},
+        "base_url": {"type": "str", "optional": True},
         "model": {"type": "str", "choices": ["deepseek-reasoner", "gpt-4", "claude-3", "llama-3"]},
         "detail": {"type": "str", "choices": ["minimal", "normal", "verbose"]},
-        "enabled_tools": {"type": "list"}
+        "enabled_tools": {"type": "list"},
+        "provider_config": {"type": "dict", "optional": True}
     }
     
     return ConfigService(config_path, default_config, schema)

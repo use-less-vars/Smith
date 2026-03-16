@@ -115,12 +115,23 @@ class AnthropicProvider(LLMProvider):
             if content_block.type == "text":
                 content = content_block.text
             elif content_block.type == "tool_use":
+                # Handle both dictionary and object tool calls
+                if hasattr(content_block, 'name'):
+                    # Object format (Anthropic SDK)
+                    name = content_block.name
+                    arguments = json.dumps(content_block.input)
+                    cb_id = content_block.id
+                else:
+                    # Dictionary format
+                    name = content_block.get("name")
+                    arguments = json.dumps(content_block.get("input", {}))
+                    cb_id = content_block.get("id")
                 tool_calls.append({
-                    "id": content_block.id,
+                    "id": cb_id,
                     "type": "function",
                     "function": {
-                        "name": content_block.name,
-                        "arguments": json.dumps(content_block.input)
+                        "name": name,
+                        "arguments": arguments
                     }
                 })
         

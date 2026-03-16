@@ -137,17 +137,28 @@ class OpenAICompatibleProvider(LLMProvider):
         # Extract tool calls if present
         tool_calls = None
         if hasattr(message, 'tool_calls') and message.tool_calls:
-            tool_calls = [
-                {
-                    "id": tc.id,
+            tool_calls = []
+            for tc in message.tool_calls:
+                # Handle both dictionary and object tool calls
+                if hasattr(tc, 'function'):
+                    # Object format (OpenAI SDK)
+                    name = tc.function.name
+                    arguments = tc.function.arguments
+                    tc_id = tc.id
+                else:
+                    # Dictionary format
+                    func = tc.get("function", {})
+                    name = func.get("name")
+                    arguments = func.get("arguments")
+                    tc_id = tc.get("id")
+                tool_calls.append({
+                    "id": tc_id,
                     "type": "function",
                     "function": {
-                        "name": tc.function.name,
-                        "arguments": tc.function.arguments
+                        "name": name,
+                        "arguments": arguments
                     }
-                }
-                for tc in message.tool_calls
-            ]
+                })
         
         # Extract usage
         usage = {}
@@ -158,8 +169,14 @@ class OpenAICompatibleProvider(LLMProvider):
                 "total_tokens": raw_response.usage.total_tokens
             }
         
+        # Extract reasoning content if present (e.g., DeepSeek reasoning)
+        reasoning = None
+        if hasattr(message, 'reasoning_content') and message.reasoning_content:
+            reasoning = message.reasoning_content
+        
         return LLMResponse(
             content=message.content or "",
+            reasoning=reasoning,
             tool_calls=tool_calls,
             usage=usage,
             raw_response=raw_response,

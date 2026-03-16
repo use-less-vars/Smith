@@ -4,8 +4,9 @@ import json
 import os
 import queue
 from typing import Optional, List, Dict, Any, TYPE_CHECKING
-from openai import OpenAI
+
 from pydantic import ValidationError
+from llm_providers.factory import ProviderFactory
 from tools import SIMPLIFIED_TOOL_CLASSES
 from tools.utils import model_to_openai_tool
 from tools.final import Final
@@ -30,7 +31,20 @@ from agent_state import AgentState, TokenState, TurnState, ExecutionState, Sessi
 class Agent:
     def __init__(self, config: AgentConfig, initial_conversation=None):
         self.config = config
-        self.client = OpenAI(api_key=config.api_key, base_url=config.base_url)
+        
+        # Create LLM provider using factory
+        provider_config = {
+            "api_key": config.api_key,
+            "base_url": config.base_url,
+            "model": config.model,
+            "temperature": config.temperature,
+            "max_tokens": config.max_tokens,
+            **config.provider_config  # Merge any provider-specific config
+        }
+        self.provider = ProviderFactory.create_provider(
+            config.provider_type,
+            **provider_config
+        )
         self.logger = None
         if LOGGING_AVAILABLE and config.enable_logging:
             self.logger = create_logger(config)
@@ -450,20 +464,19 @@ class Agent:
             if self.logger:
                 self.logger.log_llm_request(messages, self.tool_definitions)
             
-            # Call OpenAI with tools
-            response = self.client.chat.completions.create(
-                model=self.config.model,
+            # Call LLM provider
+            formatted_tools = self.provider.format_tools(self.tool_definitions)
+            response = self.provider.chat_completion(
                 messages=messages,
-                tools=self.tool_definitions,
-                tool_choice="auto",
+                tools=formatted_tools,
                 temperature=self.config.temperature,
             )
             
             # Token usage
             usage = response.usage
             if usage:
-                input_tokens = usage.prompt_tokens or 0
-                output_tokens = usage.completion_tokens or 0
+                input_tokens = usage.get("prompt_tokens", 0) or 0
+                output_tokens = usage.get("completion_tokens", 0) or 0
             else:
                 input_tokens = output_tokens = 0
             self.total_input_tokens += input_tokens
@@ -471,13 +484,11 @@ class Agent:
             self.state.current_conversation_tokens = input_tokens
             last_input_tokens = input_tokens
             last_output_tokens = output_tokens
-            
-            # Extract assistant message
-            assistant_message = response.choices[0].message
-            content = assistant_message.content or ""
-            reasoning = getattr(assistant_message, 'reasoning_content', None)
-            tool_calls = assistant_message.tool_calls
-            
+
+            # Extract assistant message from normalized response
+            content = response.content or ""
+            reasoning = response.reasoning
+            tool_calls = response.tool_calls  # Already in normalized format            
             # Log LLM response
             if self.logger:
                 usage_dict = {
@@ -488,7 +499,7 @@ class Agent:
                 }
                 tool_calls_dict = None
                 if tool_calls:
-                    tool_calls_dict = [tc.model_dump() for tc in tool_calls]
+                    tool_calls_dict = tool_calls
                 self.logger.log_llm_response(content, reasoning, tool_calls_dict, usage_dict)
             
             # Build assistant message dict for storage
@@ -498,7 +509,7 @@ class Agent:
             elif tool_calls:
                 assistant_dict["reasoning_content"] = ""
             if tool_calls:
-                assistant_dict["tool_calls"] = [tc.model_dump() for tc in tool_calls]
+                assistant_dict["tool_calls"] = tool_calls
             
             self.conversation.append(assistant_dict)
             # Estimate tokens for assistant message
@@ -520,7 +531,7 @@ class Agent:
                 summary_keep_recent_turns = 0
                 
                 for tool_call in tool_calls:
-                    tool_name = tool_call.function.name
+                    tool_name = tool_call["function"]["name"]
                     
                     # Check if tool is allowed in current state
                     if not self.state.is_tool_allowed(tool_name):
@@ -533,7 +544,7 @@ class Agent:
                         # Append tool result with error
                         self.conversation.append({
                             "role": "tool",
-                            "tool_call_id": tool_call.id,
+                            "tool_call_id": tool_call["id"],
                             "content": tool_result
                         })
                         # Estimate tokens for tool result
@@ -547,7 +558,7 @@ class Agent:
                         })
                         continue
                     
-                    arguments_str = tool_call.function.arguments
+                    arguments_str = tool_call["function"]["arguments"]
                     
                     try:
                         arguments = json.loads(arguments_str)
@@ -562,7 +573,7 @@ class Agent:
                                 self.logger.log_error("JSON_DECODE_ERROR", f"Failed to parse JSON for {tool_name}: {e}")
                             self.conversation.append({
                                 "role": "tool",
-                                "tool_call_id": tool_call.id,
+                                "tool_call_id": tool_call["id"],
                                 "content": tool_result
                             })
                             executed_tools.append({
@@ -574,7 +585,7 @@ class Agent:
                     
                     # Log tool call
                     if self.logger:
-                        self.logger.log_tool_call(tool_name, arguments, tool_call.id)
+                        self.logger.log_tool_call(tool_name, arguments, tool_call["id"])
                     
                     # Find matching tool class
                     tool_class = next((cls for cls in self.tool_classes if cls.__name__ == tool_name), None)
@@ -611,12 +622,12 @@ class Agent:
                     
                     # Log tool result
                     if self.logger:
-                        self.logger.log_tool_result(tool_name, tool_result, tool_call.id)
+                        self.logger.log_tool_result(tool_name, tool_result, tool_call["id"])
                     
                     # Append tool result
                     self.conversation.append({
                         "role": "tool",
-                        "tool_call_id": tool_call.id,
+                        "tool_call_id": tool_call["id"],
                         "content": tool_result
                     })
                     # Estimate tokens for tool result

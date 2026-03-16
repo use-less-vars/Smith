@@ -14,6 +14,7 @@ logger = logging.getLogger(__name__)
 class LLMResponse:
     """Normalized response from any LLM provider"""
     content: str
+    reasoning: Optional[str] = None
     tool_calls: Optional[List[Dict]] = None
     usage: Dict[str, int] = None  # {"prompt_tokens": x, "completion_tokens": y}
     raw_response: Any = None
@@ -33,7 +34,7 @@ class ProviderConfig:
     model: str = ""
     temperature: float = 0.7
     max_tokens: Optional[int] = None
-    timeout: int = 30
+    timeout: int = 120
     max_retries: int = 3
     extra_headers: Dict[str, str] = None
     

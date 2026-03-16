@@ -143,6 +143,13 @@ class AgentControlsPanel(QGroupBox):
         self.tool_checkboxes = {}  # name -> QCheckBox
         self.is_collapsed = True
         
+        # Provider type mapping: GUI display -> internal type
+        self._provider_mapping = {
+            "OpenAI (compatible)": "openai_compatible",
+            "Anthropic": "anthropic",
+            "OpenAI": "openai"
+        }
+        
         # Create toggle button for collapse/expand
         self.toggle_button = QPushButton("▼ Show Controls")
         self.toggle_button.setMaximumWidth(120)
@@ -244,23 +251,69 @@ class AgentControlsPanel(QGroupBox):
         
         self.controls_layout.addWidget(temperature_row, row, 0, 1, 4)
         
-        # Row 4: Model selection
+        # Row 4: Provider selection
+        row += 1
+        provider_row = QWidget()
+        provider_layout = QHBoxLayout()
+        provider_row.setLayout(provider_layout)
+        provider_layout.setSpacing(5)
+
+        provider_layout.addWidget(QLabel("Provider:"))
+        self.provider_combo = QComboBox()
+        self.provider_combo.addItems(["OpenAI (compatible)", "Anthropic", "OpenAI"])
+        self.provider_combo.setCurrentText("OpenAI (compatible)")
+        provider_layout.addWidget(self.provider_combo)
+        provider_layout.addStretch()
+
+        self.controls_layout.addWidget(provider_row, row, 0, 1, 4)
+
+        # Row 5: API Key (optional)
+        row += 1
+        api_key_row = QWidget()
+        api_key_layout = QHBoxLayout()
+        api_key_row.setLayout(api_key_layout)
+        api_key_layout.setSpacing(5)
+
+        api_key_layout.addWidget(QLabel("API Key:"))
+        self.api_key_edit = QLineEdit()
+        self.api_key_edit.setPlaceholderText("Leave empty to use environment variable")
+        self.api_key_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        api_key_layout.addWidget(self.api_key_edit)
+        api_key_layout.addStretch()
+
+        self.controls_layout.addWidget(api_key_row, row, 0, 1, 4)
+
+        # Row 6: Base URL (optional)
+        row += 1
+        base_url_row = QWidget()
+        base_url_layout = QHBoxLayout()
+        base_url_row.setLayout(base_url_layout)
+        base_url_layout.setSpacing(5)
+
+        base_url_layout.addWidget(QLabel("Base URL:"))
+        self.base_url_edit = QLineEdit()
+        self.base_url_edit.setPlaceholderText("Leave empty for default")
+        base_url_layout.addWidget(self.base_url_edit)
+        base_url_layout.addStretch()
+
+        self.controls_layout.addWidget(base_url_row, row, 0, 1, 4)
+
+        # Row 7: Model selection
         row += 1
         model_row = QWidget()
         model_layout = QHBoxLayout()
         model_row.setLayout(model_layout)
         model_layout.setSpacing(5)
-        
+
         model_layout.addWidget(QLabel("Model:"))
         self.model_combo = QComboBox()
         self.model_combo.addItems(["deepseek-reasoner", "gpt-4", "claude-3", "llama-3"])
         self.model_combo.setCurrentText("deepseek-reasoner")
         model_layout.addWidget(self.model_combo)
         model_layout.addStretch()
-        
-        self.controls_layout.addWidget(model_row, row, 0, 1, 4)
-        
-        # Row 5: Tool output token limit
+
+        self.controls_layout.addWidget(model_row, row, 0, 1, 4)        
+        # Row 8: Tool output token limit
         row += 1
         tool_limit_row = QWidget()
         tool_limit_layout = QHBoxLayout()
@@ -277,7 +330,7 @@ class AgentControlsPanel(QGroupBox):
         
         self.controls_layout.addWidget(tool_limit_row, row, 0, 1, 4)
         
-        # Row 6: Detail combo
+        # Row 9: Detail combo
         row += 1
         detail_row = QWidget()
         detail_layout = QHBoxLayout()
@@ -293,7 +346,7 @@ class AgentControlsPanel(QGroupBox):
         
         self.controls_layout.addWidget(detail_row, row, 0, 1, 4)
         
-        # Row 7: Tool loader (as a sub-group)
+        # Row 10: Tool loader (as a sub-group)
         row += 1
         tool_group = QGroupBox("Tools")
         tool_layout = QGridLayout()
@@ -434,6 +487,15 @@ class AgentControlsPanel(QGroupBox):
     def get_config_dict(self):
         """Return a dictionary of current control values suitable for JSON serialization."""
         config = {}
+        # Provider configuration
+        provider_display = self.provider_combo.currentText()
+        config["provider_type"] = self._provider_mapping.get(provider_display, "openai_compatible")
+        config["api_key"] = self.api_key_edit.text()
+        base_url = self.base_url_edit.text().strip()
+        config["base_url"] = base_url if base_url else "https://api.deepseek.com"
+        config["model"] = self.model_combo.currentText()
+        
+        # Agent parameters
         config["temperature"] = self.temperature_spinbox.value()
         config["max_turns"] = self.max_turns_spinbox.value()
         config["token_monitor_enabled"] = self.token_monitor_checkbox.isChecked()
@@ -444,13 +506,29 @@ class AgentControlsPanel(QGroupBox):
         workspace_path = None if workspace_display == "None (unrestricted)" else workspace_display
         config["workspace_path"] = workspace_path
         config["tool_output_limit"] = self.tool_output_limit_spinbox.value()
-        config["model"] = self.model_combo.currentText()
         config["detail"] = self.detail_combo.currentText()
         config["enabled_tools"] = [name for name, cb in self.tool_checkboxes.items() if cb.isChecked()]
+        # Provider-specific config (empty dict for now)
+        config["provider_config"] = {}
         return config
     
     def set_config_dict(self, config):
         """Set control values from a configuration dictionary."""
+        # Provider configuration
+        # Map internal provider_type to GUI display value
+        reverse_mapping = {v: k for k, v in self._provider_mapping.items()}
+        if "provider_type" in config:
+            provider_type = config["provider_type"]
+            display_text = reverse_mapping.get(provider_type, "OpenAI (compatible)")
+            index = self.provider_combo.findText(display_text)
+            if index >= 0:
+                self.provider_combo.setCurrentIndex(index)
+        if "api_key" in config:
+            self.api_key_edit.setText(config["api_key"])
+        if "base_url" in config:
+            self.base_url_edit.setText(config["base_url"])
+        # Model selection (already handled later, but we need to ensure it's after provider)
+        
         # Temperature
         if "temperature" in config:
             self.temperature_spinbox.setValue(config["temperature"])

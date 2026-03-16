@@ -2,7 +2,7 @@
 import json
 import logging
 import os
-from typing import Optional, Callable, List, Any, Dict
+from typing import Optional, Callable, List, Any, Dict, Literal
 from openai import OpenAI
 from pydantic import BaseModel, ValidationError, Field
 
@@ -26,9 +26,11 @@ except ImportError:
     LogLevel = None 
 
 class AgentConfig(BaseModel):
-    api_key: str
+    api_key: str = ""
     base_url: str = "https://api.deepseek.com"
     model: str = "deepseek-reasoner"
+    provider_type: Literal["openai_compatible", "anthropic", "openai"] = "openai_compatible"
+    provider_config: Dict[str, Any] = Field(default_factory=dict)
     temperature: float = 0.2
     max_turns: int = 30
     stop_check: Optional[Callable[[], bool]] = None

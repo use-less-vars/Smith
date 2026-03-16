@@ -115,12 +115,24 @@ class ToolFormatConverter:
         
         tool_calls = []
         for tc in message.tool_calls:
+            # Handle both dictionary and object tool calls
+            if hasattr(tc, 'function'):
+                # Object format (OpenAI SDK)
+                name = tc.function.name
+                arguments = tc.function.arguments
+                tc_id = tc.id
+            else:
+                # Dictionary format
+                func = tc.get("function", {})
+                name = func.get("name")
+                arguments = func.get("arguments")
+                tc_id = tc.get("id")
             tool_calls.append({
-                "id": tc.id,
+                "id": tc_id,
                 "type": "function",
                 "function": {
-                    "name": tc.function.name,
-                    "arguments": tc.function.arguments
+                    "name": name,
+                    "arguments": arguments
                 }
             })
         
@@ -135,12 +147,23 @@ class ToolFormatConverter:
         tool_calls = []
         for content_block in response.content:
             if content_block.type == "tool_use":
+                # Handle both dictionary and object tool calls
+                if hasattr(content_block, 'name'):
+                    # Object format (Anthropic SDK)
+                    name = content_block.name
+                    arguments = json.dumps(content_block.input)
+                    cb_id = content_block.id
+                else:
+                    # Dictionary format
+                    name = content_block.get("name")
+                    arguments = json.dumps(content_block.get("input", {}))
+                    cb_id = content_block.get("id")
                 tool_calls.append({
-                    "id": content_block.id,
+                    "id": cb_id,
                     "type": "function",
                     "function": {
-                        "name": content_block.name,
-                        "arguments": json.dumps(content_block.input)
+                        "name": name,
+                        "arguments": arguments
                     }
                 })
         
