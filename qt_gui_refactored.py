@@ -1695,13 +1695,25 @@ class AgentGUI(QMainWindow):
     
     def display_user_query(self, query):
         """Display a user query in the output area."""
+        print(f"[GUI] display_user_query: '{query[:50]}...'")
         # Create a synthetic event for user query
         event = {
             "type": "user_query",
             "content": query,
             "_detail_level": self.agent_controls_panel.detail_combo.currentText()
         }
+        # Add event to model for virtual scrolling
         self.event_model.add_event(event)
+        
+        # If event passes current filter, add to output text area
+        if self._event_passes_filter(event):
+            html = self._format_event_html(event)
+            cursor = self.output_textedit.textCursor()
+            cursor.movePosition(QTextCursor.MoveOperation.End)
+            if not self.output_textedit.document().isEmpty():
+                cursor.insertHtml("<hr>")
+            cursor.insertHtml(html)
+        
         self._scroll_to_bottom()
     
     def _create_result_widget(self, result_text, full_text):
