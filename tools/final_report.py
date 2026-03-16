@@ -42,9 +42,9 @@ class FinalReport(Final):
             # Limit length
             if len(sanitized) > 50:
                 sanitized = sanitized[:50]
-            filename = f"{timestamp}_{sanitized}.txt"
+            filename = f"{timestamp}_{sanitized}.md"
         else:
-            filename = f"{timestamp}_final_report.txt"
+            filename = f"{timestamp}_final_report.md"
         
         filepath = reports_dir / filename
         

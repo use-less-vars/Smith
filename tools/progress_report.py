@@ -38,9 +38,9 @@ class ProgressReport(ToolBase):
                 sanitized = sanitized.replace(' ', '_')
                 if len(sanitized) > 50:
                     sanitized = sanitized[:50]
-                filename = f"progress_log_{sanitized}.txt"
+                filename = f"progress_log_{sanitized}.md"
             else:
-                filename = "progress_log.txt"
+                filename = "progress_log.md"
         else:
             # For new files, include timestamp for uniqueness
             if self.report_title:
@@ -48,9 +48,9 @@ class ProgressReport(ToolBase):
                 sanitized = sanitized.replace(' ', '_')
                 if len(sanitized) > 50:
                     sanitized = sanitized[:50]
-                filename = f"{timestamp}_{sanitized}.txt"
+                filename = f"{timestamp}_{sanitized}.md"
             else:
-                filename = f"{timestamp}_progress_report.txt"
+                filename = f"{timestamp}_progress_report.md"
         
         filepath = reports_dir / filename
         
