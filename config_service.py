@@ -410,7 +410,7 @@ def create_agent_config_service(config_path: str = "agent_config.json") -> Confi
         "provider_type": {"type": "str", "choices": ["openai_compatible", "anthropic", "openai"]},
         "api_key": {"type": "str", "optional": True},
         "base_url": {"type": "str", "optional": True},
-        "model": {"type": "str", "choices": ["deepseek-reasoner", "gpt-4", "claude-3", "llama-3"]},
+        "model": {"type": "str"},  # Allow any model name
         "detail": {"type": "str", "choices": ["minimal", "normal", "verbose"]},
         "enabled_tools": {"type": "list"},
         "provider_config": {"type": "dict", "optional": True}

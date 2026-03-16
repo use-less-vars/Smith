@@ -307,7 +307,8 @@ class AgentControlsPanel(QGroupBox):
 
         model_layout.addWidget(QLabel("Model:"))
         self.model_combo = QComboBox()
-        self.model_combo.addItems(["deepseek-reasoner", "gpt-4", "claude-3", "llama-3"])
+        self.model_combo.setEditable(True)
+        self.model_combo.addItems(["deepseek-reasoner", "gpt-4", "claude-3", "llama-3", "big pickle", "gpt-3.5-turbo", "claude-3-haiku", "claude-3-sonnet", "claude-3-opus"])
         self.model_combo.setCurrentText("deepseek-reasoner")
         model_layout.addWidget(self.model_combo)
         model_layout.addStretch()
@@ -475,7 +476,7 @@ class AgentControlsPanel(QGroupBox):
         else:
             warning_text = f"({warning_value})"
         self.warning_formatted_label.setText(warning_text)
-        
+
         # Format critical threshold (multiply by 1000 for display)
         critical_value = self.critical_threshold_spinbox.value() * 1000
         if critical_value >= 1000:
@@ -483,7 +484,44 @@ class AgentControlsPanel(QGroupBox):
         else:
             critical_text = f"({critical_value})"
         self.critical_formatted_label.setText(critical_text)
-    
+
+    def update_model_suggestions(self, model_to_set=None):
+        """Update model suggestions based on current provider selection.
+        
+        Args:
+            model_to_set: If provided, try to select this model after updating suggestions.
+                          If not provided, try to restore current model text.
+        """
+        provider = self.provider_combo.currentText()
+        
+        # Store current model text before clearing
+        current_model = model_to_set if model_to_set is not None else self.model_combo.currentText()
+        
+        # Clear current items
+        self.model_combo.clear()
+        
+        # Add provider-specific suggestions
+        if provider == "OpenAI (compatible)":
+            suggestions = ["deepseek-reasoner", "gpt-4", "gpt-3.5-turbo", "big pickle", "llama-3", "mixtral"]
+        elif provider == "Anthropic":
+            suggestions = ["claude-3-opus", "claude-3-sonnet", "claude-3-haiku", "claude-3"]
+        elif provider == "OpenAI":
+            suggestions = ["gpt-4-turbo", "gpt-4", "gpt-3.5-turbo", "gpt-3.5"]
+        else:
+            suggestions = ["deepseek-reasoner", "gpt-4", "claude-3", "llama-3"]
+        
+        self.model_combo.addItems(suggestions)
+        
+        # Try to restore specified model, or use first suggestion
+        index = self.model_combo.findText(current_model)
+        if index >= 0:
+            self.model_combo.setCurrentIndex(index)
+        elif current_model:
+            # If custom model was entered, set it as current text
+            self.model_combo.setCurrentText(current_model)
+        else:
+            self.model_combo.setCurrentIndex(0)
+
     def get_config_dict(self):
         """Return a dictionary of current control values suitable for JSON serialization."""
         config = {}
@@ -528,6 +566,9 @@ class AgentControlsPanel(QGroupBox):
         if "base_url" in config:
             self.base_url_edit.setText(config["base_url"])
         # Model selection (already handled later, but we need to ensure it's after provider)
+        # Update model suggestions based on selected provider, trying to set model from config if provided
+        model_to_set = config.get("model") if "model" in config else None
+        self.update_model_suggestions(model_to_set)
         
         # Temperature
         if "temperature" in config:
@@ -558,11 +599,7 @@ class AgentControlsPanel(QGroupBox):
         # Tool output limit
         if "tool_output_limit" in config:
             self.tool_output_limit_spinbox.setValue(config["tool_output_limit"])
-        # Model selection
-        if "model" in config:
-            index = self.model_combo.findText(config["model"])
-            if index >= 0:
-                self.model_combo.setCurrentIndex(index)
+        # Model selection - already handled in update_model_suggestions
         # Detail level
         if "detail" in config:
             index = self.detail_combo.findText(config["detail"])
@@ -1257,6 +1294,7 @@ class AgentGUI(QMainWindow):
         self.agent_controls_panel.temperature_spinbox.valueChanged.connect(self._handle_config_change)
         self.agent_controls_panel.max_turns_spinbox.valueChanged.connect(self._handle_config_change)
         self.agent_controls_panel.tool_output_limit_spinbox.valueChanged.connect(self._handle_config_change)
+        self.agent_controls_panel.provider_combo.currentTextChanged.connect(self._update_model_suggestions)
         self.agent_controls_panel.model_combo.currentTextChanged.connect(self._handle_config_change)
         self.agent_controls_panel.detail_combo.currentTextChanged.connect(self._handle_config_change)
         self.agent_controls_panel.token_monitor_checkbox.stateChanged.connect(self._handle_config_change)
@@ -1914,6 +1952,14 @@ class AgentGUI(QMainWindow):
             print("[GUI] Configuration saved to service")
         except Exception as e:
             print(f"[GUI] Error saving config: {e}")
+    
+    def _update_model_suggestions(self):
+        """Update model suggestions based on selected provider."""
+        # Delegate to the controls panel's method
+        self.agent_controls_panel.update_model_suggestions()
+        
+        # Also trigger config change since provider changed
+        self._handle_config_change()
     
     def _handle_config_change(self):
         """Handle configuration change from UI controls."""
