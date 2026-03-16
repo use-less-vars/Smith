@@ -272,10 +272,20 @@ class AgentPresenter(QObject):
         if event_type == "turn":
             # Update token counts if available
             # Support both naming conventions: total_input_tokens/total_output_tokens and total_input/total_output
+            # Token counts are typically inside event["usage"] dict
             input_tokens = None
             output_tokens = None
             
-            if "total_input_tokens" in event and "total_output_tokens" in event:
+            # First check usage dict
+            usage = event.get("usage", {})
+            if "total_input_tokens" in usage and "total_output_tokens" in usage:
+                input_tokens = usage["total_input_tokens"]
+                output_tokens = usage["total_output_tokens"]
+            elif "total_input" in usage and "total_output" in usage:
+                input_tokens = usage["total_input"]
+                output_tokens = usage["total_output"]
+            # For backward compatibility, also check top-level
+            elif "total_input_tokens" in event and "total_output_tokens" in event:
                 input_tokens = event["total_input_tokens"]
                 output_tokens = event["total_output_tokens"]
             elif "total_input" in event and "total_output" in event:
@@ -287,9 +297,17 @@ class AgentPresenter(QObject):
                 self.total_output = output_tokens
                 self.tokens_updated.emit(self.total_input, self.total_output)
             
-            # Update context length if available
+            # Update context length if available (either directly or in usage dict)
+            context_length = None
             if "context_length" in event:
-                self.context_length = event["context_length"]
+                context_length = event["context_length"]
+            elif "usage" in event and "context_length" in event["usage"]:
+                context_length = event["usage"]["context_length"]
+            elif "usage" in event and "current_conversation_tokens" in event["usage"]:
+                context_length = event["usage"]["current_conversation_tokens"]
+            
+            if context_length is not None:
+                self.context_length = context_length
                 self.context_updated.emit(self.context_length)
             
         elif event_type == "user_interaction_requested":

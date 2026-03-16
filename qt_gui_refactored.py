@@ -1019,6 +1019,17 @@ class EventDelegate(QStyledItemDelegate):
         else:
             add_line(str(event))
             
+        # Add token usage and context length if available
+        if "context_length" in event:
+            add_line(f"Context length: {event['context_length']} tokens")
+        
+        if "usage" in event:
+            usage = event["usage"]
+            if "input" in usage and "output" in usage:
+                add_line(f"Token usage (this event): input {usage['input']}, output {usage['output']}")
+            if "total_input" in usage and "total_output" in usage:
+                add_line(f"Cumulative tokens: input {usage['total_input']}, output {usage['total_output']}")
+            
         return '\n'.join(lines)
 
 
@@ -1319,9 +1330,20 @@ class AgentGUI(QMainWindow):
             self.status_panel.update_context_length(self.context_length)
         
         # Support both naming conventions for token counts
+        # Token counts are typically inside event["usage"] dict
         input_tokens = None
         output_tokens = None
-        if "total_input_tokens" in event and "total_output_tokens" in event:
+        
+        # First check usage dict
+        usage = event.get("usage", {})
+        if "total_input_tokens" in usage and "total_output_tokens" in usage:
+            input_tokens = usage["total_input_tokens"]
+            output_tokens = usage["total_output_tokens"]
+        elif "total_input" in usage and "total_output" in usage:
+            input_tokens = usage["total_input"]
+            output_tokens = usage["total_output"]
+        # For backward compatibility, also check top-level
+        elif "total_input_tokens" in event and "total_output_tokens" in event:
             input_tokens = event["total_input_tokens"]
             output_tokens = event["total_output_tokens"]
         elif "total_input" in event and "total_output" in event:

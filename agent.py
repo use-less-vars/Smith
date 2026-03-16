@@ -383,6 +383,7 @@ class Agent:
                 yield {
                     "type": "stopped",
                     "turn": turn,
+                    "context_length": self.state.current_conversation_tokens,
                     "usage": {"input": last_input_tokens, "output": last_output_tokens,
                               "total_input": self.total_input_tokens, "total_output": self.total_output_tokens}
                 }
@@ -403,6 +404,7 @@ class Agent:
                     "type": event["type"],
                     "message": event["message"],
                     "turn_count": event.get("turn_count", turn),
+                    "context_length": self.state.current_conversation_tokens,
                     "usage": {
                         "input": last_input_tokens,
                         "output": last_output_tokens,
@@ -426,6 +428,7 @@ class Agent:
                     "type": event["type"],
                     "message": event["message"],
                     "token_count": event.get("token_count", self.state.current_conversation_tokens),
+                    "context_length": self.state.current_conversation_tokens,
                     "usage": {
                         "input": last_input_tokens,
                         "output": last_output_tokens,
@@ -649,6 +652,7 @@ class Agent:
                     "assistant_content": content,
                     "tool_calls": executed_tools,
                     "reasoning": reasoning,
+                    "context_length": self.state.current_conversation_tokens,
                     "history": self.conversation.copy(),
                     "usage": {
                         "input": input_tokens,
@@ -672,6 +676,7 @@ class Agent:
                     yield {
                         "type": "user_interaction_requested",
                         "turn": turn,
+                        "context_length": self.state.current_conversation_tokens,
                         "message": user_interaction_message,
                         "history": self.conversation.copy(),
                         "usage": {
@@ -697,6 +702,7 @@ class Agent:
                     yield {
                         "type": "final",
                         "content": final_content,
+                        "context_length": self.state.current_conversation_tokens,
                         "reasoning": reasoning,
                         "usage": {
                             "input": input_tokens,
@@ -721,6 +727,7 @@ class Agent:
                 yield {
                     "type": "final",
                     "content": content,
+                     "context_length": self.state.current_conversation_tokens,
                     "reasoning": reasoning,
                     "usage": {
                         "input": input_tokens,
@@ -744,6 +751,7 @@ class Agent:
         yield {
             "type": "max_turns",
             "turn": self.config.max_turns,
+             "context_length": self.state.current_conversation_tokens,
             "usage": {"input": last_input_tokens, "output": last_output_tokens,
                       "total_input": self.total_input_tokens, "total_output": self.total_output_tokens}
         }
