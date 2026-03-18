@@ -12,6 +12,7 @@ from tools.final import Final
 from tools.request_user_interaction import RequestUserInteraction
 from tools.utils import model_to_openai_tool
 from fast_json_repair import loads as repair_loads
+import typing
 
 
 # Import logging module
@@ -52,6 +53,7 @@ class AgentConfig(BaseModel):
     turn_monitor_enabled: bool = Field(default=True, description="Enable automatic turn limit warnings")
     turn_monitor_warning_threshold: float = Field(default=0.8, description="Warning threshold as fraction of max_turns (e.g., 0.8 = 80%)")
     turn_monitor_critical_threshold: float = Field(default=0.95, description="Critical threshold as fraction of max_turns (e.g., 0.95 = 95%)")
+    critical_countdown_turns: int = Field(default=5, description="Number of turns to count down before tool restrictions apply after entering critical state")
     
     # Logging configuration
     enable_logging: bool = Field(default=True, description="Enable agent logging")

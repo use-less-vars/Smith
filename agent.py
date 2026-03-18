@@ -169,6 +169,14 @@ class Agent:
             self.conversation.append(warning_msg)
             warning_tokens = self._estimate_tokens(warning_msg)
             self.state.current_conversation_tokens += warning_tokens
+        elif event.get("type") in ("critical_countdown_start", "token_critical_active", "turn_critical_active"):
+            # Handle countdown events - inject as system message
+            message = event.get("message", "")
+            sender = event.get("sender", "system")
+            warning_msg = {"role": sender, "content": message}
+            self.conversation.append(warning_msg)
+            warning_tokens = self._estimate_tokens(warning_msg)
+            self.state.current_conversation_tokens += warning_tokens
         elif event.get("type") == "execution_state_change":
             # Log execution state changes
             old_state = event.get("old_state")
@@ -689,7 +697,12 @@ class Agent:
                         "arguments": arguments,
                         "result": tool_result
                     })
-                
+
+                # Decrement critical countdowns after tools have executed
+                countdown_events = self.state.decrement_critical_countdown()
+                for event in countdown_events:
+                    self._handle_state_event(event)
+
                 # Apply summary pruning if requested
                 if summary_requested:
                     self._apply_summary_pruning(summary_text, summary_keep_recent_turns)
