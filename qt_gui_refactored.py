@@ -25,7 +25,8 @@ from PyQt6.QtGui import QAction, QKeySequence, QFont, QTextDocument, QTextCursor
 from PyQt6.QtPrintSupport import QPrinter
 from dotenv import load_dotenv
 
-from agent_presenter import AgentPresenter, AgentState
+from agent_presenter import AgentPresenter
+from agent_state import ExecutionState
 from config_service import create_agent_config_service, ConfigService
 from tools import TOOL_CLASSES, SIMPLIFIED_TOOL_CLASSES
 
@@ -1837,30 +1838,30 @@ class AgentGUI(QMainWindow):
     
     # ----- Signal Handlers -----
     
-    @pyqtSlot(AgentState)
+    @pyqtSlot(ExecutionState)
     def on_state_changed(self, state):
         """Handle agent state changes."""
         print(f"[GUI] State changed to: {state}")
         
         # Update UI based on state
-        if state == AgentState.IDLE:
+        if state == ExecutionState.IDLE:
             self.status_panel.update_status("Ready")
             self.update_buttons(running=False)
-        elif state == AgentState.RUNNING:
+        elif state == ExecutionState.RUNNING:
             self.status_panel.update_status("Running")
             self.update_buttons(running=True, idle=False)
-        elif state == AgentState.PAUSED:
+        elif state == ExecutionState.PAUSED:
             self.status_panel.update_status("Paused")
             self.update_buttons(running=True, idle=True)
-        elif state == AgentState.WAITING_FOR_USER:
+        elif state == ExecutionState.WAITING_FOR_USER:
             self.status_panel.update_status("Waiting for user input")
             self.update_buttons(running=True, idle=True)
             # Auto-focus query input
             self.query_entry.setFocus()
-        elif state == AgentState.STOPPED:
+        elif state == ExecutionState.STOPPED:
             self.status_panel.update_status("Stopped")
             self.update_buttons(running=False)
-        elif state == AgentState.FINISHED:
+        elif state == ExecutionState.FINALIZED:
             self.status_panel.update_status("Completed")
             self.update_buttons(running=True, idle=True)
     
@@ -2025,13 +2026,13 @@ class AgentGUI(QMainWindow):
         # Check current state to decide action
         current_state = self.presenter.state
         
-        if current_state == AgentState.IDLE:
+        if current_state == ExecutionState.IDLE:
             # Start new session
             self.display_user_query(query)
             self.presenter.start_session(query, config_dict)
             self.query_entry.clear()
             
-        elif current_state in [AgentState.PAUSED, AgentState.WAITING_FOR_USER]:
+        elif current_state in [ExecutionState.PAUSED, ExecutionState.WAITING_FOR_USER]:
             # Continue existing session
             self.display_user_query(query)
             self.presenter.continue_session(query)
@@ -2078,14 +2079,13 @@ class AgentGUI(QMainWindow):
         """Update button states based on agent state."""
         if running is None:
             running = self.presenter.state in [
-                AgentState.RUNNING, 
-                AgentState.PAUSED, 
-                AgentState.WAITING_FOR_USER
-            ]
+                ExecutionState.RUNNING,
+                ExecutionState.PAUSED,
+                ExecutionState.WAITING_FOR_USER            ]
             idle = self.presenter.state in [
-                AgentState.PAUSED,
-                AgentState.WAITING_FOR_USER,
-                AgentState.FINISHED
+                ExecutionState.PAUSED,
+                ExecutionState.WAITING_FOR_USER,
+                ExecutionState.FINALIZED
             ]
         
         print(f"[GUI] update_buttons(running={running}, idle={idle}), state={self.presenter.state}")
@@ -2249,7 +2249,7 @@ class AgentGUI(QMainWindow):
             config = self.agent_controls_panel.get_config_dict()
             print(f"[GUI] Saving config: {config} (immediate={immediate})")
             # Update config in service
-            self.config_service.update(config, save=False)
+            self.config_service.update(config, notify=True, save=False)
             # Save with appropriate immediacy
             self.config_service.save(immediate=immediate)
             print("[GUI] Configuration saved to service")
@@ -2666,39 +2666,10 @@ class AgentGUI(QMainWindow):
     def closeEvent(self, event):
         """Save configuration before closing the GUI."""
         # Save immediately on close to ensure config is persisted
-        self._save_config_to_service()
+        self.save_config(immediate=True)
         # Clean up presenter
         self.presenter.cleanup()
         super().closeEvent(event)
-    def _load_config():
-        def _load_config(self):
-            """Load configuration from file or create default."""
-            try:
-                config = self._config_service.load_config()
-                self._apply_config_to_controls(config)
-                print(f"[GUI] Configuration loaded from {self._config_path}")
-            except Exception as e:
-                print(f"[GUI] Error loading config: {e}, using defaults")
-                # Create default config
-                config = self._config_service.create_default_config()
-                self._apply_config_to_controls(config)
-    def _apply_config_to_controls():
-        def _apply_config_to_controls(self, config):
-            """Apply configuration dictionary to the controls panel."""
-            self._loading_config = True
-            try:
-                self.agent_controls_panel.set_config_dict(config)
-            finally:
-                self._loading_config = False
-    def _save_config_to_service():
-        def _save_config_to_service(self):
-            """Save current configuration to the ConfigService."""
-            try:
-                config = self.agent_controls_panel.get_config_dict()
-                self._config_service.save_config(config)
-                print(f"[GUI] Configuration saved to {self._config_path}")
-            except Exception as e:
-                print(f"[GUI] Error saving config: {e}")
 
 
 

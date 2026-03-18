@@ -348,19 +348,23 @@ class Agent:
         # Ensure system prompt present
         self._ensure_system_prompt()
         
-        # Update execution state: transition to RUNNING
+        # Update execution state: use intermediate STARTING state when starting fresh
         current_exec_state = self.state.execution_state
         if current_exec_state == ExecutionState.RUNNING:
             # This shouldn't happen, but handle gracefully
             if self.logger:
                 self.logger.log_error("EXECUTION_STATE", "process_query called while already RUNNING")
         elif current_exec_state in (ExecutionState.PAUSED, ExecutionState.WAITING_FOR_USER):
-            # Resuming from pause or user interaction
+            # Resuming from pause or user interaction - go directly to RUNNING
             events = self.state.set_execution_state(ExecutionState.RUNNING)
             for event in events:
                 self._handle_state_event(event)
         else:
-            # Starting from IDLE, STOPPED, etc.
+            # Starting from IDLE, STOPPED, etc. - use STARTING intermediate state
+            events = self.state.set_execution_state(ExecutionState.STARTING)
+            for event in events:
+                self._handle_state_event(event)
+            # Immediately transition to RUNNING
             events = self.state.set_execution_state(ExecutionState.RUNNING)
             for event in events:
                 self._handle_state_event(event)
@@ -395,11 +399,15 @@ class Agent:
             
             # Check stop signal
             if self.stop_check and self.stop_check():
-                # Update execution state: transition to STOPPED
+                # Update execution state: transition through STOPPING intermediate state
+                events = self.state.set_execution_state(ExecutionState.STOPPING)
+                for event in events:
+                    self._handle_state_event(event)
+                # Then transition to STOPPED
                 events = self.state.set_execution_state(ExecutionState.STOPPED)
                 for event in events:
                     self._handle_state_event(event)
-                
+
                 if self.logger:
                     self.logger.log_stop_signal()
                     self.logger.log_agent_end("stopped", "Stop signal received")
@@ -411,8 +419,7 @@ class Agent:
                     "usage": {"input": last_input_tokens, "output": last_output_tokens,
                               "total_input": self.total_input_tokens, "total_output": self.total_output_tokens}
                 }
-                return
-            
+                return            
             # Turn monitoring warning
             turn_events = self.state.update_turn_state(turn)
             for event in turn_events:
@@ -504,7 +511,11 @@ class Agent:
                         print(f"[DEBUG_RAW_RESPONSE_ERROR] Raw error response: {raw}")
                     else:
                         print(f"[DEBUG_RAW_RESPONSE_ERROR] No raw_response attribute in error")
-                # Update execution state to STOPPED
+                # Update execution state: transition through STOPPING intermediate state
+                events = self.state.set_execution_state(ExecutionState.STOPPING)
+                for event in events:
+                    self._handle_state_event(event)
+                # Then transition to STOPPED
                 events = self.state.set_execution_state(ExecutionState.STOPPED)
                 for event in events:
                     self._handle_state_event(event)
@@ -592,7 +603,7 @@ class Agent:
                     if not self.state.is_tool_allowed(tool_name):
                         allowed_tools = self.state.get_allowed_tools()
                         if allowed_tools:
-                            tool_result = f"❌ TOOL CALL REJECTED ❌
+                            tool_result = f'''❌ TOOL CALL REJECTED ❌
 
 You attempted to use '{tool_name}', which is currently FORBIDDEN.
 
@@ -605,16 +616,16 @@ You may call:
 - Final (to end conversation)
 - FinalReport (to end with report)
 
-Call SummarizeTool NOW to proceed."
+Call SummarizeTool NOW to proceed.'''
                         else:
-                            tool_result = f"❌ TOOL CALL REJECTED ❌
+                            tool_result = f'''❌ TOOL CALL REJECTED ❌
 
 You attempted to use '{tool_name}', which is currently FORBIDDEN.
 
 Current state: token_state={self.state.token_state.value}, turn_state={self.state.turn_state.value}
 Possible reasons: Token or turn limits exceeded with active restrictions.
 
-Check system warnings for required actions."
+Check system warnings for required actions.'''
                         
                         # Append tool result with error
                         self.conversation.append({

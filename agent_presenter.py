@@ -14,16 +14,9 @@ from PyQt6.QtCore import QObject, pyqtSignal, pyqtSlot
 from agent_controller import AgentController
 from agent_core import AgentConfig
 from tools import SIMPLIFIED_TOOL_CLASSES
+from agent_state import ExecutionState
 
 
-class AgentState(Enum):
-    """Explicit states for the agent's lifecycle."""
-    IDLE = auto()           # No active session, ready to start
-    RUNNING = auto()        # Agent is processing a query
-    PAUSED = auto()         # Agent is paused, can be resumed
-    WAITING_FOR_USER = auto()  # Agent needs user input (user_interaction_requested)
-    STOPPED = auto()        # Agent has stopped (error, max_turns, etc.)
-    FINISHED = auto()       # Agent completed successfully (final)
 
 
 class AgentPresenter(QObject):
@@ -31,7 +24,7 @@ class AgentPresenter(QObject):
     Handles business logic for agent control, event processing, and state management.
     
     Signals:
-        state_changed(state: AgentState): Emitted when agent state changes
+        state_changed(state: ExecutionState): Emitted when agent state changes
         event_received(event: dict): Emitted when a new event arrives from controller
         tokens_updated(total_input: int, total_output: int): Emitted when token counts update
         status_message(message: str): Emitted for status updates
@@ -41,7 +34,7 @@ class AgentPresenter(QObject):
     """
     
     # Signals
-    state_changed = pyqtSignal(AgentState)
+    state_changed = pyqtSignal(ExecutionState)
     event_received = pyqtSignal(dict)
     tokens_updated = pyqtSignal(int, int)
     context_updated = pyqtSignal(int)
@@ -53,7 +46,7 @@ class AgentPresenter(QObject):
         super().__init__()
         self.controller = AgentController()
         self.config_path = config_path or "agent_config.json"
-        self._state = AgentState.IDLE
+        self._state = ExecutionState.IDLE
         
         # Token tracking
         self.total_input = 0
@@ -71,12 +64,12 @@ class AgentPresenter(QObject):
         self._load_config()
         
     @property
-    def state(self) -> AgentState:
+    def state(self) -> ExecutionState:
         """Current agent state."""
         return self._state
     
     @state.setter
-    def state(self, new_state: AgentState):
+    def state(self, new_state: ExecutionState):
         """Update state and emit signal."""
         if self._state != new_state:
             self._state = new_state
@@ -231,7 +224,7 @@ class AgentPresenter(QObject):
             query: User query string
             config: Optional configuration overrides
         """
-        if self.state != AgentState.IDLE:
+        if self.state != ExecutionState.IDLE:
             print(f"[Presenter] Cannot start session in state {self.state}")
             return
         
@@ -244,13 +237,13 @@ class AgentPresenter(QObject):
             
             # Start controller
             self.controller.start(query, agent_config)
-            self.state = AgentState.RUNNING
+            self.state = ExecutionState.RUNNING
             self.status_message.emit("Session started")
             
 
             
         except Exception as e:
-            self.state = AgentState.STOPPED
+            self.state = ExecutionState.STOPPED
             self.error_occurred.emit(f"Failed to start session: {str(e)}", "")
             print(f"[Presenter] Error starting session: {e}")
     
@@ -273,14 +266,14 @@ class AgentPresenter(QObject):
             self.error_occurred.emit(f"Cannot create config for restart: {str(e)}", "")
             return
 
-        if self.state != AgentState.IDLE:
+        if self.state != ExecutionState.IDLE:
             self.stop_session()
 
         # Reset controller
         self.controller.reset()
 
         # Update state and status
-        self.state = AgentState.IDLE
+        self.state = ExecutionState.IDLE
         
         # If query is provided, start session automatically
         if query:
@@ -294,20 +287,20 @@ class AgentPresenter(QObject):
         Args:
             query: User query string
         """
-        if self.state not in [AgentState.PAUSED, AgentState.WAITING_FOR_USER]:
+        if self.state not in [ExecutionState.PAUSED, ExecutionState.WAITING_FOR_USER]:
             print(f"[Presenter] Cannot continue session in state {self.state}")
             return
         
         try:
             self.controller.continue_session(query)
-            self.state = AgentState.RUNNING
+            self.state = ExecutionState.RUNNING
             self.status_message.emit("Session continued")
         except Exception as e:
             self.error_occurred.emit(f"Failed to continue session: {str(e)}", "")
     
     def pause_session(self):
         """Request pause of current session."""
-        if self.state == AgentState.RUNNING:
+        if self.state == ExecutionState.RUNNING:
             self.controller.request_pause()
             self.status_message.emit("Pause requested")
         else:
@@ -316,7 +309,7 @@ class AgentPresenter(QObject):
     def stop_session(self):
         """Stop current session."""
         self.controller.stop()
-        self.state = AgentState.STOPPED
+        self.state = ExecutionState.STOPPED
         self.status_message.emit("Session stopped")
     
     
@@ -376,29 +369,30 @@ class AgentPresenter(QObject):
                 self.context_updated.emit(self.context_length)
             
         elif event_type == "user_interaction_requested":
-            self.state = AgentState.WAITING_FOR_USER
+            self.state = ExecutionState.WAITING_FOR_USER
             self.status_message.emit("Waiting for user input")
             
         elif event_type == "paused":
-            self.state = AgentState.PAUSED
+            self.state = ExecutionState.PAUSED
             self.status_message.emit("Paused")
             
         elif event_type in ["final", "stopped", "max_turns", "thread_finished"]:
             
             if event_type == "final":
-                self.state = AgentState.FINISHED
+                self.state = ExecutionState.FINALIZED
                 self.status_message.emit("Completed successfully")
+            elif event_type == "max_turns":
+                self.state = ExecutionState.MAX_TURNS_REACHED
+                self.status_message.emit("Max turns reached")
             else:
-                self.state = AgentState.STOPPED
+                self.state = ExecutionState.STOPPED
                 if event_type == "stopped":
                     self.status_message.emit("Stopped")
-                elif event_type == "max_turns":
-                    self.status_message.emit("Max turns reached")
                 else:
                     self.status_message.emit("Thread finished")
             
         elif event_type == "error":
-            self.state = AgentState.STOPPED
+            self.state = ExecutionState.STOPPED
             error_msg = event.get("message", "Unknown error")
             traceback = event.get("traceback", "")
             self.error_occurred.emit(error_msg, traceback)
@@ -411,4 +405,4 @@ class AgentPresenter(QObject):
         """Clean up resources."""
         if self.controller.is_running:
             self.controller.stop()
-        self.state = AgentState.IDLE
+        self.state = ExecutionState.IDLE
