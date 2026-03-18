@@ -118,7 +118,10 @@ class AgentState:
             # Create warning message
             if new_state == TokenState.WARNING:
                 formatted = self._format_tokens(total_tokens)
-                warning = f"[SYSTEM] Token usage warning: Conversation is nearing context window limits. Please consider pruning soon when you are at a good point."
+                warning = (
+                    f"[SYSTEM] **Token usage warning: Conversation is nearing context window limits** ({formatted} tokens). "
+                    f"Consider pruning soon. If tokens reach CRITICAL threshold, you will have {self.CRITICAL_COUNTDOWN_TURNS} turns before tool restrictions apply."
+                )
             else:  # CRITICAL
                 # Start the countdown for gradual restrictions
                 countdown_events = self.start_critical_countdown("token")
@@ -192,7 +195,7 @@ class AgentState:
 
             # Create warning message
             if new_state == TurnState.WARNING:
-                warning = f"[SYSTEM] Turn limit warning: Agent is nearing maximum turn limit ({current_turn}/{max_turns} turns). Please consider wrapping up soon."
+                warning = f"[SYSTEM] **Turn limit warning**: Agent is nearing maximum turn limit ({current_turn}/{max_turns} turns). Please consider wrapping up soon. If turns reach CRITICAL threshold, you will have {self.CRITICAL_COUNTDOWN_TURNS} turns before tool restrictions apply."
             else:  # CRITICAL
                 # Start the countdown for gradual restrictions
                 countdown_events = self.start_critical_countdown("turn")

@@ -592,9 +592,29 @@ class Agent:
                     if not self.state.is_tool_allowed(tool_name):
                         allowed_tools = self.state.get_allowed_tools()
                         if allowed_tools:
-                            tool_result = f"Tool '{tool_name}' not allowed in current state. Allowed tools: {', '.join(allowed_tools)}"
+                            tool_result = f"❌ TOOL CALL REJECTED ❌
+
+You attempted to use '{tool_name}', which is currently FORBIDDEN.
+
+Current state: CRITICAL token countdown expired (restrictions active)
+REQUIRED ACTION: SummarizeTool
+Why: Token limit exceeded - conversation must be pruned before continuing.
+
+You may call:
+- SummarizeTool (to prune and continue)
+- Final (to end conversation)
+- FinalReport (to end with report)
+
+Call SummarizeTool NOW to proceed."
                         else:
-                            tool_result = f"Tool '{tool_name}' not allowed in current state (token_state: {self.state.token_state.value}, turn_state: {self.state.turn_state.value})"
+                            tool_result = f"❌ TOOL CALL REJECTED ❌
+
+You attempted to use '{tool_name}', which is currently FORBIDDEN.
+
+Current state: token_state={self.state.token_state.value}, turn_state={self.state.turn_state.value}
+Possible reasons: Token or turn limits exceeded with active restrictions.
+
+Check system warnings for required actions."
                         
                         # Append tool result with error
                         self.conversation.append({
