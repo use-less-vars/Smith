@@ -14,7 +14,7 @@ import threading
 import queue
 import time
 from abc import ABC, abstractmethod
-from typing import Dict, List, Any, Optional, Union, Callable, Tuple
+from typing import Dict, List, Any, Optional, Union, Callable
 import logging
 
 try:
@@ -62,6 +62,16 @@ class MCPClientBase(ABC):
         """Stop the client and cleanup resources."""
         pass
     
+    @abstractmethod
+    def _send_raw_message(self, message: str) -> None:
+        """Send raw message over transport."""
+        pass
+    
+    @abstractmethod
+    def _receive_messages(self) -> None:
+        """Receive and process incoming messages (blocking)."""
+        pass
+    
     def _handle_message(self, msg: Dict[str, Any]) -> None:
         """Handle incoming JSON-RPC message."""
         if "id" in msg:
@@ -103,9 +113,10 @@ class MCPClientBase(ABC):
             "method": method,
             "params": params or {}
         }
+        json_str = json.dumps(request)
         
         try:
-            self._send_request_impl(request)
+            self._send_raw_message(json_str)
         except Exception as e:
             with self._lock:
                 self.pending_requests.pop(request_id, None)
@@ -123,11 +134,6 @@ class MCPClientBase(ABC):
             error = response["error"]
             raise Exception(f"MCP error {error.get('code')}: {error.get('message')}")
         return response.get("result", {})
-    
-    @abstractmethod
-    def _send_request_impl(self, request: Dict[str, Any]) -> None:
-        """Transport-specific implementation to send a request."""
-        pass
     
     def initialize(self) -> Dict[str, Any]:
         """Send initialize request to server.
@@ -177,19 +183,6 @@ class MCPClientBase(ABC):
             if item.get("type") == "text":
                 texts.append(item.get("text", ""))
         return "\n".join(texts)
-    
-    def health_check(self) -> Tuple[bool, str]:
-        """Check health of the MCP server connection.
-        
-        Returns:
-            Tuple of (is_healthy, message)
-        """
-        try:
-            # Try to list tools as a basic health check
-            tools = self.list_tools()
-            return (True, f"Healthy, {len(tools)} tools available")
-        except Exception as e:
-            return (False, f"Health check failed: {str(e)}")
 
 
 class StdioMCPClient(MCPClientBase):
@@ -234,7 +227,7 @@ class StdioMCPClient(MCPClientBase):
         )
         
         self._shutdown = False
-        self._reader_thread = threading.Thread(target=self._read_loop, daemon=True)
+        self._reader_thread = threading.Thread(target=self._receive_messages, daemon=True)
         self._reader_thread.start()
         
         # Initialize the connection
@@ -250,15 +243,14 @@ class StdioMCPClient(MCPClientBase):
         if self._reader_thread:
             self._reader_thread.join(timeout=2)
     
-    def _send_request_impl(self, request: Dict[str, Any]) -> None:
-        """Send JSON-RPC request over stdin."""
+    def _send_raw_message(self, message: str) -> None:
+        """Send raw message over stdin."""
         if self.process is None or self.process.stdin is None:
             raise RuntimeError("Client not started or stdin closed")
-        json_str = json.dumps(request)
-        self.process.stdin.write(json_str + "\n")
+        self.process.stdin.write(message + "\n")
         self.process.stdin.flush()
     
-    def _read_loop(self) -> None:
+    def _receive_messages(self) -> None:
         """Read lines from stdout and dispatch responses."""
         while not self._shutdown and self.process.poll() is None:
             line = self.process.stdout.readline()
@@ -273,16 +265,6 @@ class StdioMCPClient(MCPClientBase):
             except json.JSONDecodeError as e:
                 logger.error(f"Failed to parse JSON from server: {line} - {e}")
         logger.debug("Stdio reader thread exiting")
-    
-    def health_check(self) -> Tuple[bool, str]:
-        """Check health of stdio subprocess."""
-        if self.process is None:
-            return (False, "Process not started")
-        if self.process.poll() is not None:
-            return (False, f"Process terminated with code {self.process.returncode}")
-        
-        # Try parent health check (list tools)
-        return super().health_check()
     
     def __enter__(self):
         self.start()
@@ -331,16 +313,17 @@ class HTTPMCPClient(MCPClientBase):
             self.session.close()
             self.session = None
     
-    def _send_request_impl(self, request: Dict[str, Any]) -> None:
-        """Send JSON-RPC request via HTTP POST and handle response synchronously."""
+    def _send_raw_message(self, message: str) -> None:
+        """Send JSON-RPC message via HTTP POST."""
         if self.session is None:
             raise RuntimeError("HTTP session not initialized")
         
         try:
-            response = self.session.post(self.url, json=request, timeout=30)
+            response = self.session.post(self.url, data=message, timeout=30)
             response.raise_for_status()
+            
+            # Handle response
             result = response.json()
-            # Directly handle the response (bypass queue mechanism)
             self._handle_message(result)
         except requests.exceptions.RequestException as e:
             logger.error(f"HTTP request failed: {e}")
@@ -349,7 +332,13 @@ class HTTPMCPClient(MCPClientBase):
             logger.error(f"Failed to parse JSON response: {e}")
             raise
     
-    # Override _send_request to use synchronous HTTP (simpler)
+    def _receive_messages(self) -> None:
+        """HTTP transport doesn't have a persistent receive loop.
+        
+        Responses are handled synchronously in _send_raw_message.
+        """
+        pass
+    
     def _send_request(self, method: str, params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """Override to use synchronous HTTP request/response."""
         with self._lock:
@@ -362,12 +351,13 @@ class HTTPMCPClient(MCPClientBase):
             "method": method,
             "params": params or {}
         }
+        json_str = json.dumps(request)
         
         if self.session is None:
             raise RuntimeError("HTTP session not initialized")
         
         try:
-            response = self.session.post(self.url, json=request, timeout=30)
+            response = self.session.post(self.url, data=json_str, timeout=30)
             response.raise_for_status()
             result = response.json()
         except requests.exceptions.RequestException as e:
@@ -380,23 +370,6 @@ class HTTPMCPClient(MCPClientBase):
             raise Exception(f"MCP error {error.get('code')}: {error.get('message')}")
         
         return result.get("result", {})
-    
-    def health_check(self) -> Tuple[bool, str]:
-        """Check health of HTTP connection."""
-        if self.session is None:
-            return (False, "HTTP session not initialized")
-        
-        # Try to ping the server with a simple request
-        try:
-            # Use a short timeout for health check
-            response = self.session.get(self.url.replace("/rpc", "/health") if "/rpc" in self.url else self.url, timeout=5)
-            if response.status_code == 200:
-                return (True, "HTTP server responding")
-        except:
-            pass
-        
-        # Fall back to parent health check (list tools)
-        return super().health_check()
     
     def __enter__(self):
         self.start()
@@ -431,17 +404,13 @@ class SSEMCPClient(MCPClientBase):
         """Stop SSE connection."""
         pass
     
-    def _send_request_impl(self, request: Dict[str, Any]) -> None:
+    def _send_raw_message(self, message: str) -> None:
         """Send message over SSE transport."""
         raise NotImplementedError("SSE transport not yet implemented")
     
-    # Override since we can't use the base implementation
-    def _send_request(self, method: str, params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    def _receive_messages(self) -> None:
+        """Receive SSE events."""
         raise NotImplementedError("SSE transport not yet implemented")
-    
-    def health_check(self) -> Tuple[bool, str]:
-        """SSE health check."""
-        return (False, "SSE transport not implemented")
 
 
 # Factory function to create appropriate client based on transport
@@ -490,3 +459,7 @@ def create_mcp_client(
     
     else:
         raise ValueError(f"Unsupported transport: {transport}")
+
+
+# Backward compatibility alias
+StdioMCPClient = StdioMCPClient

@@ -5,12 +5,12 @@ import json
 import os
 import sys
 from pathlib import Path
-from typing import Dict, List, Optional, Any, Union, Type, get_type_hints
+from typing import Dict, List, Optional, Any, Union, Type, get_type_hints, Literal
 from enum import Enum
 from pydantic import BaseModel, Field, create_model, model_validator
 import logging
 
-from .mcp_client import StdioMCPClient
+from .mcp_client import create_mcp_client, MCPClientBase
 from .base import ToolBase
 
 logger = logging.getLogger(__name__)
@@ -31,6 +31,7 @@ class MCPServerConfig(BaseModel):
         env: Environment variables for subprocess
         url: Server URL (required for http/sse)
         api_key_env_var: Environment variable containing API key
+        headers: Additional HTTP headers (for http/sse transport)
     """
     name: str = Field(..., description="Unique name for this server")
     transport: TransportType = Field(..., description="Transport type")
@@ -42,6 +43,7 @@ class MCPServerConfig(BaseModel):
     url: Optional[str] = Field(None, description="URL for HTTP/SSE server")
     # Authentication
     api_key_env_var: Optional[str] = Field(None, description="Environment variable name for API key")
+    headers: Optional[Dict[str, str]] = Field(None, description="Additional HTTP headers")
     
     @model_validator(mode='after')
     def validate_transport_params(self) -> "MCPServerConfig":
@@ -98,109 +100,121 @@ def json_schema_to_field(schema: Dict[str, Any], required: bool = False) -> Any:
         required: Whether this field is required
         
     Returns:
-        Tuple of (Python type, Field instance)
+        Tuple of (type_annotation, Field instance)
     """
-    field_type = schema.get("type", "string")
-    description = schema.get("description", "")
-    default = ... if required else None
+    field_type = Any
+    field_kwargs = {}
     
-    # Map JSON schema types to Python types
-    type_mapping = {
-        "string": str,
-        "integer": int,
-        "number": float,
-        "boolean": bool,
-        "array": List[Any],
-        "object": Dict[str, Any]
-    }
-    py_type = type_mapping.get(field_type, str)
+    # Handle type (could be string or list)
+    schema_type = schema.get("type")
+    if isinstance(schema_type, list):
+        # Use first non-null type
+        schema_type = [t for t in schema_type if t != "null"]
+        schema_type = schema_type[0] if schema_type else "string"
     
-    # Build field kwargs
-    field_kwargs = {"default": default, "description": description}
-    
-    # Handle array items with proper typing
-    if field_type == "array" and "items" in schema:
-        items_schema = schema["items"]
-        items_type = items_schema.get("type")
-        if items_type == "string":
-            py_type = List[str]
-        elif items_type == "integer":
-            py_type = List[int]
-        elif items_type == "number":
-            py_type = List[float]
-        elif items_type == "boolean":
-            py_type = List[bool]
-        elif items_type == "object":
-            py_type = List[Dict[str, Any]]
-        elif items_type == "array":
-            # Nested arrays - simplified to List[List[Any]]
-            py_type = List[List[Any]]
-    
-    # Handle object properties (simplified - could be enhanced with nested models)
-    if field_type == "object" and "properties" in schema:
-        # For now, keep as Dict[str, Any]
-        # Future: could create nested Pydantic models
-        pass
-    
-    # Add basic validation constraints where appropriate
-    if field_type == "string":
-        if "minLength" in schema or "maxLength" in schema:
-            pass  # TODO: could add StringConstraints
+    if schema_type == "string":
+        field_type = str
+        if "format" in schema:
+            # Could add format validation here
+            pass
         if "pattern" in schema:
-            pass  # TODO: could add regex validation
-    elif field_type in ("integer", "number"):
-        if "minimum" in schema or "maximum" in schema:
-            pass  # TODO: could add ge/le constraints
+            field_kwargs["regex"] = schema["pattern"]
+    elif schema_type == "integer":
+        field_type = int
+        if "minimum" in schema:
+            field_kwargs["ge"] = schema["minimum"]
+        if "maximum" in schema:
+            field_kwargs["le"] = schema["maximum"]
+    elif schema_type == "number":
+        field_type = float
+        if "minimum" in schema:
+            field_kwargs["ge"] = schema["minimum"]
+        if "maximum" in schema:
+            field_kwargs["le"] = schema["maximum"]
+    elif schema_type == "boolean":
+        field_type = bool
+    elif schema_type == "array":
+        items = schema.get("items", {})
+        if isinstance(items, dict):
+            item_field = json_schema_to_field(items, required=False)
+            field_type = List[item_field[0]]
+        else:
+            # Tuple type (array of schemas) - use Any for simplicity
+            field_type = List[Any]
+    elif schema_type == "object":
+        # For objects, we could recursively create a nested model,
+        # but for simplicity use Dict[str, Any]
+        field_type = Dict[str, Any]
     
-    # Create Field with description
-    return (py_type, Field(**field_kwargs))
+    # Handle description
+    if "description" in schema:
+        field_kwargs["description"] = schema["description"]
+    
+    # Handle default value
+    if "default" in schema:
+        field_kwargs["default"] = schema["default"]
+    elif not required:
+        field_kwargs["default"] = None
+    
+    return (field_type, Field(**field_kwargs))
 
 
-def create_tool_class(server_name: str, tool_def: Dict[str, Any], client: StdioMCPClient) -> Type[ToolBase]:
-    """Create a dynamic ToolBase subclass for an MCP tool."""
+def create_tool_class(
+    server_name: str,
+    tool_def: Dict[str, Any],
+    client: MCPClientBase
+) -> Type[ToolBase]:
+    """Dynamically create a ToolBase subclass from an MCP tool definition.
+    
+    Args:
+        server_name: Name of the MCP server (used for class naming)
+        tool_def: MCP tool definition from tools/list response
+        client: MCP client instance for making calls
+        
+    Returns:
+        ToolBase subclass with execute() method that calls the MCP tool
+    """
     tool_name = tool_def["name"]
-    description = tool_def.get("description", "")
+    description = tool_def.get("description", f"MCP tool {tool_name} from {server_name}")
     input_schema = tool_def.get("inputSchema", {})
-    properties = input_schema.get("properties", {})
-    required = input_schema.get("required", [])
     
-    # Build fields dict for create_model
+    # Build fields from input schema
     fields = {}
-    for prop_name, prop_schema in properties.items():
-        required_flag = prop_name in required
-        field_type, field_info = json_schema_to_field(prop_schema, required_flag)
-        fields[prop_name] = (field_type, field_info)
+    required_fields = input_schema.get("required", [])
     
-    # Add server_name and tool_name as class attributes
-    class_name = f"{server_name}_{tool_name}".title().replace("_", "").replace("-", "")
+    if "properties" in input_schema:
+        for prop_name, prop_schema in input_schema["properties"].items():
+            required = prop_name in required_fields
+            field_type, field = json_schema_to_field(prop_schema, required)
+            fields[prop_name] = (field_type, field)
+    
+    # Always prefix with MCP to avoid conflicts with native tools
+    class_name = f"MCP{server_name}_{tool_name}".title().replace("_", "").replace("-", "")
     # Ensure class name is valid Python identifier
     class_name = ''.join(c for c in class_name if c.isalnum())
-    if not class_name[0].isalpha():
-        class_name = "MCP" + class_name
     
     # Create the model
+    # Add tool field for schema compatibility
+    # Use class_name as tool identifier for consistency with native tools
+    tool_identifier = class_name
+    fields["tool"] = (Literal[tool_identifier], Field(default=tool_identifier, description="MCP tool identifier"))
+    
     ToolModel = create_model(class_name, __base__=ToolBase, **fields)
     
-    # Add execute method that calls the MCP client
-    def execute(self: ToolBase) -> str:
-        # Extract arguments from self
-        arguments = {}
-        for field_name in properties.keys():
-            if hasattr(self, field_name):
-                value = getattr(self, field_name)
-                if value is not None:
-                    arguments[field_name] = value
+    # Add execute method
+    def execute(self, **kwargs):
+        """Execute the MCP tool with given arguments."""
+        # Filter out None values (optional fields not provided)
+        filtered_kwargs = {k: v for k, v in kwargs.items() if v is not None}
         try:
-            result = client.call_tool(tool_name, arguments)
-            return self._truncate_output(str(result))
+            result = client.call_tool(tool_name, filtered_kwargs)
+            return result
         except Exception as e:
-            return f"Error calling MCP tool {tool_name}: {e}"
+            return f"Error calling MCP tool {tool_name}: {str(e)}"
     
     ToolModel.execute = execute
     
-    # Store metadata
-    ToolModel._mcp_server_name = server_name
-    ToolModel._mcp_tool_name = tool_name
+    # Add docstring
     ToolModel.__doc__ = description
     
     return ToolModel
@@ -211,7 +225,7 @@ class MCPServerManager:
     
     Responsibilities:
         - Load server configurations from MCPConfig
-        - Start/stop MCP server subprocesses
+        - Start/stop MCP server subprocesses or connections
         - Dynamically generate ToolBase classes from MCP tool schemas
         - Register generated tools with the global TOOL_CLASSES list
         
@@ -223,39 +237,53 @@ class MCPServerManager:
     
     def __init__(self, config: MCPConfig):
         self.config = config
-        self.servers: Dict[str, StdioMCPClient] = {}
+        self.servers: Dict[str, MCPClientBase] = {}
         self.tool_classes: List[Type[ToolBase]] = []
         
     def start_all(self) -> None:
-        """Start all configured servers and register their tools.
-        
-        Only stdio transport servers are currently supported. HTTP/SSE
-        servers will be skipped with a warning.
-        """
+        """Start all configured servers and register their tools."""
         for server_config in self.config.servers:
-            if server_config.transport != TransportType.STDIO:
-                logger.warning(f"Skipping server {server_config.name}: only stdio transport supported currently")
-                continue
             try:
-                client = StdioMCPClient(
+                # Get API key from environment if specified
+                api_key = None
+                if server_config.api_key_env_var:
+                    api_key = os.environ.get(server_config.api_key_env_var)
+                    if not api_key:
+                        logger.warning(
+                            f"Server {server_config.name}: API key environment variable "
+                            f"'{server_config.api_key_env_var}' not set"
+                        )
+                
+                # Create client based on transport type
+                client = create_mcp_client(
+                    transport=server_config.transport.value,
                     command=server_config.command,
                     args=server_config.args,
-                    env=server_config.env
+                    env=server_config.env,
+                    url=server_config.url,
+                    headers=server_config.headers,
+                    api_key=api_key
                 )
+                
                 client.start()
                 self.servers[server_config.name] = client
+                
                 tools = client.list_tools()
-                logger.info(f"Server {server_config.name} provided {len(tools)} tools")
+                logger.info(f"Server {server_config.name} ({server_config.transport}) provided {len(tools)} tools")
+                
                 for tool_def in tools:
                     tool_class = create_tool_class(server_config.name, tool_def, client)
                     self.tool_classes.append(tool_class)
+                    
+            except NotImplementedError as e:
+                logger.warning(f"Skipping server {server_config.name}: {e}")
             except Exception as e:
                 logger.error(f"Failed to start MCP server {server_config.name}: {e}")
                 
     def stop_all(self) -> None:
-        """Stop all running MCP server subprocesses.
+        """Stop all running MCP server connections.
         
-        graceful shutdown via terminate() with 5s timeout.
+        graceful shutdown with appropriate transport-specific cleanup.
         """
         for name, client in self.servers.items():
             try:
@@ -306,4 +334,3 @@ def register_mcp_tools() -> None:
     for cls in tool_classes:
         if cls not in TOOL_CLASSES:
             TOOL_CLASSES.append(cls)
-
