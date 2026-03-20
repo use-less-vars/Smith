@@ -61,6 +61,12 @@ class LogEventType(Enum):
     MAX_TURNS_REACHED = "max_turns_reached"
     EXECUTION_STATE_CHANGE = "execution_state_change"
     SESSION_STATE_CHANGE = "session_state_change"
+
+    # Security and observability
+    FILE_ACCESS = "file_access"
+    SECURITY_VIOLATION = "security_violation"
+    DOCKER_SANDBOX = "docker_sandbox"
+    CAPABILITY_CHECK = "capability_check"
     ERROR = "error"
 
 
@@ -458,6 +464,89 @@ class AgentLogger:
             },
             self.current_turn
         )
+    def log_file_access(self, path: str, operation: str, allowed: bool, size_bytes: Optional[int] = None, additional_data: Optional[Dict[str, Any]] = None):
+        """Log file access event."""
+        data = {
+            "path": path,
+            "operation": operation,
+            "allowed": allowed,
+        }
+        if size_bytes is not None:
+            data["size_bytes"] = size_bytes
+        if additional_data:
+            data.update(additional_data)
+        
+        self._log_event(
+            LogEventType.FILE_ACCESS,
+            LogLevel.INFO if allowed else LogLevel.WARNING,
+            f"File access: {operation} on {path} - {'allowed' if allowed else 'denied'}",
+            data,
+            self.current_turn
+        )
+    
+    def log_security_violation(self, violation_type: str, message: str, path: str, details: Optional[Dict[str, Any]] = None):
+        """Log security violation."""
+        data = {
+            "violation_type": violation_type,
+            "path": path,
+        }
+        if details:
+            data.update(details)
+        
+        self._log_event(
+            LogEventType.SECURITY_VIOLATION,
+            LogLevel.WARNING,
+            message,
+            data,
+            self.current_turn
+        )
+    
+    def log_docker_sandbox(self, container_id: str, container_name: str, image: str, command: List[str], action: str, status: str, exit_code: Optional[int] = None, output_preview: Optional[str] = None):
+        """Log Docker sandbox event."""
+        data = {
+            "container_id": container_id,
+            "container_name": container_name,
+            "image": image,
+            "command": command,
+            "action": action,
+            "status": status,
+        }
+        if exit_code is not None:
+            data["exit_code"] = exit_code
+        if output_preview is not None:
+            # Truncate output preview
+            if len(output_preview) > 1000:
+                output_preview = output_preview[:1000] + "... [truncated]"
+            data["output_preview"] = output_preview
+        
+        self._log_event(
+            LogEventType.DOCKER_SANDBOX,
+            LogLevel.INFO,
+            f"Docker {action}: container {container_id} ({status})",
+            data,
+            self.current_turn
+        )
+    
+    def log_capability_check(self, agent_id: str, tool_name: str, required_capabilities: List[str], granted: bool, reason: str = "", additional_data: Optional[Dict[str, Any]] = None):
+        """Log capability check."""
+        data = {
+            "agent_id": agent_id,
+            "tool": tool_name,
+            "required_capabilities": required_capabilities,
+            "granted": granted,
+            "reason": reason,
+        }
+        if additional_data:
+            data.update(additional_data)
+        
+        self._log_event(
+            LogEventType.CAPABILITY_CHECK,
+            LogLevel.DEBUG,
+            f"Capability check for {tool_name}: {'granted' if granted else 'denied'}",
+            data,
+            self.current_turn
+        )
+
     
     def log_conversation_update(self, conversation: List[Dict[str, Any]], action: str = "append"):
         """Log conversation update."""

@@ -8,6 +8,13 @@ from typing import Literal, Optional, Dict, Any
 from pydantic import Field, field_validator, model_validator
 from .base import ToolBase
 
+# Import centralized security
+try:
+    from thoughtmachine.security import setup_docker_sandbox as security_setup_docker, set_logger as security_set_logger
+    SECURITY_AVAILABLE = True
+except ImportError:
+    SECURITY_AVAILABLE = False
+
 try:
     import docker
     from docker.errors import DockerException, NotFound, APIError
@@ -53,7 +60,7 @@ class DockerCodeRunner(ToolBase):
       "timed_out": bool,
       "error": str (optional)
     }
-    
+
     Template variables:
     Command supports template variables using {variable_name} syntax.
     Built-in variables:
@@ -62,7 +69,7 @@ class DockerCodeRunner(ToolBase):
     - {date}: Current date (YYYY-MM-DD)
     - {time}: Current time (HH:MM:SS)
     - {random_id}: Random 8-character hex string
-    
+
     User variables can be provided via the 'variables' parameter.
 
     Multi-step scripts:
@@ -134,7 +141,7 @@ class DockerCodeRunner(ToolBase):
         default=300,
         description="Idle timeout in seconds for container pooling. Container will be closed after this period of inactivity. Default: 300 seconds (5 minutes)."
     )
-    
+
     @model_validator(mode='after')
     def validate_command_or_script(self):
         # Ensure at least one of command or script is provided
@@ -152,20 +159,20 @@ class DockerCodeRunner(ToolBase):
             "time": datetime.datetime.now().strftime("%H:%M:%S"),
             "random_id": uuid.uuid4().hex[:8],
         }
-        
+
         # Start with builtins
         variables = builtins.copy()
-        
+
         # Add user variables if provided
         if self.variables:
             variables.update(self.variables)
-        
+
         # Perform substitution
         result = command
         for var_name, var_value in variables.items():
             placeholder = "{" + var_name + "}"
             result = result.replace(placeholder, str(var_value))
-        
+
         return result
 
     def _prepare_script_command(self, script_content: str, interpreter: str) -> str:
@@ -173,7 +180,7 @@ class DockerCodeRunner(ToolBase):
         # Generate a random delimiter that doesn't appear in script content
         import random
         import string
-        
+
         # Try up to 10 times to find a unique delimiter
         for _ in range(10):
             delimiter = ''.join(random.choices(string.ascii_uppercase + string.digits, k=16))
@@ -182,7 +189,7 @@ class DockerCodeRunner(ToolBase):
         else:
             # Fallback delimiter
             delimiter = 'SCRIPT_EOF'
-        
+
         # Write script using heredoc, make executable, run with interpreter
         # Use /workspace/tmp directory with random name (writable location)
         script_dir = "/workspace/tmp"
@@ -197,7 +204,7 @@ class DockerCodeRunner(ToolBase):
 {script_content}
 {delimiter}
 chmod +x "{script_path}"
-"{interpreter}" "{script_path}"'''        
+"{interpreter}" "{script_path}"'''
         # If interpreter is 'bash' or 'sh', we could also directly run the script
         # But using interpreter ensures proper execution.
         return command
@@ -227,11 +234,11 @@ chmod +x "{script_path}"
         if not error:
             response.pop("error")
         return json.dumps(response, indent=2)
-    
+
     def execute(self) -> str:
         start_time = time.time()
         duration = 0.0
-        
+
         if not DOCKER_AVAILABLE:
             duration = time.time() - start_time
             return self._build_json_response(
@@ -240,13 +247,13 @@ chmod +x "{script_path}"
                 error="Docker Python SDK not installed. Install with 'pip install docker'.",
                 duration=duration
             )
-        
+
         # Validate workspace path
         if self.workspace_path is None:
             workspace = os.getcwd()
         else:
             workspace = self.workspace_path
-        
+
         # Build absolute path for working directory
         workdir = "/workspace"
         if self.working_dir:
@@ -261,7 +268,7 @@ chmod +x "{script_path}"
                     duration=duration
                 )
             workdir = os.path.join("/workspace", rel_path)
-        
+
         try:
             # Import DockerExecutor from the existing module
             # Add parent directory to sys.path
@@ -276,7 +283,7 @@ chmod +x "{script_path}"
                 error=f"Could not import DockerExecutor: {e}. Make sure docker package is installed and docker_executor.py exists.",
                 duration=duration
             )
-        
+
         # Determine actual command to execute (script takes precedence)
         actual_command = None
         try:
@@ -296,18 +303,30 @@ chmod +x "{script_path}"
                 error=f"Failed to prepare command/script: {e}",
                 duration=duration
             )
-        
+
         try:
-            executor = DockerExecutor(
-                workspace_path=workspace,
-                image=self.image,
-                network="none",     #self.network, <-- Disable network for security
-                mem_limit=self.mem_limit,
-                cpu_quota=self.cpu_quota,
-                force_rebuild=self.build,
-                idle_timeout=self.idle_timeout
-            )
-            
+            if SECURITY_AVAILABLE:
+                executor = security_setup_docker(
+                    workspace_path=workspace,
+                    image=self.image,
+                    network="none",     #self.network, <-- Disable network for security
+                    mem_limit=self.mem_limit,
+                    cpu_quota=self.cpu_quota,
+                    force_rebuild=self.build,
+                    idle_timeout=self.idle_timeout
+                )
+            else:
+                # Fallback to direct DockerExecutor instantiation
+                executor = DockerExecutor(
+                    workspace_path=workspace,
+                    image=self.image,
+                    network="none",     #self.network, <-- Disable network for security
+                    mem_limit=self.mem_limit,
+                    cpu_quota=self.cpu_quota,
+                    force_rebuild=self.build,
+                    idle_timeout=self.idle_timeout
+                )
+
             # Execute command with optional environment and working directory
             stdout, stderr, exit_code = executor.execute(
                 command=actual_command,
@@ -315,15 +334,15 @@ chmod +x "{script_path}"
                 workdir=workdir,
                 environment=self.environment
             )
-            
+
             duration = time.time() - start_time
-            
+
             # Check for timeout (docker_executor returns -2 for timeout)
             timed_out = exit_code == -2
             # Also check stderr for timeout message as additional safeguard
             if not timed_out and "timed out" in stderr.lower():
                 timed_out = True
-            
+
             return self._build_json_response(
                 success=exit_code == 0,
                 exit_code=exit_code,
@@ -333,7 +352,7 @@ chmod +x "{script_path}"
                 duration=duration,
                 timed_out=timed_out
             )
-            
+
         except Exception as e:
             import traceback
             traceback.print_exc()   # This will print the stack trace to the console
@@ -361,13 +380,13 @@ chmod +x "{script_path}"
                 error=f"Unexpected error: {e}",
                 duration=duration
             )
-    
+
     def _build_image(self, client, image_name):
         """Build Docker image from docker/executor.Dockerfile"""
         dockerfile_path = os.path.join(os.path.dirname(__file__), "..", "docker", "executor.Dockerfile")
         if not os.path.exists(dockerfile_path):
             dockerfile_path = "docker/executor.Dockerfile"
-        
+
         try:
             # Build the image
             image, build_logs = client.images.build(

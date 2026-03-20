@@ -16,6 +16,12 @@ from tools.summarize_tool import SummarizeTool
 from fast_json_repair import loads as repair_loads
 import tiktoken
 import traceback
+# Import security module for capability checks
+try:
+    from thoughtmachine.security import CapabilityRegistry, set_logger as security_set_logger
+    SECURITY_AVAILABLE = True
+except ImportError:
+    SECURITY_AVAILABLE = False
 
 # Import logging module
 try:
@@ -49,7 +55,11 @@ class Agent:
         )
         self.logger = None
         if LOGGING_AVAILABLE and config.enable_logging:
-            self.logger = create_logger(config)
+
+        # Initialize security module with logger if available
+            if SECURITY_AVAILABLE:
+                security_set_logger(self.logger)
+                self.logger = create_logger(config)
         # Prepare tool definitions
         self.tool_classes = config.tool_classes if config.tool_classes is not None else SIMPLIFIED_TOOL_CLASSES
         self.tool_definitions = [model_to_openai_tool(cls) for cls in self.tool_classes]
@@ -693,6 +703,14 @@ Check system warnings for required actions.'''
                                 tool_args['workspace_path'] = self.config.workspace_path
                             if self.config.tool_output_token_limit is not None:
                                 tool_args['token_limit'] = self.config.tool_output_token_limit
+
+                            # Security capability check
+                            if SECURITY_AVAILABLE:
+                                try:
+                                    CapabilityRegistry.check(id(self), tool_name, **tool_args)
+                                except Exception as e:
+                                    tool_result = f"Security check failed: {e}"
+                                    raise
                             tool_instance = tool_class(**tool_args)
                             tool_result = tool_instance.execute()
                             # Check if this is a Final tool
