@@ -543,11 +543,16 @@ class Agent:
             if usage:
                 input_tokens = usage.get("prompt_tokens", 0) or 0
                 output_tokens = usage.get("completion_tokens", 0) or 0
+                has_accurate_usage = True
             else:
                 input_tokens = output_tokens = 0
+                has_accurate_usage = False
             self.total_input_tokens += input_tokens
             self.total_output_tokens += output_tokens
-            self.state.current_conversation_tokens = input_tokens + output_tokens
+            if has_accurate_usage:
+                # Use accurate token counts from provider
+                self.state.current_conversation_tokens = input_tokens + output_tokens
+            # Otherwise, keep current conversation tokens (estimated)
             last_input_tokens = input_tokens
             last_output_tokens = output_tokens
 
@@ -580,7 +585,9 @@ class Agent:
             self.conversation.append(assistant_dict)
             # Estimate tokens for assistant message
             assistant_tokens = self._estimate_tokens(assistant_dict)
-            self.state.current_conversation_tokens += assistant_tokens
+            if not has_accurate_usage:
+                # Only add estimated assistant tokens if we don't have accurate usage
+                self.state.current_conversation_tokens += assistant_tokens
             
             if self.logger:
                 self.logger.log_conversation_update(self.conversation, "append_assistant")
