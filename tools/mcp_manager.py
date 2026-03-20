@@ -176,18 +176,18 @@ def create_tool_class(
     """
     tool_name = tool_def["name"]
     description = tool_def.get("description", f"MCP tool {tool_name} from {server_name}")
-    input_schema = tool_def.get("inputSchema", {})
+    # Support both 'inputSchema' (legacy) and 'parameters' (standard)
+    input_schema = tool_def.get("inputSchema") or tool_def.get("parameters", {})
     
     # Build fields from input schema
     fields = {}
+    properties = input_schema.get("properties", {})
     required_fields = input_schema.get("required", [])
-    
-    if "properties" in input_schema:
-        for prop_name, prop_schema in input_schema["properties"].items():
-            required = prop_name in required_fields
-            field_type, field = json_schema_to_field(prop_schema, required)
-            fields[prop_name] = (field_type, field)
-    
+
+    for prop_name, prop_schema in properties.items():
+        required = prop_name in required_fields
+        field_type, field = json_schema_to_field(prop_schema, required)
+        fields[prop_name] = (field_type, field)    
     # Always prefix with MCP to avoid conflicts with native tools
     class_name = f"MCP{server_name}_{tool_name}".title().replace("_", "").replace("-", "")
     # Ensure class name is valid Python identifier
@@ -201,14 +201,19 @@ def create_tool_class(
     
     ToolModel = create_model(class_name, __base__=ToolBase, **fields)
     
-    # Add execute method
-    def execute(self, **kwargs):
-        """Execute the MCP tool with given arguments."""
-        # Filter out None values (optional fields not provided)
-        filtered_kwargs = {k: v for k, v in kwargs.items() if v is not None}
+    # Add execute method that calls the MCP client
+    def execute(self) -> str:
+        """Execute the MCP tool by extracting arguments from self."""
+        # Extract arguments from self
+        arguments = {}
+        for field_name in properties.keys():
+            if hasattr(self, field_name):
+                value = getattr(self, field_name)
+                if value is not None:
+                    arguments[field_name] = value
         try:
-            result = client.call_tool(tool_name, filtered_kwargs)
-            return result
+            result = client.call_tool(tool_name, arguments)
+            return self._truncate_output(str(result))
         except Exception as e:
             return f"Error calling MCP tool {tool_name}: {str(e)}"
     
