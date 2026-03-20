@@ -159,11 +159,21 @@ class FileEditor(ToolBase):
             # List of line numbers
             line_indices = []
             result_lines = []
-            for line_num in self.line_numbers:
-                if line_num < 1 or line_num > total_lines:
-                    return f"Error: Line number {line_num} is out of range (file has {total_lines} lines)"
-                line_indices.append(line_num)
-                result_lines.append(lines[line_num - 1])
+            
+            # Special case: 2-element list treated as range [start, end]
+            if len(self.line_numbers) == 2:
+                start, end = self.line_numbers[0], self.line_numbers[1]
+                if start < 1 or end > total_lines or start > end:
+                    return f"Error: Invalid range {start}-{end} (file has {total_lines} lines)"
+                line_indices = list(range(start, end + 1))
+                result_lines = [lines[i - 1] for i in line_indices]
+            else:
+                # Regular list of discrete line numbers
+                for line_num in self.line_numbers:
+                    if line_num < 1 or line_num > total_lines:
+                        return f"Error: Line number {line_num} is out of range (file has {total_lines} lines)"
+                    line_indices.append(line_num)
+                    result_lines.append(lines[line_num - 1])
         elif isinstance(self.line_numbers, str) and '-' in self.line_numbers:
             # Range string like "1-10"
             try:
@@ -327,10 +337,19 @@ class FileEditor(ToolBase):
                 return f"Error: Line number {line_num} is out of range (file has {total_lines} lines)"
             delete_indices.add(line_num - 1)
         elif isinstance(self.line_numbers, list):
-            for line_num in self.line_numbers:
-                if line_num < 1 or line_num > total_lines:
-                    return f"Error: Line number {line_num} is out of range (file has {total_lines} lines)"
-                delete_indices.add(line_num - 1)
+            # Special case: 2-element list treated as range [start, end]
+            if len(self.line_numbers) == 2:
+                start, end = self.line_numbers[0], self.line_numbers[1]
+                if start < 1 or end > total_lines or start > end:
+                    return f"Error: Invalid range {start}-{end} (file has {total_lines} lines)"
+                for line_num in range(start, end + 1):
+                    delete_indices.add(line_num - 1)
+            else:
+                # Regular list of discrete line numbers
+                for line_num in self.line_numbers:
+                    if line_num < 1 or line_num > total_lines:
+                        return f"Error: Line number {line_num} is out of range (file has {total_lines} lines)"
+                    delete_indices.add(line_num - 1)
         elif isinstance(self.line_numbers, str) and '-' in self.line_numbers:
             try:
                 start_str, end_str = self.line_numbers.split('-')

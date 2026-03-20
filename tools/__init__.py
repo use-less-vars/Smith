@@ -24,7 +24,54 @@ for file in tools_dir.glob("*.py"):
     except Exception as e:
         logger.warning(f"Failed to load module {module_name}: {e}")
 
-# Try to load MCP tools (if available and configured)
+# Manually add essential tools for now
+try:
+    from .file_preview_tool import FilePreviewTool
+    TOOL_CLASSES.append(FilePreviewTool)
+except ImportError as e:
+    logger.warning(f"Failed to import FilePreviewTool: {e}")
+
+try:
+    from .file_editor import FileEditor
+    TOOL_CLASSES.append(FileEditor)
+except ImportError as e:
+    logger.warning(f"Failed to import FileEditor: {e}")
+try:
+    from .directory_tree_tool import DirectoryTreeTool
+    TOOL_CLASSES.append(DirectoryTreeTool)
+except ImportError as e:
+    logger.warning(f"Failed to import DirectoryTreeTool: {e}")
+
+try:
+    from .glob_tool import GlobTool
+    TOOL_CLASSES.append(GlobTool)
+except ImportError as e:
+    logger.warning(f"Failed to import GlobTool: {e}")
+
+try:
+    from .file_search_tool import FileSearchTool
+    TOOL_CLASSES.append(FileSearchTool)
+except ImportError as e:
+    logger.warning(f"Failed to import FileSearchTool: {e}")
+
+try:
+    from .apply_edits import ApplyEdits
+    TOOL_CLASSES.append(ApplyEdits)
+except ImportError as e:
+    logger.warning(f"Failed to import ApplyEdits: {e}")
+
+try:
+    from .code_modifier import CodeModifier
+    TOOL_CLASSES.append(CodeModifier)
+except ImportError as e:
+    logger.warning(f"Failed to import CodeModifier: {e}")
+
+try:
+    from .refactor_tool import RefactorTool
+    TOOL_CLASSES.append(RefactorTool)
+except ImportError as e:
+    logger.warning(f"Failed to import RefactorTool: {e}")
+
 try:
     from .mcp_manager import register_mcp_tools
     register_mcp_tools()
@@ -38,7 +85,7 @@ except Exception as e:
 # Keep only unified FileEditor and essential file management tools
 FILE_TOOL_BLACKLIST = {
     'FileLineReader',
-    'FileLineWriter', 
+    'FileLineWriter',
     'FileLineInserter',
     'FileLineAppender',
     'FileLineReplacer',
