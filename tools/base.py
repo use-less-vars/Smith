@@ -1,12 +1,19 @@
 # tools/base.py
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
+
 from typing import Literal, Any, Optional, ClassVar
+
 import os
+
 from pathlib import Path
-import tiktoken
+
+
+
 import sys
 
+
 class ToolBase(BaseModel):
+    model_config = ConfigDict(extra="ignore")
     """
     All tools must inherit from this class.
     They must define a 'tool' field with a Literal of their unique name.
@@ -25,14 +32,11 @@ class ToolBase(BaseModel):
         return self.model_dump(exclude={'execute'})
     
     def _estimate_tokens(self, text: str) -> int:
-        """Estimate token count for text using tiktoken."""
-        try:
-            # Use cl100k_base encoding (same as GPT-4, GPT-3.5-turbo)
-            encoding = tiktoken.get_encoding("cl100k_base")
-            return len(encoding.encode(text))
-        except Exception:
-            # Fallback approximation: ~4 chars per token
-            return len(text) // 4
+        """Estimate token count for text using simple character approximation.
+        Original tiktoken implementation disabled due to network issues in Docker.
+        """
+        # Approximation: ~4 chars per token
+        return len(text) // 4
     
     def _truncate_output(self, output: str, limit: Optional[int] = None) -> str:
         """Truncate output to token limit if specified."""
