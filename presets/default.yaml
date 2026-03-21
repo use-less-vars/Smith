@@ -1,0 +1,6 @@
+name: "Default"
+system_prompt: "You are a helpful assistant."
+model: "deepseek-reasoner"
+temperature: 0.2
+tools: []
+safety_level: "standard"
