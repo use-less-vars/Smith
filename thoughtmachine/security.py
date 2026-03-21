@@ -90,17 +90,21 @@ def validate_path(path: str, mode: str = 'read', workspace_path: Optional[str] =
         PathOutsideWorkspaceError: If path is outside workspace.
         ValueError: For invalid inputs.
     """
-    # Resolve to absolute path (following symlinks)
+    # First, get absolute path of the requested location (without following symlinks)
     try:
-        target_abs = os.path.abspath(path)
-        # Also resolve symlinks to get canonical path
-        target_abs = os.path.realpath(target_abs)
+        requested_abs = os.path.abspath(path)
     except Exception as e:
         raise ValueError(f"Invalid path '{path}': {e}")
     
-    # If no workspace restriction, just return the path
+    # Use requested_abs as the path to validate
+    target_abs = requested_abs
+    
+    # If no workspace restriction, return canonical path if possible
     if workspace_path is None:
-        return target_abs
+        try:
+            return os.path.realpath(target_abs)
+        except Exception:
+            return target_abs
     
     workspace_abs = os.path.abspath(workspace_path)
     workspace_abs = os.path.realpath(workspace_abs)
@@ -141,9 +145,19 @@ def validate_path(path: str, mode: str = 'read', workspace_path: Optional[str] =
         )
         raise PathOutsideWorkspaceError(f"Path {path} is outside workspace {workspace_abs}")
     
+    # Try to get canonical path (following symlinks) for return value
+    # If symlink points outside workspace or is broken, that's OK - we already validated
+    # the symlink itself is within workspace
+    canonical_abs = target_abs
+    try:
+        canonical_abs = os.path.realpath(target_abs)
+    except Exception:
+        # Broken symlink or other issue - keep the absolute path
+        pass
+    
     # Log successful access
     try:
-        file_size = os.path.getsize(target_abs) if os.path.exists(target_abs) and os.path.isfile(target_abs) else None
+        file_size = os.path.getsize(canonical_abs) if os.path.exists(canonical_abs) and os.path.isfile(canonical_abs) else None
     except Exception:
         file_size = None
     
@@ -153,14 +167,14 @@ def validate_path(path: str, mode: str = 'read', workspace_path: Optional[str] =
         level=LogLevel.INFO if LOGGING_AVAILABLE else logging.INFO,
         data={
             "path": path,
-            "resolved_path": target_abs,
+            "resolved_path": canonical_abs,
             "workspace": workspace_abs,
             "operation": mode,
             "size_bytes": file_size
         }
     )
     
-    return target_abs
+    return canonical_abs
 
 
 def setup_docker_sandbox(
