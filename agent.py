@@ -547,6 +547,36 @@ class Agent:
                     }
                 }
                 return
+            except Exception as e:
+                # Catch any other unexpected exception
+                print(f"[Agent] Unexpected exception in process_query: {e}")
+                traceback.print_exc()
+                # Update execution state: transition through STOPPING intermediate state
+                events = self.state.set_execution_state(ExecutionState.STOPPING)
+                for event in events:
+                    self._handle_state_event(event)
+                # Then transition to STOPPED
+                events = self.state.set_execution_state(ExecutionState.STOPPED)
+                for event in events:
+                    self._handle_state_event(event)
+                if self.logger:
+                    self.logger.log_error("UNEXPECTED_ERROR", str(e))
+                    self.logger.log_agent_end("unexpected_error", f"Unexpected error: {e}")
+                    self.logger.close()
+                yield {
+                    "type": "error",
+                    "message": str(e),
+                    "traceback": traceback.format_exc(),
+                    "turn": turn,
+                    "context_length": self.state.current_conversation_tokens,
+                    "usage": {
+                        "input": last_input_tokens,
+                        "output": last_output_tokens,
+                        "total_input": self.total_input_tokens,
+                        "total_output": self.total_output_tokens,
+                    }
+                }
+                return
             
             # Token usage
             usage = response.usage

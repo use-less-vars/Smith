@@ -8,7 +8,7 @@ import logging
 import os
 import sys
 
-from openai import OpenAI, APIError, RateLimitError
+from openai import OpenAI, APIError, RateLimitError, APIConnectionError
 import tiktoken
 
 from .base import LLMProvider, ProviderConfig, LLMResponse
@@ -184,6 +184,39 @@ class OpenAICompatibleProvider(LLMProvider):
                 rate_limit_error.raw_response = e.response
             raise rate_limit_error
         except APIError as e:
+            # Debug logging for authentication errors
+            import os
+            if os.environ.get('DEBUG_OPENAI'):
+                print(f"[DEBUG_AUTH_ERROR] APIError caught: {e}", file=sys.stderr)
+                print(f"[DEBUG_AUTH_ERROR] Error type: {type(e)}", file=sys.stderr)
+                print(f"[DEBUG_AUTH_ERROR] Error string: {str(e)}", file=sys.stderr)
+                if hasattr(e, 'response'):
+                    try:
+                        resp_text = str(e.response)
+                        if len(resp_text) > 1000:
+                            resp_text = resp_text[:1000] + f"... (truncated, total {len(resp_text)} chars)"
+                        print(f"[DEBUG_AUTH_ERROR] Error response: {resp_text}", file=sys.stderr)
+                    except:
+                        pass
+            # Special handling for DeepSeek authentication via APIConnectionError
+            if isinstance(e, APIConnectionError):
+                # Debug logging
+                if os.environ.get('DEBUG_OPENAI'):
+                    print(f"[DEBUG_APICONNECTION] APIConnectionError caught: {e}", file=sys.stderr)
+                    print(f"[DEBUG_APICONNECTION] Base URL: {self.config.base_url}", file=sys.stderr)
+                # Check if this is a DeepSeek endpoint
+                base_url = str(self.config.base_url or "").lower()
+                if "deepseek" in base_url:
+                    if os.environ.get('DEBUG_OPENAI'):
+                        print(f"[DEBUG_APICONNECTION] Treating as DeepSeek authentication error", file=sys.stderr)
+                    auth_error = AuthenticationError(f"Authentication failed (DeepSeek connection error): {e}")
+                    if hasattr(e, 'response'):
+                        auth_error.raw_response = e.response
+                    raise auth_error
+                else:
+                    if os.environ.get('DEBUG_OPENAI'):
+                        print(f"[DEBUG_APICONNECTION] Not DeepSeek, passing through as API error", file=sys.stderr)
+            
             if "authentication" in str(e).lower() or "api key" in str(e).lower():
                 auth_error = AuthenticationError(f"Authentication failed: {e}")
                 if hasattr(e, 'response'):

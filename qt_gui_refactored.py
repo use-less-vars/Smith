@@ -2124,9 +2124,7 @@ class AgentGUI(QMainWindow):
                 self.status_panel.update_status("Running")
         else:
             self.run_btn.setEnabled(True)
-            # Enable restart if we have history OR if presenter has cached config
-            can_restart = self.last_history is not None or (hasattr(self.presenter, 'can_restart') and self.presenter.can_restart())
-            self.restart_btn.setEnabled(can_restart)
+            self.restart_btn.setEnabled(True)
             self.pause_btn.setEnabled(False)
             self.status_panel.update_status("Ready")
     
