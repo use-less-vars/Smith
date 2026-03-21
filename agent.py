@@ -971,3 +971,79 @@ Check system warnings for required actions.'''
             "usage": {"input": last_input_tokens, "output": last_output_tokens,
                       "total_input": self.total_input_tokens, "total_output": self.total_output_tokens}
         }
+    def from_preset():
+        @classmethod
+        def from_preset(cls, preset_name_or_obj, api_key: str = "", base_url: str = "https://api.deepseek.com", session_id: str = None, initial_conversation=None, **overrides):
+            """
+        Create an Agent instance from a preset configuration.
+
+        Args:
+            preset_name_or_obj: Either a preset name (str) to load, or a Preset object.
+            api_key: API key for the LLM provider (overrides preset if provided).
+            base_url: Base URL for the LLM provider (overrides preset if provided).
+            session_id: Optional session ID for tracking.
+            initial_conversation: Optional conversation history to continue from.
+            **overrides: Additional AgentConfig fields to override preset values.
+
+        Returns:
+            Agent: Configured Agent instance.
+        """
+            from preset_loader import get_preset_loader
+            from tools import SIMPLIFIED_TOOL_CLASSES
+
+            # Resolve preset
+            if isinstance(preset_name_or_obj, str):
+                loader = get_preset_loader()
+                preset = loader.get_preset(preset_name_or_obj)
+                if preset is None:
+                    raise ValueError(f"Preset '{preset_name_or_obj}' not found. Available: {loader.list_presets()}")
+            else:
+                preset = preset_name_or_obj
+
+            # Build tool_classes from preset.tools (list of tool class names)
+            tool_classes = []
+            preset_tool_names = set(preset.tools or [])
+            for cls in SIMPLIFIED_TOOL_CLASSES:
+                if cls.__name__ in preset_tool_names:
+                    tool_classes.append(cls)
+
+            # Build AgentConfig fields from preset
+            config_data = {
+                "api_key": api_key or "",
+                "base_url": base_url,
+                "model": preset.model,
+                "temperature": preset.temperature,
+                "tool_classes": tool_classes,
+                "enabled_tools": list(preset_tool_names),
+                "system_prompt": preset.system_prompt,
+                "provider_type": "openai_compatible",
+                "max_turns": overrides.get("max_turns", 100),
+                "detail": overrides.get("detail", "normal"),
+                "workspace_path": overrides.get("workspace_path"),
+                "tool_output_token_limit": overrides.get("tool_output_token_limit", 10000),
+                "token_monitor_enabled": overrides.get("token_monitor_enabled", True),
+                "token_monitor_warning_threshold": overrides.get("token_monitor_warning_threshold", 35000),
+                "token_monitor_critical_threshold": overrides.get("token_monitor_critical_threshold", 50000),
+                "turn_monitor_enabled": overrides.get("turn_monitor_enabled", True),
+                "turn_monitor_warning_threshold": overrides.get("turn_monitor_warning_threshold", 0.8),
+                "turn_monitor_critical_threshold": overrides.get("turn_monitor_critical_threshold", 0.95),
+                "critical_countdown_turns": overrides.get("critical_countdown_turns", 5),
+                "enable_logging": overrides.get("enable_logging", True),
+                "log_dir": overrides.get("log_dir", "./logs"),
+                "log_level": overrides.get("log_level", "INFO"),
+                "enable_file_logging": overrides.get("enable_file_logging", True),
+                "enable_console_logging": overrides.get("enable_console_logging", False),
+                "jsonl_format": overrides.get("jsonl_format", True),
+                "max_file_size_mb": overrides.get("max_file_size_mb", 10),
+                "max_backup_files": overrides.get("max_backup_files", 5),
+            }
+
+            # Apply any remaining overrides (including initial_conversation, stop_check, etc.)
+            config_data.update(overrides)
+
+            # Create AgentConfig
+            from agent_core import AgentConfig
+            config = AgentConfig(**config_data)
+
+            # Create Agent instance
+            return cls(config, initial_conversation=initial_conversation, session_id=session_id)

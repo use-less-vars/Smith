@@ -31,7 +31,7 @@ class RuntimeParams:
         return cls(**data)
 
 
-@dataclass
+@dataclass(frozen=True)
 class SessionConfig:
     """Immutable session-level configuration. Set at creation and cannot be changed."""
     model: str
@@ -96,6 +96,7 @@ class Session:
     # But we may keep a cached version during runtime.
     agent_context: List[Dict[str, Any]] = field(default_factory=list, compare=False, repr=False)
     containers: List[ContainerMetadata] = field(default_factory=list)
+    preset_name: Optional[str] = field(default=None, compare=False)
     metadata: Dict[str, Any] = field(default_factory=dict)  # name, tags, notes, etc.
 
     def update_runtime_params(self, **kwargs) -> None:
@@ -120,6 +121,7 @@ class Session:
             'runtime_params': self.runtime_params.to_dict(),
             'user_history': self.user_history,
             'containers': [c.to_dict() for c in self.containers],
+            'preset_name': self.preset_name,
             'metadata': self.metadata,
         }
         return data
@@ -152,6 +154,7 @@ class Session:
             runtime_params=runtime_params,
             user_history=user_history,
             containers=containers,
+            preset_name=data.get('preset_name'),
             metadata=metadata,
         )
         # agent_context will be built later by ContextBuilder

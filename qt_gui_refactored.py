@@ -1,3 +1,4 @@
+import yaml
 # qt_gui_refactored.py
 """
 Refactored Agent GUI using Presenter/ViewModel pattern.
@@ -108,7 +109,22 @@ class AgentControlsPanel(QGroupBox):
         self.controls_container.setLayout(self.controls_layout)
 
         
-        # Row 0: Workspace controls
+        # Row 0: Preset selection
+        preset_row = QWidget()
+        preset_layout = QHBoxLayout()
+        preset_row.setLayout(preset_layout)
+        
+        preset_layout.addWidget(QLabel("Preset:"))
+        self.preset_combo = QComboBox()
+        self.preset_combo.setEditable(False)
+        self._load_presets()
+        self.preset_combo.currentIndexChanged.connect(self._on_preset_changed)
+        preset_layout.addWidget(self.preset_combo)
+        preset_layout.addStretch()
+        
+        self.left_column.addWidget(preset_row)
+        
+        # Row 1: Workspace controls
         workspace_row = QWidget()
         workspace_layout = QHBoxLayout()
         workspace_row.setLayout(workspace_layout)
@@ -424,6 +440,75 @@ class AgentControlsPanel(QGroupBox):
         self.update_turn_monitor_controls()
         self._update_turn_threshold_labels()
     
+
+    def _load_presets(self):
+        """Load available presets from the presets directory into the combo box."""
+        import os
+        import yaml
+        
+        presets_dir = "presets"
+        self.preset_combo.clear()
+        # Add a "None" option to indicate no preset
+        self.preset_combo.addItem("None", None)
+        
+        if os.path.isdir(presets_dir):
+            for filename in sorted(os.listdir(presets_dir)):
+                if filename.endswith(".yaml") or filename.endswith(".yml"):
+                    filepath = os.path.join(presets_dir, filename)
+                    try:
+                        with open(filepath, 'r') as f:
+                            data = yaml.safe_load(f)
+                            name = data.get('name', filename)
+                            # Store the filepath as user data
+                            self.preset_combo.addItem(name, filepath)
+                    except Exception as e:
+                        print(f"Error loading preset {filepath}: {e}")
+        else:
+            print(f"Presets directory '{presets_dir}' not found.")
+
+    def _on_preset_changed(self, index):
+        """Handle preset selection change.
+        
+        Load the selected preset and update UI controls to reflect its values.
+        """
+        import yaml
+        
+        # Get the filepath stored as user data
+        filepath = self.preset_combo.itemData(index)
+        if not filepath:
+            # "None" selected - no action needed
+            return
+        
+        try:
+            with open(filepath, 'r') as f:
+                preset_data = yaml.safe_load(f)
+        except Exception as e:
+            print(f"Error loading preset {filepath}: {e}")
+            return
+        
+        # Apply preset values to controls
+        self._apply_preset_values(preset_data)
+    
+    def _apply_preset_values(self, preset_data):
+        """Apply preset dictionary values to UI controls.
+        
+        This updates the controls to show the preset's configuration.
+        Individual controls can still be adjusted by the user after selection.
+        """
+        # Model
+        if 'model' in preset_data:
+            self.model_combo.setEditText(preset_data['model'])
+        
+        # Temperature
+        if 'temperature' in preset_data:
+            self.temperature_spinbox.setValue(preset_data['temperature'])
+        
+        # Tools list - update tool checkboxes
+        if 'tools' in preset_data:
+            enabled_tools = set(preset_data['tools'])
+            for name, checkbox in self.tool_checkboxes.items():
+                checkbox.setChecked(name in enabled_tools)
+
     def _open_mcp_config(self):
         """
 Open MCP configuration dialog.
@@ -694,6 +779,12 @@ Open MCP configuration dialog.
         config["enabled_tools"] = [name for name, cb in self.tool_checkboxes.items() if cb.isChecked()]
         # Provider-specific config (empty dict for now)
         config["provider_config"] = {}
+        # Preset selection
+        preset_filepath = self.preset_combo.currentData()
+        if preset_filepath:
+            config["preset_name"] = preset_filepath
+        else:
+            config["preset_name"] = None
         return config
     
     def set_config_dict(self, config):
@@ -780,6 +871,20 @@ Open MCP configuration dialog.
             enabled_names = set(config["enabled_tools"])
             for name, checkbox in self.tool_checkboxes.items():
                 checkbox.setChecked(name in enabled_names)
+        
+        # Preset selection
+        preset_name = config.get("preset_name")
+        if preset_name:
+            # Find the preset in the combo box by stored filepath
+            index = self.preset_combo.findData(preset_name)
+            if index >= 0:
+                self.preset_combo.setCurrentIndex(index)
+            else:
+                # Preset file not found, default to None
+                self.preset_combo.setCurrentIndex(0)
+        else:
+            # No preset selected
+            self.preset_combo.setCurrentIndex(0)
 
 
 class MCPConfigDialog(QDialog):
@@ -2038,6 +2143,9 @@ class AgentGUI(QMainWindow):
 
         # Get current configuration from controls
         config_dict = self.agent_controls_panel.get_config_dict()
+        
+        # Extract preset_name if present (it will be passed separately)
+        preset_name = config_dict.pop('preset_name', None)
 
         # Update presenter configuration
         self.presenter.update_config(config_dict)
@@ -2051,7 +2159,7 @@ class AgentGUI(QMainWindow):
                 QMessageBox.warning(self, "No Query", "Please enter a query first.")
                 return
             self.display_user_query(query)
-            self.presenter.start_session(query, config_dict)
+            self.presenter.start_session(query, config_dict, preset_name=preset_name)
             self.query_entry.clear()
             self.update_window_title()
 

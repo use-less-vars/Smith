@@ -287,13 +287,14 @@ class AgentPresenter(QObject):
                 user_history.append(user_msg)
         return user_history
     
-    def start_session(self, query: str, config: Optional[dict] = None):
+    def start_session(self, query: str, config: Optional[dict] = None, preset_name: str = None):
         """
         Start a new agent session.
 
         Args:
             query: User query string
             config: Optional configuration overrides
+            preset_name: Optional preset name to use instead of config
         """
         if self.state != ExecutionState.IDLE:
             print(f"[Presenter] Cannot start session in state {self.state}")
@@ -303,11 +304,23 @@ class AgentPresenter(QObject):
         self.session_name = None
 
         try:
-            # Create agent config
-            agent_config = self.create_agent_config(config)
-            
-            # Cache config for restart_session
-            self._cached_config = agent_config
+            # Determine if using preset_name or config dict
+            if preset_name is not None:
+                # preset_name takes precedence; config may be None or provide overrides
+                agent_config = None  # not used
+                # Cache preset_name for restart (maybe store a derived config? For restart, we can create a minimal config)
+                # For simplicity, we'll store a placeholder; restart_session uses _cached_config, which expects AgentConfig
+                # We'll create a dummy AgentConfig from the preset for caching
+                from agent import Agent
+                temp_agent = Agent.from_preset(preset_name, session_id=None)
+                self._cached_config = temp_agent.config
+                self._cached_preset_name = preset_name
+                # Apply any overrides to the temporary config if needed? Not necessary for start, but restart will use preset
+            else:
+                # Create agent config from dict
+                agent_config = self.create_agent_config(config)
+                self._cached_config = agent_config
+                self._cached_preset_name = None
 
             # Generate unique session ID
             session_id = self._next_session_id
@@ -327,8 +340,7 @@ class AgentPresenter(QObject):
                 # let the controller handle it - it will start with that context and then process the query.
 
             # Start controller with session ID and optional initial conversation
-            self.controller.start(query, agent_config, session_id, initial_conversation)
-            
+            self.controller.start(query, agent_config, session_id, initial_conversation, preset_name=preset_name, **({} if config is None else config))            
             self.state = ExecutionState.RUNNING
             self.status_message.emit("Session started")
             
