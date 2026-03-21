@@ -110,13 +110,16 @@ class OpenAICompatibleProvider(LLMProvider):
             completion_kwargs = {
                 "model": self.config.model,
                 "messages": messages,
-                "temperature": kwargs.get("temperature", self.config.temperature),
-                **kwargs
             }
-            
-            if self.config.max_tokens:
+            # Apply any explicit kwargs first
+            completion_kwargs.update(kwargs)
+            # Set defaults for missing parameters
+            if "temperature" not in completion_kwargs:
+                completion_kwargs["temperature"] = self.config.temperature
+            if "max_tokens" not in completion_kwargs and self.config.max_tokens is not None:
                 completion_kwargs["max_tokens"] = self.config.max_tokens
-            
+            if "top_p" not in completion_kwargs and getattr(self.config, "top_p", None) is not None:
+                completion_kwargs["top_p"] = self.config.top_p            
             # Add tools if provided
             if tools:
                 completion_kwargs["tools"] = self.format_tools(tools)

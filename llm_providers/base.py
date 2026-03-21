@@ -34,6 +34,7 @@ class ProviderConfig:
     model: str = ""
     temperature: float = 0.7
     max_tokens: Optional[int] = None
+    top_p: Optional[float] = None
     timeout: int = 120
     max_retries: int = 3
     extra_headers: Dict[str, str] = None

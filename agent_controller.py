@@ -164,6 +164,12 @@ class AgentController(QObject):
         if self.agent:
             return self.agent.conversation.copy()
         return None
+
+    def update_runtime_params(self, **kwargs):
+        """Forward runtime parameter updates to the agent if available."""
+        if self.agent is not None:
+            self.agent.update_runtime_params(**kwargs)
+
     def restart_session(self):
         """Restart agent with cleared history."""
         if not self.is_running:

@@ -14,6 +14,7 @@ from tools.final import Final
 from tools.request_user_interaction import RequestUserInteraction
 from tools.summarize_tool import SummarizeTool
 from fast_json_repair import loads as repair_loads
+from session.models import RuntimeParams
 import tiktoken
 import traceback
 # Import security module for capability checks
@@ -53,6 +54,12 @@ class Agent:
         self.provider = ProviderFactory.create_provider(
             config.provider_type,
             **provider_config
+        )
+        # Initialize mutable runtime parameters from config
+        self.runtime_params = RuntimeParams(
+            temperature=config.temperature,
+            max_tokens=config.max_tokens,
+            top_p=None  # not in config
         )
         self.logger = None
         if LOGGING_AVAILABLE and config.enable_logging:
@@ -164,11 +171,25 @@ class Agent:
         self._ensure_system_prompt()
         self.total_input_tokens = self.config.initial_input_tokens
         self.total_output_tokens = self.config.initial_output_tokens
+        # Reset runtime params to defaults
+        self.runtime_params = RuntimeParams(
+            temperature=self.config.temperature,
+            max_tokens=self.config.max_tokens,
+            top_p=None
+        )
         # Reset state machine
         reset_events = self.state.reset()
         # Process any events from reset (though usually none for fresh reset)
         for event in reset_events:
             self._handle_state_event(event)
+
+    def update_runtime_params(self, **kwargs):
+        """Update mutable runtime parameters (temperature, max_tokens, top_p)."""
+        allowed = {'temperature', 'max_tokens', 'top_p'}
+        for key, value in kwargs.items():
+            if key not in allowed:
+                raise ValueError(f"Unknown runtime parameter: {key}")
+            setattr(self.runtime_params, key, value)
     def _handle_state_event(self, event):
         """Process a state event (e.g., token warning, turn warning).
         
@@ -509,10 +530,18 @@ class Agent:
             # Call LLM provider
             formatted_tools = self.provider.format_tools(self.tool_definitions)
             try:
+                # Build chat kwargs using runtime parameters (overrides config)
+                chat_kwargs = {
+                    "temperature": self.runtime_params.temperature,
+                }
+                if self.runtime_params.max_tokens is not None:
+                    chat_kwargs["max_tokens"] = self.runtime_params.max_tokens
+                if self.runtime_params.top_p is not None:
+                    chat_kwargs["top_p"] = self.runtime_params.top_p
                 response = self.provider.chat_completion(
                     messages=messages,
                     tools=formatted_tools,
-                    temperature=self.config.temperature,
+                    **chat_kwargs
                 )
                 
                 # Debug: Print raw response if environment variable is set
