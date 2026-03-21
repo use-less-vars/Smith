@@ -437,7 +437,9 @@ class AgentPresenter(QObject):
                 return False
 
             # Serialize to JSON
-            session_dict = session.to_dict()
+            session_dict = session.to_persistable_dict()
+            # Add session version for future compatibility
+            session_dict['version'] = 1
             # Convert datetime objects to ISO strings
             if 'created_at' in session_dict and isinstance(session_dict['created_at'], datetime):
                 session_dict['created_at'] = session_dict['created_at'].isoformat()
@@ -470,8 +472,13 @@ class AgentPresenter(QObject):
             with open(filepath, 'r') as f:
                 session_dict = json.load(f)
 
+            # Check session version
+            version = session_dict.get('version', 0)
+            if version != 1:
+                print(f"[Presenter] Warning: Session version {version} is not current (1). Attempting to load anyway.")
+
             # Reconstruct Session object
-            session = Session.from_dict(session_dict)
+            session = Session.from_persistable_dict(session_dict)
 
             # Set as current session
             self.current_session = session
@@ -556,8 +563,8 @@ class AgentPresenter(QObject):
             print(f"[Presenter] Error building session config: {e}")
             return None
 
-        # Extract user/assistant messages (exclude system)
-        user_history = self._extract_user_history(conversation)
+        # Preserve full conversation including system, user, assistant, and tool messages
+        user_history = conversation.copy()
 
         # Create session object
         now = datetime.now()
@@ -571,7 +578,8 @@ class AgentPresenter(QObject):
         )
         return session
 
-    def _process_event(self, event: dict):        """
+    def _process_event(self, event: dict):
+        """
         Process a single event from controller.
         
         Args:

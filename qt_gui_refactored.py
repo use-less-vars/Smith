@@ -2756,6 +2756,13 @@ class AgentGUI(QMainWindow):
         if not file_path:
             return
 
+        # Stop any running controller before loading
+        try:
+            if self.presenter.controller and hasattr(self.presenter.controller, 'stop'):
+                self.presenter.controller.stop()
+        except Exception as e:
+            print(f"[GUI] Warning: could not stop controller: {e}")
+
         try:
             success = self.presenter.save_session(file_path)
             if success:
@@ -2773,11 +2780,27 @@ class AgentGUI(QMainWindow):
         if not file_path:
             return
 
+        # Stop any running controller before loading
+        try:
+            if self.presenter.controller and hasattr(self.presenter.controller, 'stop'):
+                self.presenter.controller.stop()
+        except Exception as e:
+            print(f"[GUI] Warning: could not stop controller: {e}")
+
         try:
             success = self.presenter.load_session(file_path)
             if success:
                 # Display the loaded conversation
                 self.display_loaded_conversation()
+                # Reset token counters and context for the loaded session
+                self.presenter.total_input = 0
+                self.presenter.total_output = 0
+                self.presenter.context_length = 0
+                self.total_input = 0
+                self.total_output = 0
+                self.context_length = 0
+                self.status_panel.update_tokens(0, 0)
+                self.status_panel.update_context_length(0)
                 QMessageBox.information(self, "Session Loaded", f"Session loaded from {file_path}")
             else:
                 QMessageBox.warning(self, "Load Failed", "Failed to load session file.")
