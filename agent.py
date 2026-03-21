@@ -152,7 +152,10 @@ class Agent:
     
     def _ensure_system_prompt(self):
         if not any(msg.get("role") == "system" for msg in self.conversation):
-            system_prompt = self._load_system_prompt()
+            if self.config.system_prompt:
+                system_prompt = self.config.system_prompt
+            else:
+                system_prompt = self._load_system_prompt()
             self.conversation.insert(0, {"role": "system", "content": system_prompt})
 
     

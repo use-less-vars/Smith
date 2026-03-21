@@ -8,6 +8,9 @@ between AgentGUI (view) and AgentController (model).
 
 import os
 import json
+import uuid
+from datetime import datetime
+import traceback
 from typing import Optional, List, Dict, Any
 from enum import Enum, auto
 from PyQt6.QtCore import QObject, pyqtSignal, pyqtSlot
@@ -15,6 +18,8 @@ from agent_controller import AgentController
 from agent_core import AgentConfig
 from tools import SIMPLIFIED_TOOL_CLASSES
 from agent_state import ExecutionState
+from session.models import Session, SessionConfig, RuntimeParams
+from session.store import FileSystemSessionStore
 
 
 
@@ -59,6 +64,12 @@ class AgentPresenter(QObject):
         self._restarting = False
         self._next_session_id = 1
         self.current_session_id = None
+        # Session management
+        self.session_store = FileSystemSessionStore()
+        self.user_history: List[Dict[str, Any]] = []
+        self.current_session: Optional[Session] = None
+        self.session_name: Optional[str] = None  # Optional user-provided name
+        self._initial_conversation: Optional[List[Dict[str, Any]]] = None  # For loading sessions
 
         # Event processing via signals
         print(f"[Presenter] Connecting controller event_occurred to _process_event")
@@ -186,6 +197,7 @@ class AgentPresenter(QObject):
             ("max_history_turns", "max_history_turns"),
             ("keep_initial_query", "keep_initial_query"),
             ("keep_system_messages", "keep_system_messages"),
+            ("system_prompt", "system_prompt"),
         ]
 
         for config_key, agent_key in direct_mappings:
@@ -222,6 +234,58 @@ class AgentPresenter(QObject):
         agent_config = AgentConfig(**agent_kwargs)
 
         return agent_config
+
+    def _load_default_system_prompt(self) -> str:
+        """Load the default system prompt from agent_core.py default.
+        """
+        # Create a minimal AgentConfig with defaults to get the default system_prompt
+        try:
+            default_config = AgentConfig(api_key="dummy")
+            return default_config.system_prompt
+        except Exception as e:
+            print(f"[Presenter] Error loading default system prompt: {e}")
+            return "You are a helpful assistant."
+
+    def _build_session_config(self, agent_config: AgentConfig) -> SessionConfig:
+        """Build SessionConfig from an AgentConfig instance."""
+        from session.models import RuntimeParams, SessionConfig
+        
+        # Extract runtime params (use temperature from agent config)
+        runtime_params = RuntimeParams(
+            temperature=agent_config.temperature,
+            max_tokens=agent_config.max_tokens if hasattr(agent_config, 'max_tokens') else None,
+            top_p=agent_config.top_p if hasattr(agent_config, 'top_p') else None
+        )
+        
+        # Build SessionConfig
+        session_config = SessionConfig(
+            model=agent_config.model,
+            system_prompt=agent_config.system_prompt,
+            toolset=[cls.__name__ for cls in agent_config.tool_classes],
+            safety_settings=None,
+            initial_params=runtime_params
+        )
+        return session_config
+
+    def _extract_user_history(self, conversation: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Extract user/assistant messages from conversation, excluding system.
+        """
+        user_history = []
+        for msg in conversation:
+            role = msg.get("role", "")
+            if role in ["user", "assistant"]:
+                # Copy only essential fields to keep session size manageable
+                user_msg = {
+                    "role": role,
+                    "content": msg.get("content", "")
+                }
+                # Preserve tool_calls and tool_call_id if present
+                if "tool_calls" in msg:
+                    user_msg["tool_calls"] = msg["tool_calls"]
+                if "tool_call_id" in msg:
+                    user_msg["tool_call_id"] = msg["tool_call_id"]
+                user_history.append(user_msg)
+        return user_history
     
     def start_session(self, query: str, config: Optional[dict] = None):
         """
@@ -247,10 +311,26 @@ class AgentPresenter(QObject):
             self._next_session_id += 1
             self.current_session_id = session_id
 
-            # Start controller with session ID
-            self.controller.start(query, agent_config, session_id)            
+            # Check if we have an initial conversation to resume from
+            initial_conversation = None
+            if self._initial_conversation is not None:
+                initial_conversation = self._initial_conversation
+                # For a resumed session, we may need to prepend the current query if it's not empty
+                # However, the controller expects the query to be the first message if initial_conversation is None
+                # If initial_conversation is provided, the query will be enqueued separately? Actually controller.start
+                # enqueues the query regardless. For resumed sessions, the query is typically empty or we want to
+                # continue the conversation. Let's handle this: if initial_conversation exists, we likely want to
+                # ignore the query or treat it as an additional user message. For now, pass initial_conversation and
+                # let the controller handle it - it will start with that context and then process the query.
+
+            # Start controller with session ID and optional initial conversation
+            self.controller.start(query, agent_config, session_id, initial_conversation)
+            
             self.state = ExecutionState.RUNNING
             self.status_message.emit("Session started")
+            
+            # Clear the initial conversation flag after using it
+            self._initial_conversation = None
             
 
             
@@ -272,6 +352,7 @@ class AgentPresenter(QObject):
         self.state = ExecutionState.IDLE
         self._restarting = False
         self.current_session_id = None
+        self._initial_conversation = None  # Clear loaded session
         self.status_message.emit("Ready for new session")
 
     def restart_session(self, query: str = None):
@@ -336,10 +417,161 @@ class AgentPresenter(QObject):
         """Stop current session."""
         self.controller.stop()
         self.state = ExecutionState.STOPPING
-    
-    
-    def _process_event(self, event: dict):
+
+    # ----- Session Management -----
+
+    def save_session(self, filepath: str) -> bool:
+        """Save current session to a JSON file.
+
+        Args:
+            filepath: Path to save the session file
+
+        Returns:
+            True if saved successfully, False otherwise
         """
+        try:
+            # Build session from current state
+            session = self._build_session_from_current_state()
+            if session is None:
+                print(f"[Presenter] No session to save")
+                return False
+
+            # Serialize to JSON
+            session_dict = session.to_dict()
+            # Convert datetime objects to ISO strings
+            if 'created_at' in session_dict and isinstance(session_dict['created_at'], datetime):
+                session_dict['created_at'] = session_dict['created_at'].isoformat()
+            if 'updated_at' in session_dict and isinstance(session_dict['updated_at'], datetime):
+                session_dict['updated_at'] = session_dict['updated_at'].isoformat()
+
+            # Ensure directory exists
+            os.makedirs(os.path.dirname(filepath) if os.path.dirname(filepath) else '.', exist_ok=True)
+
+            with open(filepath, 'w') as f:
+                json.dump(session_dict, f, indent=2)
+
+            print(f"[Presenter] Session saved to {filepath}")
+            return True
+        except Exception as e:
+            print(f"[Presenter] Error saving session: {e}")
+            traceback.print_exc()
+            return False
+
+    def load_session(self, filepath: str) -> bool:
+        """Load a session from a JSON file.
+
+        Args:
+            filepath: Path to the session file
+
+        Returns:
+            True if loaded successfully, False otherwise
+        """
+        try:
+            with open(filepath, 'r') as f:
+                session_dict = json.load(f)
+
+            # Reconstruct Session object
+            session = Session.from_dict(session_dict)
+
+            # Set as current session
+            self.current_session = session
+            self.session_name = os.path.basename(filepath)
+            self._initial_conversation = session.user_history.copy()
+
+            print(f"[Presenter] Session loaded from {filepath}: {len(session.user_history)} messages")
+            return True
+        except Exception as e:
+            print(f"[Presenter] Error loading session: {e}")
+            traceback.print_exc()
+            return False
+
+    def list_sessions(self) -> List[Dict[str, Any]]:
+        """List available sessions from the session store.
+
+        Returns:
+            List of session metadata dictionaries
+        """
+        try:
+            # The store returns list of dicts directly
+            sessions = self.session_store.list_sessions()
+            # Each session dict already contains: session_id, name, created_at, updated_at, preview
+            # Transform to the format expected by the GUI
+            result = []
+            for sess in sessions:
+                result.append({
+                    'id': sess.get('session_id'),
+                    'name': sess.get('name', 'Untitled Session'),
+                    'created_at': sess.get('created_at'),
+                    'updated_at': sess.get('updated_at'),
+                    'preview': sess.get('preview', '')
+                })
+            return result
+        except Exception as e:
+            print(f"[Presenter] Error listing sessions: {e}")
+            return []
+
+    def delete_session(self, session_id: str) -> bool:
+        """Delete a session from the store.
+
+        Args:
+            session_id: ID of the session to delete
+
+        Returns:
+            True if deleted, False if not found or error
+        """
+        try:
+            success = self.session_store.delete_session(session_id)
+            if success:
+                print(f"[Presenter] Deleted session {session_id}")
+            else:
+                print(f"[Presenter] Session {session_id} not found")
+            return success
+        except Exception as e:
+            print(f"[Presenter] Error deleting session: {e}")
+            return False
+
+    def _build_session_from_current_state(self) -> Optional[Session]:
+        """Construct a Session object from current presenter state.
+        """
+        # Get the full conversation from the current session
+        conversation = None
+        if self.controller.agent is not None:
+            # Agent is running or exists; get its conversation
+            conversation = self.controller.get_conversation()
+        elif self._initial_conversation is not None:
+            conversation = self._initial_conversation
+        elif self.user_history:
+            conversation = self.user_history
+        else:
+            return None
+
+        if not conversation:
+            return None
+
+        # Build session config from current agent config
+        try:
+            agent_config = self.create_agent_config()
+            session_config = self._build_session_config(agent_config)
+        except Exception as e:
+            print(f"[Presenter] Error building session config: {e}")
+            return None
+
+        # Extract user/assistant messages (exclude system)
+        user_history = self._extract_user_history(conversation)
+
+        # Create session object
+        now = datetime.now()
+        session = Session(
+            session_id=str(self.current_session_id) if self.current_session_id else str(uuid.uuid4()),
+            created_at=now,
+            updated_at=now,
+            config=session_config,
+            runtime_params=RuntimeParams(),  # defaults
+            user_history=user_history
+        )
+        return session
+
+    def _process_event(self, event: dict):        """
         Process a single event from controller.
         
         Args:

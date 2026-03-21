@@ -158,6 +158,12 @@ class AgentController(QObject):
         else:
             # Agent is idle, send paused event directly
             self._emit_event({"type": "paused"})
+
+    def get_conversation(self) -> Optional[List[Dict[str, Any]]]:
+        """Return the current conversation from the agent, if available."""
+        if self.agent:
+            return self.agent.conversation.copy()
+        return None
     def restart_session(self):
         """Restart agent with cleared history."""
         if not self.is_running:

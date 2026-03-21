@@ -2371,6 +2371,21 @@ class AgentGUI(QMainWindow):
         export_menu.addAction(export_pdf_action)
         
         file_menu.addSeparator()
+        # Session management actions
+        save_session_action = QAction("Save Session...", self)
+        save_session_action.triggered.connect(self.save_session)
+        file_menu.addAction(save_session_action)
+
+        open_session_action = QAction("Open Session...", self)
+        open_session_action.triggered.connect(self.open_session)
+        file_menu.addAction(open_session_action)
+
+        manage_sessions_action = QAction("Manage Sessions...", self)
+        manage_sessions_action.triggered.connect(self.manage_sessions)
+        file_menu.addAction(manage_sessions_action)
+
+        file_menu.addSeparator()
+
         
         exit_action = QAction("Exit", self)
         exit_action.triggered.connect(self.close)
@@ -2679,6 +2694,197 @@ class AgentGUI(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "Export Error", f"Failed to export conversation: {e}")
     
+    # ----- Config Management Methods -----
+
+    def save_config(self, immediate=False):
+        """Save application configuration to file.
+        
+        Args:
+            immediate: If True, save immediately without debouncing.
+        """
+        if not immediate and self._config_save_timer.isActive():
+            # Already scheduled
+            return
+        
+        if not immediate:
+            # Schedule with debounce
+            self._config_save_timer.start()
+            return
+        
+        # Save immediately
+        try:
+            config = self.presenter.get_config()
+            # Save to config file (path is stored in presenter)
+            config_path = getattr(self.presenter, 'config_path', 'agent_config.json')
+            with open(config_path, 'w') as f:
+                json.dump(config, f, indent=2)
+            print(f"[GUI] Configuration saved to {config_path}")
+            self.status_message.emit("Configuration saved")
+        except Exception as e:
+            print(f"[GUI] Error saving config: {e}")
+            self.status_message.emit(f"Config save error: {e}")
+
+    def load_config(self):
+        """Load application configuration from file."""
+        try:
+            config_path = getattr(self.presenter, 'config_path', 'agent_config.json')
+            if os.path.exists(config_path):
+                with open(config_path, 'r') as f:
+                    config = json.load(f)
+                # Update presenter config
+                self.presenter.update_config(config)
+                print(f"[GUI] Configuration loaded from {config_path}")
+                self.status_message.emit("Configuration loaded")
+            else:
+                print(f"[GUI] Config file not found: {config_path}")
+        except Exception as e:
+            print(f"[GUI] Error loading config: {e}")
+            self.status_message.emit(f"Config load error: {e}")
+
+    # ----- Session Management Methods -----
+
+    def save_session(self):
+        """Save current session to a file."""
+        # Check if there is a session to save
+        if not self.presenter.user_history and not self.presenter._initial_conversation:
+            QMessageBox.warning(self, "No Session", "No conversation to save.")
+            return
+
+        file_path, _ = QFileDialog.getSaveFileName(
+            self, "Save Session", "", "Session Files (*.json);;All Files (*)"
+        )
+        if not file_path:
+            return
+
+        try:
+            success = self.presenter.save_session(file_path)
+            if success:
+                QMessageBox.information(self, "Session Saved", f"Session saved to {file_path}")
+            else:
+                QMessageBox.warning(self, "Save Failed", "Failed to save session.")
+        except Exception as e:
+            QMessageBox.critical(self, "Save Error", f"Failed to save session: {e}")
+
+    def open_session(self):
+        """Open a session from a file and load it into the GUI."""
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, "Open Session", "", "Session Files (*.json);;All Files (*)"
+        )
+        if not file_path:
+            return
+
+        try:
+            success = self.presenter.load_session(file_path)
+            if success:
+                # Display the loaded conversation
+                self.display_loaded_conversation()
+                QMessageBox.information(self, "Session Loaded", f"Session loaded from {file_path}")
+            else:
+                QMessageBox.warning(self, "Load Failed", "Failed to load session file.")
+        except Exception as e:
+            QMessageBox.critical(self, "Load Error", f"Failed to load session: {e}")
+
+    def manage_sessions(self):
+        """Open a dialog to manage saved sessions."""
+        sessions = self.presenter.list_sessions()
+        if not sessions:
+            QMessageBox.information(self, "No Sessions", "No saved sessions found.")
+            return
+
+        from PyQt6.QtWidgets import QDialog, QVBoxLayout, QListWidget, QDialogButtonBox
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Manage Sessions")
+        layout = QVBoxLayout(dialog)
+
+        list_widget = QListWidget()
+        for sess in sessions:
+            name = sess.get('name', sess.get('id', 'Unknown'))
+            created = sess.get('created_at', '')
+            preview = sess.get('preview', '')
+            display_text = f"{name} - {preview}"
+            list_widget.addItem(display_text)
+            list_widget.item(list_widget.count()-1).setData(Qt.ItemDataRole.UserRole, sess['id'])
+
+        layout.addWidget(list_widget)
+
+        button_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Delete | QDialogButtonBox.StandardButton.Close)
+        button_box.button(QDialogButtonBox.StandardButton.Delete).clicked.connect(
+            lambda: self._delete_selected_session(list_widget)
+        )
+        button_box.button(QDialogButtonBox.StandardButton.Close).clicked.connect(dialog.accept)
+        layout.addWidget(button_box)
+
+        dialog.exec()
+
+    def _delete_selected_session(self, list_widget):
+        """Delete the session selected in the list widget."""
+        current_item = list_widget.currentItem()
+        if not current_item:
+            return
+        session_id = current_item.data(Qt.ItemDataRole.UserRole)
+        if not session_id:
+            return
+
+        reply = QMessageBox.question(
+            self, "Confirm Delete",
+            f"Are you sure you want to delete session '{session_id}'?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            success = self.presenter.delete_session(session_id)
+            if success:
+                list_widget.takeItem(list_widget.row(current_item))
+            else:
+                QMessageBox.warning(self, "Delete Failed", "Could not delete session.")
+
+    def display_loaded_conversation(self):
+        """Display the currently loaded conversation (from _initial_conversation)."""
+        # Clear current display
+        self.event_model.clear()
+        self.output_textedit.clear()
+
+        # Use the presenter's _initial_conversation or user_history
+        conversation = self.presenter._initial_conversation or self.presenter.user_history
+        if not conversation:
+            return
+
+        # Rebuild the event model from the conversation
+        for msg in conversation:
+            self._append_chat_message(msg['role'], msg['content'], msg.get('tool_calls'), msg.get('tool_call_id'))
+
+    def _append_chat_message(self, role: str, content: str, tool_calls=None, tool_call_id=None):
+        """Append a chat message to the event model and output display.
+        
+        Args:
+            role: 'user' or 'assistant'
+            content: message content
+            tool_calls: optional list of tool calls (for assistant)
+            tool_call_id: optional tool call ID (for user tool response)
+        """
+        # Create event dictionary similar to how the agent emits
+        event = {
+            'type': 'turn',
+            'role': role,
+            'content': content,
+            'timestamp': datetime.datetime.now().isoformat(),
+        }
+        if tool_calls:
+            event['tool_calls'] = tool_calls
+        if tool_call_id:
+            event['tool_call_id'] = tool_call_id
+
+        # Add to event model (which triggers delegate rendering)
+        self.event_model.appendEvent(event)
+
+        # Also add to output_textedit for immediate display
+        # Use the same HTML formatting as display_event
+        html = self._format_event_html(event)
+        cursor = self.output_textedit.textCursor()
+        cursor.movePosition(QTextCursor.MoveOperation.End)
+        if not self.output_textedit.document().isEmpty():
+            cursor.insertHtml("<hr>")
+        cursor.insertHtml(html)
+
     def closeEvent(self, event):
         """Save configuration before closing the GUI."""
         # Save immediately on close to ensure config is persisted

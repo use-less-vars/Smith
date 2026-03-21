@@ -43,6 +43,7 @@ class AgentConfig(BaseModel):
     keep_system_messages: bool = True
     initial_input_tokens: int = 0
     initial_output_tokens: int = 0
+    system_prompt: Optional[str] = None  # Custom system prompt (overrides file)
     
     # Token monitoring configuration
     token_monitor_enabled: bool = Field(default=True, description="Enable automatic token usage warnings")
