@@ -19,7 +19,7 @@ from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
     QLabel, QLineEdit, QPushButton, QTextEdit, QListWidget, QStyledItemDelegate,
     QGroupBox, QCheckBox, QMenuBar, QMenu, QFileDialog, QStyleOptionViewItem, 
-    QMessageBox, QScrollArea, QFrame, QComboBox, QSpinBox, QDoubleSpinBox, QSplitter, QDialog, QSizePolicy, QStyle, QInputDialog
+    QMessageBox, QScrollArea, QFrame, QComboBox, QSpinBox, QDoubleSpinBox, QSplitter, QTabWidget, QDialog, QSizePolicy, QStyle, QInputDialog
 )
 from PyQt6.QtCore import Qt, QTimer, pyqtSlot, QAbstractListModel, QModelIndex, QVariant, QRect, QPoint, QSize, QSortFilterProxyModel
 from PyQt6.QtGui import QAction, QKeySequence, QFont, QTextDocument, QTextCursor, QColor, QPainter, QPalette, QAbstractTextDocumentLayout, QPageLayout, QPageSize, QShortcut
@@ -29,6 +29,7 @@ from dotenv import load_dotenv
 from agent_presenter import AgentPresenter
 from agent_state import ExecutionState
 from config_service import create_agent_config_service, ConfigService
+from session.store import FileSystemSessionStore
 from tools import TOOL_CLASSES, SIMPLIFIED_TOOL_CLASSES
 
 load_dotenv()
@@ -983,7 +984,7 @@ class MCPConfigDialog(QDialog):
 
 class StatusPanel(QGroupBox):
     """Shows current status and token usage."""
-    def __init__(self):
+    def __init__(self, parent=None, session_store=None):
         super().__init__("Status")
         layout = QVBoxLayout()
         self.status_label = QLabel("Ready")
@@ -1605,56 +1606,64 @@ class EventFrame(QFrame):
 
 
 # --- Main GUI class (refactored to use Presenter) ---
-class AgentGUI(QMainWindow):
-    def __init__(self):
-        super().__init__()
-        
+class SessionTab(QWidget):
+    def __init__(self, parent=None, session_store=None, auto_load_current=True):
+        super().__init__(parent)
+
         # Initialize presenter and config service
         self.presenter = AgentPresenter()
+        if session_store is not None:
+            self.presenter.session_store = session_store
         self.config_service = create_agent_config_service()
-        
+
         # Token tracking (now managed by presenter but also cached locally for UI)
         self.total_input = 0
         self.total_output = 0
         self.context_length = 0
-        
+        self.current_theme = None
+
         # State tracking
         self.last_history = None
         self._cached_config = None  # Config created by restart_session for next run
-        
+
         # Smart scrolling tracking
         self._auto_scroll_enabled = True
         self._user_scrolled_away = False
         self._programmatic_scroll = False
-        
+
         # Configuration auto-save timer
         self._config_save_timer = QTimer()
         self._config_save_timer.setSingleShot(True)
         self._config_save_timer.timeout.connect(self.save_config)
         self._loading_config = False  # Flag to prevent save during load
-        
+
+        # Session auto-save timer (every 2 minutes)
+        self._auto_save_timer = QTimer(self)
+        self._auto_save_timer.setInterval(120000)  # 2 minutes
+        self._auto_save_timer.timeout.connect(self._auto_save_session)
+        self._auto_save_timer.start()
+
         # Event history and pagination
         self.event_history = []  # All events stored as dictionaries
         self.visible_event_widgets = []  # Widgets currently displayed
         self.max_visible_events = 100  # Maximum events to show at once
-        
+
         self.init_ui()
         self.setup_signal_connections()
         self.load_config()
-        # Auto-load current session on startup if available
-        if self.presenter.load_current_session():
+        # Auto-load current session on startup if requested and available
+        if auto_load_current and self.presenter.load_current_session():
             self.display_loaded_conversation()
-            self.update_window_title()
-    
+            self.update_window_title()    
     def init_ui(self):
         """Initialize the user interface (unchanged layout)."""
         self.update_window_title()
-        self.center_window()
+
         
-        central_widget = QWidget()
-        self.setCentralWidget(central_widget)
+
+
         main_layout = QHBoxLayout()
-        central_widget.setLayout(main_layout)
+        self.setLayout(main_layout)
         
         splitter = QSplitter(Qt.Orientation.Horizontal)
         
@@ -1791,13 +1800,6 @@ class AgentGUI(QMainWindow):
         self.restart_btn.setEnabled(False)
         button_layout.addWidget(self.restart_btn)
 
-        # New Session button
-        self.new_session_btn = QPushButton("NEW SESSION")
-        self.new_session_btn.clicked.connect(self.new_session)
-        self.new_session_btn.setMinimumWidth(80)
-        self.new_session_btn.setEnabled(True)
-        button_layout.addWidget(self.new_session_btn)
-
         query_layout.addLayout(button_layout)
 
         right_layout.addWidget(query_frame)
@@ -1810,7 +1812,7 @@ class AgentGUI(QMainWindow):
         main_layout.addWidget(splitter)
         
         # Create menu bar
-        self.create_menu_bar()
+
         # Set up accessibility features
         self.setup_accessibility()
 
@@ -2721,7 +2723,7 @@ class AgentGUI(QMainWindow):
         }
         
         if theme_name in themes:
-            self.setStyleSheet(themes[theme_name])
+            self.window().setStyleSheet(themes[theme_name])
             self.current_theme = theme_name
             print(f"[GUI] Theme set to: {theme_name}")
         else:
@@ -3147,6 +3149,21 @@ class AgentGUI(QMainWindow):
         if not name:
             name = "Untitled Session"
         self.setWindowTitle(f"Agent Workbench – {name}")
+        # Update tab text if parent is QTabWidget
+        parent = self.parent()
+        if parent and hasattr(parent, 'indexOf') and hasattr(parent, 'setTabText'):
+            idx = parent.indexOf(self)
+            if idx >= 0:
+                parent.setTabText(idx, name)
+
+    def _auto_save_session(self):
+        """Auto-save the current session periodically."""
+        try:
+            success = self.presenter.auto_save_current_session()
+            if success:
+                self.update_window_title()
+        except Exception as e:
+            print(f"[SessionTab] Auto-save error: {e}")
 
     def _append_chat_message(self, role: str, content: str, tool_calls=None, tool_call_id=None, reasoning=None):
         """Append a chat message to the event model and output display.
@@ -3204,14 +3221,221 @@ class AgentGUI(QMainWindow):
         cursor.insertHtml(html)
 
     def closeEvent(self, event):
-        """Save configuration before closing the GUI."""
-        # Save immediately on close to ensure config is persisted
+        """Handle closing the tab with save/discard prompts for unsaved changes."""
+        # Stop auto-save timer to prevent interference during close
+        self._auto_save_timer.stop()
+
+        # Check if there are unsaved changes
+        if self.presenter.has_unsaved_changes():
+            has_name = bool(self.presenter.session_name)
+            msg = QMessageBox(self)
+            msg.setIcon(QMessageBox.Icon.Question)
+            if has_name:
+                msg.setWindowTitle("Unsaved Changes")
+                msg.setText("This session has unsaved changes. Save before closing?")
+                btn_save = msg.addButton("Save", QMessageBox.ButtonRole.YesRole)
+                btn_discard = msg.addButton("Discard", QMessageBox.ButtonRole.DestructiveRole)
+                btn_cancel = msg.addButton("Cancel", QMessageBox.ButtonRole.RejectRole)
+            else:
+                msg.setWindowTitle("Unnamed Session")
+                msg.setText("The session has unsaved changes and no name. Choose an action:")
+                btn_save_default = msg.addButton("Save with Default Name", QMessageBox.ButtonRole.YesRole)
+                btn_rename_save = msg.addButton("Rename & Save", QMessageBox.ButtonRole.YesRole)
+                btn_discard = msg.addButton("Discard", QMessageBox.ButtonRole.DestructiveRole)
+                btn_cancel = msg.addButton("Cancel", QMessageBox.ButtonRole.RejectRole)
+            msg.exec()
+            clicked = msg.clickedButton()
+
+            if clicked == btn_cancel:
+                event.ignore()
+                return
+            elif clicked == btn_discard:
+                # Discard changes; no saving
+                pass
+            else:
+                # Save or Rename & Save
+                if has_name:
+                    # Save with existing name
+                    success = self.presenter.save_session()
+                    if not success:
+                        QMessageBox.warning(self, "Save Failed", "Failed to save session.")
+                        event.ignore()
+                        return
+                else:
+                    if clicked == btn_save_default:
+                        success = self.presenter.auto_save_current_session()
+                        if not success:
+                            QMessageBox.warning(self, "Save Failed", "Failed to auto-save session.")
+                            event.ignore()
+                            return
+                        self.update_window_title()
+                    else:  # btn_rename_save
+                        name, ok = QInputDialog.getText(self, "Rename Session", "Enter a name for the session:")
+                        if not ok or not name.strip():
+                            event.ignore()
+                            return
+                        # First, auto-save to create a session with a temporary default name
+                        success_tmp = self.presenter.auto_save_current_session()
+                        if not success_tmp:
+                            QMessageBox.warning(self, "Save Failed", "Failed to auto-save session.")
+                            event.ignore()
+                            return
+                        # Now rename the saved session to the desired name
+                        session_id = self.presenter.current_session_id
+                        if not session_id:
+                            QMessageBox.warning(self, "Rename Failed", "Session ID not available.")
+                            event.ignore()
+                            return
+                        rename_ok = self.presenter.rename_session(session_id, name.strip())
+                        if not rename_ok:
+                            QMessageBox.warning(self, "Rename Failed", "Failed to rename session.")
+                            event.ignore()
+                            return
+                        # Update session name and UI
+                        self.presenter.session_name = name.strip()
+                        self.update_window_title()
+
+        # Proceed with closing
+        # Save UI configuration
         self.save_config(immediate=True)
-        # Clean up presenter
-        self.presenter.cleanup()
+        # Stop controller if running and reset state (without auto-saving)
+        if self.presenter.controller.is_running:
+            self.presenter.controller.stop()
+        self.presenter.state = ExecutionState.IDLE
+        # Remove this tab from the parent QTabWidget
+        parent = self.parent()
+        if parent and hasattr(parent, 'removeTab'):
+            idx = parent.indexOf(self)
+            if idx >= 0:
+                parent.removeTab(idx)
+        self.deleteLater()
         super().closeEvent(event)
 
 
+
+
+class AgentGUI(QMainWindow):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("ThoughtMachine")
+        self.session_store = FileSystemSessionStore()
+        central_widget = QWidget()
+        self.setCentralWidget(central_widget)
+        main_layout = QHBoxLayout()
+        central_widget.setLayout(main_layout)
+        self.tab_widget = QTabWidget()
+        self.tab_widget.setTabsClosable(True)
+        self.tab_widget.tabCloseRequested.connect(self.close_tab)
+        self.tab_widget.currentChanged.connect(self.on_current_tab_changed)
+        # Add new tab button on the tab bar
+        new_tab_btn = QPushButton("+")
+        new_tab_btn.setFixedSize(24, 24)
+        new_tab_btn.setToolTip("New Session Tab")
+        new_tab_btn.clicked.connect(self.new_tab)
+        self.tab_widget.setCornerWidget(new_tab_btn, Qt.Corner.TopRightCorner)
+        main_layout.addWidget(self.tab_widget)
+        self.new_tab(auto_load_current=True)  # create initial tab
+        self.create_menu_bar()
+
+    def new_tab(self, session_id=None, auto_load_current=False):
+        tab = SessionTab(session_store=self.session_store, auto_load_current=auto_load_current)
+        if session_id:
+            try:
+                tab.presenter.load_session(session_id)
+                tab.display_loaded_conversation()
+                tab.update_window_title()
+            except Exception as e:
+                print(f"[GUI] Failed to load session {session_id}: {e}")
+        index = self.tab_widget.addTab(tab, tab.presenter.session_name or "Untitled")
+        self.tab_widget.setCurrentWidget(tab)
+
+    def close_tab(self, index):
+        tab = self.tab_widget.widget(index)
+        if tab:
+            tab.close()  # triggers closeEvent; the tab will remove itself if accepted
+            # If no tabs remain, create a new empty tab
+            if self.tab_widget.count() == 0:
+                self.new_tab()
+
+    def on_current_tab_changed(self, index):
+        tab = self.tab_widget.currentWidget()
+        if tab:
+            tab.update_window_title()
+            self.statusBar().showMessage(f"Tokens: in={tab.total_input}, out={tab.total_output}, ctx={tab.context_length}")
+
+    def create_menu_bar(self):
+        menu_bar = QMenuBar(self)
+        self.setMenuBar(menu_bar)
+        # File menu
+        file_menu = menu_bar.addMenu("File")
+        save_config_action = QAction("Save Configuration", self)
+        save_config_action.triggered.connect(lambda: self.current_tab().save_config())
+        file_menu.addAction(save_config_action)
+        load_config_action = QAction("Load Configuration", self)
+        load_config_action.triggered.connect(lambda: self.current_tab().load_config())
+        file_menu.addAction(load_config_action)
+        file_menu.addSeparator()
+        # Export submenu
+        export_menu = file_menu.addMenu("Export Conversation")
+        export_text_action = QAction("As Plain Text", self)
+        export_text_action.triggered.connect(lambda: self.current_tab().export_conversation_text())
+        export_menu.addAction(export_text_action)
+        export_html_action = QAction("As HTML", self)
+        export_html_action.triggered.connect(lambda: self.current_tab().export_conversation_html())
+        export_menu.addAction(export_html_action)
+        export_pdf_action = QAction("As PDF", self)
+        export_pdf_action.triggered.connect(lambda: self.current_tab().export_conversation_pdf())
+        export_menu.addAction(export_pdf_action)
+        file_menu.addSeparator()
+        # Session management actions
+        save_session_action = QAction("Save Session", self)
+        save_session_action.triggered.connect(lambda: self.current_tab().save_session())
+        file_menu.addAction(save_session_action)
+        export_session_action = QAction("Export Session As...", self)
+        export_session_action.triggered.connect(lambda: self.current_tab().export_session())
+        file_menu.addAction(export_session_action)
+        open_session_action = QAction("Open Session...", self)
+        open_session_action.triggered.connect(lambda: self.current_tab().open_session())
+        file_menu.addAction(open_session_action)
+        manage_sessions_action = QAction("Manage Sessions...", self)
+        manage_sessions_action.triggered.connect(lambda: self.current_tab().manage_sessions())
+        file_menu.addAction(manage_sessions_action)
+        file_menu.addSeparator()
+        exit_action = QAction("Exit", self)
+        exit_action.triggered.connect(self.close)
+        file_menu.addAction(exit_action)
+        # View menu for theme
+        view_menu = menu_bar.addMenu("View")
+        theme_menu = view_menu.addMenu("Theme")
+        light_theme_action = QAction("Light", self)
+        light_theme_action.triggered.connect(lambda: self.set_theme("light"))
+        theme_menu.addAction(light_theme_action)
+        dark_theme_action = QAction("Dark", self)
+        dark_theme_action.triggered.connect(lambda: self.set_theme("dark"))
+        theme_menu.addAction(dark_theme_action)
+        high_contrast_theme_action = QAction("High Contrast", self)
+        high_contrast_theme_action.triggered.connect(lambda: self.set_theme("high_contrast"))
+        theme_menu.addAction(high_contrast_theme_action)
+        # Shortcuts
+        save_config_action.setShortcut("Ctrl+S")
+        load_config_action.setShortcut("Ctrl+O")
+        exit_action.setShortcut("Ctrl+Q")
+
+    def current_tab(self):
+        return self.tab_widget.currentWidget()
+
+    def closeEvent(self, event):
+        # Close all tabs by calling close() on each; if any rejects, abort the application close.
+        # Tabs will remove themselves upon acceptance.
+        while self.tab_widget.count() > 0:
+            tab = self.tab_widget.widget(0)
+            if tab:
+                if not tab.close():
+                    event.ignore()
+                    return
+            else:
+                break
+        event.accept()
 
 
 # ----- Main Function -----
