@@ -28,8 +28,8 @@ except ImportError:
 
 class AgentConfig(BaseModel):
     api_key: str = ""
-    base_url: str = "https://api.deepseek.com"
-    model: str = "deepseek-reasoner"
+    base_url: str = "http://localhost:11434/v1"
+    model: str = "phi3:mini"
     provider_type: Literal["openai_compatible", "anthropic", "openai"] = "openai_compatible"
     provider_config: Dict[str, Any] = Field(default_factory=dict)
     temperature: float = 0.2
