@@ -183,15 +183,26 @@ class OpenAICompatibleProvider(LLMProvider):
         
         return messages_with_ids
 
-    def _normalize_stepfun_tool_calls(self, messages):
+    def _normalize_stepfun_tool_calls(self, messages, is_openrouter=False):
         """Normalize messages for StepFun API via OpenRouter.
         
         StepFun expects tool calls to have either 'function' field (when type='function') 
         or 'custom' field (when type='custom'). OpenRouter may add 'index' field.
         This ensures tool calls have the required structure.
+        
+        When is_openrouter=True, convert to standard OpenAI format (type='function' with 'function' field)
+        since OpenRouter expects that format.
         """
         import sys
+        print(f"[STEPFUN_NORM_DEBUG] Normalizing with is_openrouter={is_openrouter}", file=sys.stderr)
+        
         messages_normalized = []
+        
+        # DEBUG: Log input
+        print(f"[STEPFUN_NORM_DEBUG] Starting normalization of {len(messages)} messages", file=sys.stderr)
+        for idx, msg in enumerate(messages):
+            if msg.get("role") == "assistant" and "tool_calls" in msg:
+                print(f"[STEPFUN_NORM_DEBUG] Message {idx} has tool_calls: {msg['tool_calls']}", file=sys.stderr)
         
         for i, msg in enumerate(messages):
             msg_copy = msg.copy()
@@ -207,32 +218,140 @@ class OpenAICompatibleProvider(LLMProvider):
                         
                         tc_copy = tc.copy() if isinstance(tc, dict) else {}
                         
+                        # DEBUG: Log original tool call
+                        print(f"[STEPFUN_NORM_DEBUG] Tool call {j} before: {tc_copy}", file=sys.stderr)
+                        
                         # Preserve index field if present (added by OpenRouter)
                         # Ensure type field
                         if "type" not in tc_copy:
                             tc_copy["type"] = "function"
                         
-                        # StepFun validation expects 'custom' type with 'custom' field
-                        # Convert function tool calls to custom format
-                        if tc_copy.get("type") == "function":
-                            # Move function data to custom field
-                            if "function" in tc_copy:
-                                tc_copy["custom"] = tc_copy.pop("function")
-                            else:
-                                # Try to construct from flattened fields
-                                tc_copy["custom"] = {
+                        # Handle tool call format conversion
+                        # When using OpenRouter, use standard OpenAI format (type='function' with 'function' field)
+                        # When using StepFun directly, use StepFun format (type='custom' with 'custom' field)
+                        
+                        current_type = tc_copy.get("type", "function")
+                        
+                        if is_openrouter:
+                            # OpenRouter expects standard OpenAI format
+                            if current_type == "custom" and "custom" in tc_copy:
+                                # Convert from StepFun format to OpenAI format
+                                custom_data = tc_copy.pop("custom")
+                                tc_copy["function"] = custom_data
+                                tc_copy["type"] = "function"
+                            elif current_type == "function" and "custom" in tc_copy:
+                                # Has both type='function' and 'custom' field - move to 'function'
+                                tc_copy["function"] = tc_copy.pop("custom")
+                                tc_copy["type"] = "function"
+                            elif current_type == "custom" and "function" not in tc_copy:
+                                # Type is 'custom' but no 'custom' field - try to construct
+                                arguments = tc_copy.get("arguments", "{}")
+                                if isinstance(arguments, str):
+                                    try:
+                                        import json
+                                        arguments = json.loads(arguments)
+                                    except:
+                                        arguments = {}
+                                tc_copy["function"] = {
                                     "name": tc_copy.get("name", ""),
-                                    "arguments": tc_copy.get("arguments", "{}")
+                                    "arguments": arguments
                                 }
+                                tc_copy["type"] = "function"
                                 # Remove flattened fields
                                 tc_copy.pop("name", None)
                                 tc_copy.pop("arguments", None)
                                 tc_copy.pop("result", None)
-                            # Change type to custom
-                            tc_copy["type"] = "custom"
-                        elif tc_copy.get("type") == "custom":
-                            if "custom" not in tc_copy:
+                            # Ensure type is 'function' for OpenRouter
+                            if tc_copy.get("type") != "function":
+                                tc_copy["type"] = "function"
+                        else:
+                            # StepFun direct API expects 'custom' format
+                            if current_type == "function":
+                                # Move function data to custom field
+                                if "function" in tc_copy:
+                                    tc_copy["custom"] = tc_copy.pop("function")
+                                else:
+                                    # Try to construct from flattened fields
+                                    arguments = tc_copy.get("arguments", "{}")
+                                    # Ensure arguments is a dict, not a JSON string
+                                    if isinstance(arguments, str):
+                                        try:
+                                            import json
+                                            arguments = json.loads(arguments)
+                                        except:
+                                            arguments = {}
+                                    
+                                    tc_copy["custom"] = {
+                                        "name": tc_copy.get("name", ""),
+                                        "arguments": arguments
+                                    }
+                                    # Remove flattened fields
+                                    tc_copy.pop("name", None)
+                                    tc_copy.pop("arguments", None)
+                                    tc_copy.pop("result", None)
+                                # Change type to custom
+                                tc_copy["type"] = "custom"
+                            elif not is_openrouter and tc_copy.get("type") == "custom":
+                            # StepFun direct API: ensure custom field exists and is properly populated
+                                if "custom" not in tc_copy:
+                                # Check if function data is in 'function' field or flattened fields
+                                    if "function" in tc_copy:
+                                        tc_copy["custom"] = tc_copy.pop("function")
+                                    else:
+                                    # Try to construct from flattened fields
+                                        arguments = tc_copy.get("arguments", "{}")
+                                    # Ensure arguments is a dict, not a JSON string
+                                        if isinstance(arguments, str):
+                                            try:
+                                                import json
+                                                arguments = json.loads(arguments)
+                                            except:
+                                                arguments = {}
+                                    
+                                        tc_copy["custom"] = {
+                                            "name": tc_copy.get("name", ""),
+                                            "arguments": arguments
+                                        }
+                                        # Remove flattened fields
+                                        tc_copy.pop("name", None)
+                                        tc_copy.pop("arguments", None)
+                                        tc_copy.pop("result", None)
+                            # Ensure custom is a dict (not None or empty string)
+                            custom_field = tc_copy.get("custom")
+                            if not isinstance(custom_field, dict):
                                 tc_copy["custom"] = {}
+                                custom_field = {}
+                            # If custom field is empty, try to populate from flattened fields
+                            if not custom_field:
+                                if "name" in tc_copy or "arguments" in tc_copy:
+                                    arguments = tc_copy.get("arguments", "{}")
+                                    # Ensure arguments is a dict, not a JSON string
+                                    if isinstance(arguments, str):
+                                        try:
+                                            import json
+                                            arguments = json.loads(arguments)
+                                        except:
+                                            arguments = {}
+                                    
+                                    tc_copy["custom"] = {
+                                        "name": tc_copy.get("name", ""),
+                                        "arguments": arguments
+                                    }
+                                    # Remove flattened fields
+                                    tc_copy.pop("name", None)
+                                    tc_copy.pop("arguments", None)
+                                    tc_copy.pop("result", None)
+                                elif "function" in tc_copy:
+                                    tc_copy["custom"] = tc_copy.pop("function")
+                                else:
+                                    # Empty custom field - set defaults
+                                    tc_copy["custom"] = {
+                                        "name": "",
+                                        "arguments": {}
+                                    }
+                        
+                        # DEBUG: Log after normalization
+                        print(f"[STEPFUN_NORM_DEBUG] Tool call {j} after: {tc_copy}", file=sys.stderr)
                         
                         normalized_tool_calls.append(tc_copy)
                     
@@ -246,6 +365,13 @@ class OpenAICompatibleProvider(LLMProvider):
             if msg.get("role") == "assistant" and "tool_calls" in msg:
                 for tc in msg["tool_calls"]:
                     print(f"[STEPFUN_TOOL_NORM] Assistant tool call id={tc.get('id')}, type={tc.get('type')}, has_function={'function' in tc}, has_custom={'custom' in tc}, index={tc.get('index')}", file=sys.stderr)
+        
+        # DEBUG: Log final messages
+        print(f"[STEPFUN_NORM_DEBUG] Final normalized messages:", file=sys.stderr)
+        for idx, msg in enumerate(messages_normalized):
+            print(f"[STEPFUN_NORM_DEBUG] Message {idx}: role={msg.get('role')}", file=sys.stderr)
+            if msg.get("role") == "assistant" and "tool_calls" in msg:
+                print(f"[STEPFUN_NORM_DEBUG]   tool_calls: {msg['tool_calls']}", file=sys.stderr)
         
         return messages_normalized
 
@@ -287,9 +413,18 @@ class OpenAICompatibleProvider(LLMProvider):
                     print(f"[DEBUG_DEEPSEEK_AFTER] Message {i}: role={msg.get('role')}, id={msg.get('id')}", file=sys.stderr)
             
             # StepFun requires proper tool call structure
-            if "stepfun" in self.config.model.lower():
-                print(f"[STEPFUN_DEBUG] Processing {len(messages)} messages for StepFun", file=sys.stderr)
-                messages = self._normalize_stepfun_tool_calls(messages)
+            print(f"[STEPFUN_CHECK_DEBUG] Checking if model contains 'stepfun': model='{self.config.model.lower()}', base_url='{self.config.base_url}'", file=sys.stderr)
+            # Check for StepFun via OpenRouter or directly
+            is_stepfun = "stepfun" in self.config.model.lower()
+            is_openrouter = self.config.base_url and "openrouter" in self.config.base_url.lower()
+            print(f"[STEPFUN_CHECK_DEBUG] is_stepfun={is_stepfun}, is_openrouter={is_openrouter}", file=sys.stderr)
+            
+            # If using OpenRouter with StepFun model, we need special handling
+            # OpenRouter expects standard OpenAI format (type='function' with 'function' field)
+            # but StepFun returns 'custom' format. We need to convert between them.
+            if is_stepfun or (is_openrouter and is_stepfun):
+                print(f"[STEPFUN_DEBUG] Processing {len(messages)} messages for StepFun (OpenRouter: {is_openrouter})", file=sys.stderr)
+                messages = self._normalize_stepfun_tool_calls(messages, is_openrouter=is_openrouter)
             
             # Prepare completion kwargs
             completion_kwargs = {
@@ -319,10 +454,17 @@ class OpenAICompatibleProvider(LLMProvider):
                 for i, msg in enumerate(completion_kwargs.get('messages', [])):
                     print(f"[DEEPSEEK_DEBUG_FINAL] Message {i}: {msg}", file=sys.stderr)
             # Debug: print final messages being sent (StepFun only)
+            print(f"[API_CALL_DEBUG] Model: {self.config.model}, Base URL: {self.config.base_url}", file=sys.stderr)
             if "stepfun" in self.config.model.lower():
                 print(f"[STEPFUN_DEBUG_FINAL] Sending {len(completion_kwargs.get('messages', []))} messages to API", file=sys.stderr)
                 for i, msg in enumerate(completion_kwargs.get('messages', [])):
                     print(f"[STEPFUN_DEBUG_FINAL] Message {i}: {msg}", file=sys.stderr)
+            else:
+                # Still log messages for debugging
+                print(f"[API_CALL_DEBUG] Sending {len(completion_kwargs.get('messages', []))} messages", file=sys.stderr)
+                for i, msg in enumerate(completion_kwargs.get('messages', [])):
+                    if msg.get("role") == "assistant" and "tool_calls" in msg:
+                        print(f"[API_CALL_DEBUG] Message {i} has tool_calls: {msg['tool_calls']}", file=sys.stderr)
             
             response = self.client.chat.completions.create(**completion_kwargs)
             
@@ -504,27 +646,80 @@ class OpenAICompatibleProvider(LLMProvider):
         tool_calls = None
         if hasattr(message, 'tool_calls') and message.tool_calls:
             tool_calls = []
-            for tc in message.tool_calls:
+            print(f"[PARSE_RESPONSE_DEBUG] Processing {len(message.tool_calls)} tool calls from response", file=sys.stderr)
+            for idx, tc in enumerate(message.tool_calls):
+                # DEBUG: Log raw tool call structure
+                print(f"[PARSE_RESPONSE_DEBUG] Tool call {idx} raw: type={type(tc)}", file=sys.stderr)
+                if hasattr(tc, '__dict__'):
+                    print(f"[PARSE_RESPONSE_DEBUG] Tool call {idx} attributes: {list(tc.__dict__.keys())}", file=sys.stderr)
+                elif isinstance(tc, dict):
+                    print(f"[PARSE_RESPONSE_DEBUG] Tool call {idx} dict keys: {list(tc.keys())}", file=sys.stderr)
+                
                 # Handle both dictionary and object tool calls
                 if hasattr(tc, 'function'):
                     # Object format (OpenAI SDK)
+                    print(f"[PARSE_RESPONSE_DEBUG] Tool call {idx} has 'function' attribute", file=sys.stderr)
                     name = tc.function.name
                     arguments = tc.function.arguments
                     tc_id = tc.id
                 else:
                     # Dictionary format
-                    func = tc.get("function", {})
-                    name = func.get("name")
-                    arguments = func.get("arguments")
-                    tc_id = tc.get("id")
-                tool_calls.append({
-                    "id": tc_id,
-                    "type": "function",
-                    "function": {
-                        "name": name,
-                        "arguments": arguments
-                    }
-                })        
+                    print(f"[PARSE_RESPONSE_DEBUG] Tool call {idx} checking dict format", file=sys.stderr)
+                    # Check for different tool call formats
+                    if 'custom' in tc:
+                        print(f"[PARSE_RESPONSE_DEBUG] Tool call {idx} has 'custom' field: {tc.get('custom')}", file=sys.stderr)
+                        custom_data = tc.get('custom', {})
+                        name = custom_data.get('name')
+                        arguments = custom_data.get('arguments')
+                        tc_id = tc.get('id')
+                    else:
+                        func = tc.get("function", {})
+                        name = func.get("name")
+                        arguments = func.get("arguments")
+                        tc_id = tc.get("id")
+                # Determine type based on original structure
+                tc_type = "function"
+                if hasattr(tc, 'type'):
+                    tc_type = tc.type
+                elif isinstance(tc, dict) and 'type' in tc:
+                    tc_type = tc.get('type')
+                
+                print(f"[PARSE_RESPONSE_DEBUG] Tool call {idx} parsed: id={tc_id}, name={name}, original_type={tc_type}", file=sys.stderr)
+                
+                # Check if we're using OpenRouter with StepFun
+                # If so, convert to standard OpenAI format (type='function' with 'function' field)
+                is_stepfun = "stepfun" in self.config.model.lower()
+                is_openrouter = self.config.base_url and "openrouter" in self.config.base_url.lower()
+                
+                # Build tool call - convert to function format for OpenRouter
+                # StepFun via OpenRouter expects standard OpenAI format
+                if is_openrouter and is_stepfun and tc_type == "custom":
+                    print(f"[PARSE_RESPONSE_DEBUG] Converting StepFun custom format to OpenAI function format for OpenRouter", file=sys.stderr)
+                    tool_calls.append({
+                        "id": tc_id,
+                        "type": "function",
+                        "function": {
+                            "name": name,
+                            "arguments": arguments
+                        }
+                    })
+                else:
+                    # Preserve original format
+                    # Ensure tc_type is valid ('function' or 'custom')
+                    if tc_type not in ['function', 'custom']:
+                        print(f"[PARSE_RESPONSE_DEBUG] Warning: unknown tool call type '{tc_type}', defaulting to 'function'", file=sys.stderr)
+                        tc_type = 'function'
+                    
+                    tool_calls.append({
+                        "id": tc_id,
+                        "type": tc_type,
+                        tc_type: {  # Use dynamic key: 'function' or 'custom'
+                            "name": name,
+                            "arguments": arguments
+                        }
+                    })        
+        print(f"[PARSE_RESPONSE_DEBUG] Final tool_calls: {tool_calls}", file=sys.stderr)
+        
         # Extract usage
         usage = {}
         if hasattr(raw_response, 'usage'):

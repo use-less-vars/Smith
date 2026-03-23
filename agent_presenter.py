@@ -840,13 +840,31 @@ class AgentPresenter(QObject):
             return None
 
         # Preserve full conversation including system, user, assistant, and tool messages
-        # Normalize tool calls to flattened format for consistency
+        # Normalize tool calls while preserving provider-specific formats (StepFun uses 'custom' field)
         def normalize_tool_call(msg):
-                """Normalize tool call to flattened format, preserving id and type."""
+                """Normalize tool call format, preserving provider-specific structures."""
                 if msg.get('role') == 'assistant' and 'tool_calls' in msg:
                     normalized = []
                     for tc in msg['tool_calls']:
-                        if 'name' in tc:
+                        # Determine the original format to preserve it
+                        has_function = 'function' in tc
+                        has_custom = 'custom' in tc
+                        has_name = 'name' in tc
+                        
+                        # If it's already in StepFun format (type='custom' with 'custom' field), preserve it
+                        if tc.get('type') == 'custom' and has_custom:
+                            # Preserve StepFun format
+                            normalized.append(tc.copy())
+                        elif has_function:
+                            # OpenAI format: function field
+                            normalized.append(tc.copy())
+                        elif has_custom:
+                            # Has custom field but type might not be set or might be wrong
+                            tc_copy = tc.copy()
+                            if 'type' not in tc_copy:
+                                tc_copy['type'] = 'custom'
+                            normalized.append(tc_copy)
+                        elif has_name:
                             # Already flattened; preserve id and type if present
                             flat = {
                                 'name': tc.get('name', 'Unknown'),
@@ -859,18 +877,48 @@ class AgentPresenter(QObject):
                                 flat['type'] = tc['type']
                             normalized.append(flat)
                         else:
-                            # Convert from OpenAI format (function.name, function.arguments)
-                            function = tc.get('function', {})
-                            flat = {
-                                'name': function.get('name', 'Unknown'),
-                                'arguments': function.get('arguments', {}),
-                                'result': tc.get('result', '')
-                            }
-                            if 'id' in tc:
-                                flat['id'] = tc['id']
-                            if 'type' in tc:
-                                flat['type'] = tc['type']
-                            normalized.append(flat)
+                            # Unknown format, try to construct
+                            name = 'Unknown'
+                            arguments = {}
+                            
+                            # Check for any nested structure
+                            if 'function' in tc:
+                                function = tc.get('function', {})
+                                name = function.get('name', 'Unknown')
+                                arguments = function.get('arguments', {})
+                            elif 'custom' in tc:
+                                custom = tc.get('custom', {})
+                                name = custom.get('name', 'Unknown')
+                                arguments = custom.get('arguments', {})
+                            else:
+                                # Fallback to flattened fields directly in tc
+                                name = tc.get('name', 'Unknown')
+                                arguments = tc.get('arguments', {})
+                            
+                            # Determine what format to use based on type
+                            if tc.get('type') == 'custom':
+                                # Use StepFun format
+                                normalized.append({
+                                    'id': tc.get('id'),
+                                    'type': 'custom',
+                                    'custom': {
+                                        'name': name,
+                                        'arguments': arguments
+                                    },
+                                    'result': tc.get('result', '')
+                                })
+                            else:
+                                # Default to flattened format
+                                flat = {
+                                    'name': name,
+                                    'arguments': arguments,
+                                    'result': tc.get('result', '')
+                                }
+                                if 'id' in tc:
+                                    flat['id'] = tc['id']
+                                if 'type' in tc:
+                                    flat['type'] = tc['type']
+                                normalized.append(flat)
                     msg['tool_calls'] = normalized
                 return msg
 
