@@ -2268,14 +2268,7 @@ class SessionTab(QWidget):
         # Restart the agent (preserves session and conversation)
         self.presenter.restart_session(query)
 
-        # Reset token counters in GUI to match presenter
-        self.total_input = 0
-        self.total_output = 0
-        self.context_length = 0
-        self.status_panel.update_tokens(0, 0)
-        self.status_panel.update_context_length(0)
-
-        # Update UI status
+        # Update UI status (token counters remain as they represent cumulative session totals)
         self.status_panel.update_status("Ready for new session")
         self.update_buttons(running=False)
         # Note: we do NOT clear the chat display; the conversation history remains visible.
@@ -2911,6 +2904,28 @@ class SessionTab(QWidget):
         except Exception as e:
             QMessageBox.critical(self, "Save Error", f"Failed to save session: {e}")
 
+    def save_session_as(self):
+        """Save current session to a file chosen by the user (Save As)."""
+        # Check if there is a session to save
+        if not self.presenter.user_history and not self.presenter._initial_conversation:
+            QMessageBox.warning(self, "No Session", "No conversation to save.")
+            return
+        default_dir = str(self.presenter.session_store.sessions_dir)
+        file_path, _ = QFileDialog.getSaveFileName(
+            self, "Save Session As", default_dir, "Session Files (*.json);;All Files (*)"
+        )
+        if not file_path:
+            return
+        try:
+            success = self.presenter.export_session(file_path)
+            if success:
+                self.update_window_title()
+                QMessageBox.information(self, "Session Saved", f"Session saved to {file_path}")
+            else:
+                QMessageBox.warning(self, "Save Failed", "Failed to save session.")
+        except Exception as e:
+            QMessageBox.critical(self, "Save Error", f"Failed to save session: {e}")
+
     def export_session(self):
         """Export current session to a file (user chooses location)."""
         # Check if there is a session to export
@@ -2935,8 +2950,9 @@ class SessionTab(QWidget):
 
     def open_session(self):
         """Open a session from a file and load it into the GUI."""
+        default_dir = str(self.presenter.session_store.sessions_dir)
         file_path, _ = QFileDialog.getOpenFileName(
-            self, "Open Session", "", "Session Files (*.json);;All Files (*)"
+            self, "Open Session", default_dir, "Session Files (*.json);;All Files (*)"
         )
         if not file_path:
             return
@@ -3043,6 +3059,14 @@ class SessionTab(QWidget):
         self.output_textedit.clear()
 
         # Use the presenter's user_history to show the full conversation
+        # Update status panel with current token totals and context length from presenter
+        # These reflect the loaded session's persisted values (even if conversation is empty)
+        self.total_input = self.presenter.total_input
+        self.total_output = self.presenter.total_output
+        self.context_length = self.presenter.context_length
+        self.status_panel.update_tokens(self.presenter.total_input, self.presenter.total_output)
+        self.status_panel.update_context_length(self.presenter.context_length)
+
         conversation = self.presenter.user_history
         if not conversation:
             return
@@ -3117,15 +3141,7 @@ class SessionTab(QWidget):
         success = self.presenter.load_session(file_path, auto_save=False)  # Already handled above
         if success:
             self.display_loaded_conversation()
-            # Reset token counters and context for the loaded session
-            self.presenter.total_input = 0
-            self.presenter.total_output = 0
-            self.presenter.context_length = 0
-            self.total_input = 0
-            self.total_output = 0
-            self.context_length = 0
-            self.status_panel.update_tokens(0, 0)
-            self.status_panel.update_context_length(0)
+            # Window title and UI updated by display_loaded_conversation
             self.update_window_title()
             QMessageBox.information(self, "Session Loaded", f"Session loaded from {file_path}")
         else:
@@ -3388,18 +3404,12 @@ class AgentGUI(QMainWindow):
         export_menu.addAction(export_pdf_action)
         file_menu.addSeparator()
         # Session management actions
-        save_session_action = QAction("Save Session", self)
-        save_session_action.triggered.connect(lambda: self.current_tab().save_session())
+        save_session_action = QAction("Save Session As...", self)
+        save_session_action.triggered.connect(lambda: self.current_tab().save_session_as())
         file_menu.addAction(save_session_action)
-        export_session_action = QAction("Export Session As...", self)
-        export_session_action.triggered.connect(lambda: self.current_tab().export_session())
-        file_menu.addAction(export_session_action)
         open_session_action = QAction("Open Session...", self)
         open_session_action.triggered.connect(lambda: self.current_tab().open_session())
         file_menu.addAction(open_session_action)
-        manage_sessions_action = QAction("Manage Sessions...", self)
-        manage_sessions_action.triggered.connect(lambda: self.current_tab().manage_sessions())
-        file_menu.addAction(manage_sessions_action)
         file_menu.addSeparator()
         exit_action = QAction("Exit", self)
         exit_action.triggered.connect(self.close)

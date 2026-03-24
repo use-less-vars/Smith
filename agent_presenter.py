@@ -67,6 +67,7 @@ class AgentPresenter(QObject):
         self.current_session_id = None
         # Session management
         self.session_store = FileSystemSessionStore()
+        self._dirty = False  # Tracks unsaved changes since last save
         print(f"[Presenter] Session store directory: {self.session_store.sessions_dir}")
         self.context_builder = LastNBuilder(keep_last_messages=100000, keep_system_prompt=True)  # Keep effectively unlimited messages to preserve full session history during loading
         self.user_history: List[Dict[str, Any]] = []
@@ -163,6 +164,8 @@ class AgentPresenter(QObject):
         self.total_input = session.total_input_tokens
         self.total_output = session.total_output_tokens
         self.context_length = session.context_length
+        # Mark as clean (no unsaved changes)
+        self._dirty = False
 
         self.config_changed.emit(self._config.copy())
     
@@ -252,6 +255,9 @@ class AgentPresenter(QObject):
 
         # Create AgentConfig instance (AgentConfig will use defaults for missing fields)
         agent_config = AgentConfig(**agent_kwargs)
+        # Propagate current session's token totals as initial values for the agent
+        agent_config.initial_input_tokens = self.total_input
+        agent_config.initial_output_tokens = self.total_output
 
         return agent_config
 
@@ -310,7 +316,7 @@ class AgentPresenter(QObject):
     def _update_user_history(self, event_history: List[Dict[str, Any]]):
         """
         Update user_history with current conversation from event.
-        
+
         Replaces user_history contents in-place with the event's history (which may be pruned).
         This ensures we save exactly what the agent sees and preserves references.
         """
@@ -321,7 +327,8 @@ class AgentPresenter(QObject):
             # No need to reassign; but ensure consistency if it was somehow detached
             if self.current_session is not None and self.current_session.user_history is not self.user_history:
                 self.current_session.user_history = self.user_history
-
+            # Mark as dirty (unsaved changes)
+            self._dirty = True
     def start_session(self, query: str, config: Optional[dict] = None, preset_name: str = None):
         """
         Start a new agent session.
@@ -344,6 +351,9 @@ class AgentPresenter(QObject):
             if preset_name is not None:
                 from agent import Agent
                 overrides = config if config is not None else {}
+                # Ensure agent carries over current session's token totals as initial values
+                overrides['initial_input_tokens'] = self.total_input
+                overrides['initial_output_tokens'] = self.total_output
                 temp_agent = Agent.from_preset(preset_name, session=None, **overrides)
                 agent_config = temp_agent.config
                 self._cached_config = agent_config
@@ -373,7 +383,7 @@ class AgentPresenter(QObject):
                     query,
                     session=self.current_session,
                     preset_name=preset_name,
-                    **({} if config is None else config)
+                    **overrides
                 )
             else:
                 self.controller.start(
@@ -394,17 +404,12 @@ class AgentPresenter(QObject):
         return self._cached_config is not None
 
     def _finalize_restart(self):
-        """Common restart cleanup: reset controller, counters, and state.
-        Preserves current session identity and conversation history.
+        """Common restart cleanup: reset controller and state.
+        Preserves current session identity, conversation history, and cumulative token totals.
         """
         self.controller.reset()
-        self.total_input = 0
-        self.total_output = 0
-        self.context_length = 0
-        if self.current_session is not None:
-            self.current_session.total_input_tokens = 0
-            self.current_session.total_output_tokens = 0
-            self.current_session.context_length = 0
+        # NOTE: Do NOT reset total_input/total_output/context_length; they are session properties.
+        # They will be carried over to the new agent via config's initial_* tokens.
         self.state = ExecutionState.IDLE
         self._restarting = False
         # Rebuild initial conversation from user_history for continuation
@@ -561,6 +566,8 @@ class AgentPresenter(QObject):
 
             # Update current session marker to point to this session
             self.session_store.set_current_session_id(self.current_session_id)
+            # Mark as clean after successful save
+            self._dirty = False
 
             print(f"[Presenter] Session saved to store: {self.session_store.get_session_path(session.session_id)}")
             return True
@@ -604,6 +611,8 @@ class AgentPresenter(QObject):
                 json.dump(session_dict, f, indent=2)
 
             print(f"[Presenter] Session exported to {filepath}")
+            # Mark as clean after successful export
+            self._dirty = False
             return True
         except Exception as e:
             print(f"[Presenter] Error exporting session: {e}")
@@ -611,23 +620,8 @@ class AgentPresenter(QObject):
             return False
 
     def has_unsaved_changes(self) -> bool:
-        """Check if current session has unsaved changes.
-        
-        Returns True if there is a current session with user history
-        that hasn't been saved (or has changes since last save).
-        For simplicity, we assume any session with user_history has unsaved changes.
-        """
-        # If we have user history, we have something to save
-        if self.user_history:
-            return True
-        # Or if we have a current session ID but no session object loaded
-        if self.current_session_id and not self.current_session:
-            return True
-        # Or if controller has conversation
-        if self.controller.get_conversation():
-            return True
-        return False
-
+        """Check if current session has unsaved changes."""
+        return self._dirty
     def auto_save_current_session(self, default_name: str = None) -> bool:
         """Auto-save current session with default name if not already saved.
         
