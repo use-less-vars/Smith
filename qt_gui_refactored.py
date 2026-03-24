@@ -28,15 +28,18 @@ from dotenv import load_dotenv
 
 from agent_presenter import AgentPresenter
 from agent_state import ExecutionState
-from config_service import create_agent_config_service, ConfigService
+from config_service import create_agent_config_service
+from qt_gui.config.config_bridge import GUIConfigBridge
 from session.store import FileSystemSessionStore
 from tools import TOOL_CLASSES, SIMPLIFIED_TOOL_CLASSES
 
 load_dotenv()
 
-MAX_RESULT_LENGTH = 500  # characters before truncation
+from qt_gui.utils.constants import MAX_RESULT_LENGTH
 
-
+from qt_gui.themes import apply_theme
+from qt_gui.panels.output_panel import OutputPanel
+from qt_gui.panels.query_panel import QueryPanel
 # --- Existing panel classes (unchanged) ---
 class ToolLoaderPanel(QGroupBox):
     """Panel with checkboxes to enable/disable tools."""
@@ -1614,7 +1617,7 @@ class SessionTab(QWidget):
         self.presenter = AgentPresenter()
         if session_store is not None:
             self.presenter.session_store = session_store
-        self.config_service = create_agent_config_service()
+        self.config_bridge = GUIConfigBridge(create_agent_config_service())
 
         # Token tracking (now managed by presenter but also cached locally for UI)
         self.total_input = 0
@@ -1626,15 +1629,8 @@ class SessionTab(QWidget):
         self.last_history = None
         self._cached_config = None  # Config created by restart_session for next run
 
-        # Smart scrolling tracking
-        self._auto_scroll_enabled = True
-        self._user_scrolled_away = False
-        self._programmatic_scroll = False
 
-        # Configuration auto-save timer
-        self._config_save_timer = QTimer()
-        self._config_save_timer.setSingleShot(True)
-        self._config_save_timer.timeout.connect(self.save_config)
+
         self._loading_config = False  # Flag to prevent save during load
         self._closing = False  # Flag to prevent reentrant close
 
@@ -1644,10 +1640,20 @@ class SessionTab(QWidget):
         self._auto_save_timer.timeout.connect(self._auto_save_session)
         self._auto_save_timer.start()
 
-        # Event history and pagination
-        self.event_history = []  # All events stored as dictionaries
-        self.visible_event_widgets = []  # Widgets currently displayed
-        self.max_visible_events = 100  # Maximum events to show at once
+        # Initialize output and query panels
+        self.output_panel = OutputPanel(self)
+        self.query_panel = QueryPanel(self)
+
+        # Expose panel widgets for backward compatibility
+        self.output_textedit = self.output_panel.output_textedit
+        self.event_model = self.output_panel.event_model
+        self.filter_proxy_model = self.output_panel.filter_proxy_model
+        self.filter_lineedit = self.output_panel.filter_lineedit
+        self.filter_type_combo = self.output_panel.filter_type_combo
+        self.query_entry = self.query_panel.query_entry
+        self.run_btn = self.query_panel.run_btn
+        self.pause_btn = self.query_panel.pause_btn
+        self.restart_btn = self.query_panel.restart_btn
 
         self.init_ui()
         self.setup_signal_connections()
@@ -1660,43 +1666,36 @@ class SessionTab(QWidget):
         """Initialize the user interface (unchanged layout)."""
         self.update_window_title()
 
-        
-
-
         main_layout = QHBoxLayout()
         self.setLayout(main_layout)
-        
+
         splitter = QSplitter(Qt.Orientation.Horizontal)
-        
-        # Left panel (removed SystemViewPanel)
-        
-        # Middle panels
+
+        # Middle panels - Status panel
         middle_container = QWidget()
         middle_layout = QVBoxLayout()
         middle_container.setLayout(middle_layout)
-        
-        # Removed AgenticHelpersPanel
         self.status_panel = StatusPanel()
         middle_layout.addWidget(self.status_panel)
         middle_layout.addStretch()
         splitter.addWidget(middle_container)
-        
-        # Right panel (AgentView)
+
+        # Right panel - Use output_panel and query_panel
         right_container = QWidget()
         right_layout = QVBoxLayout()
         right_container.setLayout(right_layout)
-        
+
         # Agent Controls Panel
         self.agent_controls_panel = AgentControlsPanel(SIMPLIFIED_TOOL_CLASSES)
         right_layout.addWidget(self.agent_controls_panel)
-        
+
         # Set callback for MCP config changes to refresh tools
         self.agent_controls_panel.on_mcp_config_changed = self._refresh_tools
-        
+
         # Connect workspace buttons
         self.agent_controls_panel.set_workspace_btn.clicked.connect(self.set_workspace)
         self.agent_controls_panel.clear_workspace_btn.clicked.connect(self.clear_workspace)
-        
+
         # Connect all controls to configuration update
         self.agent_controls_panel.temperature_spinbox.valueChanged.connect(self._handle_config_change)
         self.agent_controls_panel.max_turns_spinbox.valueChanged.connect(self._handle_config_change)
@@ -1718,101 +1717,24 @@ class SessionTab(QWidget):
         # Connect tool checkboxes
         for checkbox in self.agent_controls_panel.tool_checkboxes.values():
             checkbox.stateChanged.connect(self._handle_config_change)
-        
-        # Create filter controls for event list
-        filter_widget = QWidget()
-        filter_layout = QHBoxLayout()
-        filter_widget.setLayout(filter_layout)
-        
-        filter_layout.addWidget(QLabel("Filter:"))
-        self.filter_lineedit = QLineEdit()
-        self.filter_lineedit.setPlaceholderText("Search events...")
-        self.filter_lineedit.textChanged.connect(self._apply_filter)
-        filter_layout.addWidget(self.filter_lineedit, 1)  # Stretch
-        
-        filter_layout.addWidget(QLabel("Type:"))
-        self.filter_type_combo = QComboBox()
-        self.filter_type_combo.addItems(["all", "turn", "final", "user_query", "stopped", 
-                                         "system", "user_interaction_requested", "token_warning", 
-                                         "turn_warning", "paused", "max_turns", "error", 
-                                         "thread_finished"])
-        self.filter_type_combo.currentTextChanged.connect(self._apply_filter)
-        filter_layout.addWidget(self.filter_type_combo)
-        
-        right_layout.addWidget(filter_widget)
 
-        # Create output area for agent events as a single selectable text document
-        self.event_model = EventModel()
-        self.filter_proxy_model = EventFilterProxyModel()
-        self.filter_proxy_model.setSourceModel(self.event_model)
+        # Add output panel (contains filter controls and output textedit)
+        right_layout.addWidget(self.output_panel, 4)  # Larger stretch factor
 
-        self.output_textedit = QTextEdit()
-        self.output_textedit.setReadOnly(True)
-        self.output_textedit.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        self.output_textedit.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        self.output_textedit.setAcceptRichText(True)
-        self.output_textedit.setLineWrapMode(QTextEdit.LineWrapMode.WidgetWidth)
-        self.output_textedit.setStyleSheet("""
-            QTextEdit:focus {
-                border: none;
-                outline: none;
-            }
-            QTextEdit {
-                selection-background-color: #3399ff;
-                selection-color: white;
-            }
-        """)
+        # Add query panel at bottom
+        right_layout.addWidget(self.query_panel)
 
-        right_layout.addWidget(self.output_textedit, 4)  # Larger stretch factor
-        # Monitor scrollbar to track user scrolling
-        self.output_textedit.verticalScrollBar().valueChanged.connect(self._on_scrollbar_value_changed)
-        # Query input and buttons at bottom
-        query_frame = QFrame()
-        query_frame.setFrameStyle(QFrame.Shape.Box)
-        query_layout = QVBoxLayout()
-        query_frame.setLayout(query_layout)
-        
-        query_layout.addWidget(QLabel("Query:"))
-        self.query_entry = QTextEdit()
-        self.query_entry.setMaximumHeight(100)
-        self.query_entry.setPlaceholderText("Enter your query here...")
-        query_layout.addWidget(self.query_entry)
-        
-        button_layout = QHBoxLayout()
-        # Run button
-        self.run_btn = QPushButton("RUN")
-        self.run_btn.clicked.connect(self.run_agent)
-        self.run_btn.setMinimumWidth(80)
-        button_layout.addWidget(self.run_btn)
+        # Connect query panel signals
+        self.query_panel.run_btn.clicked.connect(self.run_agent)
+        self.query_panel.pause_btn.clicked.connect(self.pause_agent)
+        self.query_panel.restart_btn.clicked.connect(self.restart_session)
 
-        # Pause button
-        self.pause_btn = QPushButton("PAUSE")
-        self.pause_btn.clicked.connect(self.pause_agent)
-        self.pause_btn.setMinimumWidth(80)
-        self.pause_btn.setEnabled(False)
-        button_layout.addWidget(self.pause_btn)
-
-        button_layout.addStretch()
-
-        # Restart button
-        self.restart_btn = QPushButton("RESTART")
-        self.restart_btn.clicked.connect(self.restart_session)
-        self.restart_btn.setMinimumWidth(80)
-        self.restart_btn.setEnabled(False)
-        button_layout.addWidget(self.restart_btn)
-
-        query_layout.addLayout(button_layout)
-
-        right_layout.addWidget(query_frame)
-        
         splitter.addWidget(right_container)
-        
+
         # Set initial splitter sizes
         splitter.setSizes([200, 150, 1050])
-        
+
         main_layout.addWidget(splitter)
-        
-        # Create menu bar
 
         # Set up accessibility features
         self.setup_accessibility()
@@ -2080,7 +2002,7 @@ class SessionTab(QWidget):
             self.status_panel.update_tokens(self.total_input, self.total_output)
 
         # Auto-scroll to bottom
-        self._scroll_to_bottom()    
+        self.output_panel._scroll_to_bottom()    
     @pyqtSlot(int, int)
     def on_tokens_updated(self, total_input, total_output):
         """Handle token count updates."""
@@ -2099,28 +2021,6 @@ class SessionTab(QWidget):
         """Handle status messages."""
         print(f"[GUI] Status: {message}")
         # Could update a status bar if we add one
-    def _apply_filter(self):
-        """Apply filter based on search text and event type selection."""
-        filter_text = self.filter_lineedit.text()
-        filter_type = self.filter_type_combo.currentText()
-        self.filter_proxy_model.set_filter(filter_text, filter_type)
-        self._rebuild_output_document()
-    
-    def _rebuild_output_document(self):
-        """Rebuild the output text document from filtered events."""
-        self.output_textedit.clear()
-        delegate = EventDelegate()
-        for row in range(self.filter_proxy_model.rowCount()):
-            index = self.filter_proxy_model.index(row, 0)
-            event = index.data(Qt.ItemDataRole.UserRole)
-            if event:
-                html = delegate._event_to_html(event)
-                # Append HTML with a separator
-                cursor = self.output_textedit.textCursor()
-                cursor.movePosition(QTextCursor.MoveOperation.End)
-                if row > 0:
-                    cursor.insertHtml("<hr>")
-                cursor.insertHtml(html)
 
     def _format_event_html(self, event):
         """Format event as HTML for display in QTextEdit."""
@@ -2369,7 +2269,7 @@ class SessionTab(QWidget):
                 cursor.insertHtml("<hr>")
             cursor.insertHtml(html)
         
-        self._scroll_to_bottom()
+        self.output_panel._scroll_to_bottom()
     
     def _create_result_widget(self, result_text, full_text):
         """
@@ -2425,39 +2325,14 @@ class SessionTab(QWidget):
         layout.addWidget(close_btn)
         dialog.exec()
     
-    def _scroll_to_bottom(self):
-        """Scroll to bottom only if auto-scroll is enabled (i.e., user hasn't scrolled away)."""
-        if self._auto_scroll_enabled:
-            QTimer.singleShot(0, self._do_scroll_to_bottom)
     
-    def _do_scroll_to_bottom(self):
-        """Programmatically scroll to bottom."""
-        self._programmatic_scroll = True
-        try:
-            scrollbar = self.output_textedit.verticalScrollBar()
-            scrollbar.setValue(scrollbar.maximum())
-        finally:
-            self._programmatic_scroll = False
-    
-    def _on_scrollbar_value_changed(self, value):
-        """Track if user has scrolled away from bottom."""
-        # Ignore scroll position changes during programmatic scrolling
-        if self._programmatic_scroll:
-            return
-        
-        scrollbar = self.output_textedit.verticalScrollBar()
-        max_val = scrollbar.maximum()
-        # If user is within 10 pixels of bottom, consider them at bottom
-        self._user_scrolled_away = value < max_val - 10
-        # Auto-scroll enabled when user at bottom
-        self._auto_scroll_enabled = not self._user_scrolled_away
     def load_config(self):
         """Load configuration from file and update controls."""
         self._loading_config = True
         
         try:
-            # Load config from service
-            config = self.config_service.get_all()
+            # Load config from bridge
+            config = self.config_bridge.get_config()
             
             # Update controls
             self.agent_controls_panel.set_config_dict(config)
@@ -2480,18 +2355,15 @@ class SessionTab(QWidget):
         """
         if self._loading_config:
             return
-        
+
         try:
             config = self.agent_controls_panel.get_config_dict()
             print(f"[GUI] Saving config: {config} (immediate={immediate})")
-            # Update config in service
-            self.config_service.update(config, notify=True, save=False)
-            # Save with appropriate immediacy
-            self.config_service.save(immediate=immediate)
-            print("[GUI] Configuration saved to service")
+            # Use config bridge for saving
+            self.config_bridge.save_config(config, immediate=immediate)
+            print("[GUI] Configuration saved via bridge")
         except Exception as e:
-            print(f"[GUI] Error saving config: {e}")
-    
+            print(f"[GUI] Error saving config: {e}")    
     def _update_model_suggestions(self):
         """Update model suggestions based on selected provider."""
         # Delegate to the controls panel's method
@@ -2529,7 +2401,9 @@ class SessionTab(QWidget):
     def _schedule_config_save(self):
         """Schedule a debounced configuration save."""
         if not self._loading_config:
-            self._config_save_timer.start(1000)  # 1 second delay
+            # Get current config from controls and save via bridge
+            config = self.agent_controls_panel.get_config_dict()
+            self.config_bridge.save_config(config, immediate=False)
     
     # ----- Workspace Methods -----
     
@@ -2642,122 +2516,7 @@ class SessionTab(QWidget):
     
     def set_theme(self, theme_name):
         """Set application theme."""
-        themes = {
-            "light": "",  # Default Fusion style
-            "dark": """
-                QWidget {
-                    background-color: #2b2b2b;
-                    color: #ffffff;
-                }
-                QGroupBox {
-                    border: 1px solid #555555;
-                    border-radius: 5px;
-                    margin-top: 10px;
-                    padding-top: 10px;
-                }
-                QGroupBox::title {
-                    subcontrol-origin: margin;
-                    left: 10px;
-                    padding: 0 5px 0 5px;
-                }
-                QPushButton {
-                    background-color: #3c3c3c;
-                    border: 1px solid #555555;
-                    border-radius: 3px;
-                    padding: 5px 10px;
-                }
-                QPushButton:hover {
-                    background-color: #4c4c4c;
-                }
-                QPushButton:pressed {
-                    background-color: #2c2c2c;
-                }
-                QLabel {
-                    color: #ffffff;
-                }
-
-                QLineEdit, QTextEdit, QSpinBox, QDoubleSpinBox, QComboBox {
-                    background-color: #3c3c3c;
-                    color: #ffffff;
-                    border: 1px solid #555555;
-                    padding: 3px;
-                }
-                QCheckBox {
-                    color: #ffffff;
-                }
-                QScrollBar:vertical {
-                    background-color: #2b2b2b;
-                    width: 15px;
-                }
-                QScrollBar::handle:vertical {
-                    background-color: #555555;
-                    border-radius: 7px;
-                    min-height: 20px;
-                }
-                QScrollBar::handle:vertical:hover {
-                    background-color: #666666;
-                }
-            """,
-            "high_contrast": """
-                QWidget {
-                    background-color: #000000;
-                    color: #ffffff;
-                }
-                QGroupBox {
-                    border: 2px solid #ffffff;
-                    border-radius: 5px;
-                    margin-top: 10px;
-                    padding-top: 10px;
-                }
-                QGroupBox::title {
-                    subcontrol-origin: margin;
-                    left: 10px;
-                    padding: 0 5px 0 5px;
-                    color: #ffff00;
-                }
-                QPushButton {
-                    background-color: #000000;
-                    border: 2px solid #ffffff;
-                    border-radius: 3px;
-                    padding: 5px 10px;
-                    color: #ffffff;
-                }
-                QPushButton:hover {
-                    background-color: #222222;
-                }
-                QPushButton:pressed {
-                    background-color: #444444;
-                }
-                QLabel {
-                    color: #ffffff;
-                }
-
-                QLineEdit, QTextEdit, QSpinBox, QDoubleSpinBox, QComboBox {
-                    background-color: #000000;
-                    color: #ffffff;
-                    border: 2px solid #ffffff;
-                    padding: 3px;
-                }
-                QCheckBox {
-                    color: #ffffff;
-                }
-                QCheckBox::indicator {
-                    border: 2px solid #ffffff;
-                }
-                QScrollBar:vertical {
-                    background-color: #000000;
-                    width: 15px;
-                }
-                QScrollBar::handle:vertical {
-                    background-color: #ffffff;
-                    border-radius: 7px;
-                    min-height: 20px;
-                }
-            """
-        }
-        
-        if theme_name in themes:
-            self.window().setStyleSheet(themes[theme_name])
+        if apply_theme(self.window(), theme_name):
             self.current_theme = theme_name
             print(f"[GUI] Theme set to: {theme_name}")
         else:
@@ -3413,141 +3172,18 @@ class SessionTab(QWidget):
 
 
 
-class AgentGUI(QMainWindow):
-    def __init__(self):
-        super().__init__()
-        self.setWindowTitle("ThoughtMachine")
-        self._closing = False
-        self.session_store = FileSystemSessionStore()
-        central_widget = QWidget()
-        self.setCentralWidget(central_widget)
-        main_layout = QHBoxLayout()
-        central_widget.setLayout(main_layout)
-        self.tab_widget = QTabWidget()
-        self.tab_widget.setTabsClosable(True)
-        self.tab_widget.tabCloseRequested.connect(self.close_tab)
-        self.tab_widget.currentChanged.connect(self.on_current_tab_changed)
-        # Add new tab button on the tab bar
-        new_tab_btn = QPushButton("+")
-        new_tab_btn.setFixedSize(24, 24)
-        new_tab_btn.setToolTip("New Session Tab")
-        new_tab_btn.clicked.connect(self.new_tab)
-        self.tab_widget.setCornerWidget(new_tab_btn, Qt.Corner.TopRightCorner)
-        main_layout.addWidget(self.tab_widget)
-        self.new_tab(auto_load_current=True)  # create initial tab
-        self.create_menu_bar()
+# Backward compatibility: re-export from new modules (deprecated)
+import warnings
+warnings.warn(
+    "qt_gui_refactored.py is deprecated; use qt_gui.main_window.AgentGUI and qt_gui.main.main instead",
+    DeprecationWarning,
+    stacklevel=2
+)
 
-    def new_tab(self, session_id=None, auto_load_current=False):
-        tab = SessionTab(session_store=self.session_store, auto_load_current=auto_load_current)
-        if session_id:
-            try:
-                tab.presenter.load_session(session_id)
-                tab.display_loaded_conversation()
-                tab.update_window_title()
-            except Exception as e:
-                print(f"[GUI] Failed to load session {session_id}: {e}")
-        index = self.tab_widget.addTab(tab, tab.presenter.session_name or "Untitled")
-        self.tab_widget.setCurrentWidget(tab)
+# Re-export for backward compatibility
+# from qt_gui.main_window import AgentGUI  # Removed to avoid circular import
+from qt_gui.main import main as gui_main
 
-    def close_tab(self, index):
-        tab = self.tab_widget.widget(index)
-        if tab:
-            tab.close()  # triggers closeEvent; the tab will remove itself if accepted
-            # If no tabs remain, create a new empty tab
-            if self.tab_widget.count() == 0:
-                self.new_tab()
-
-    def on_current_tab_changed(self, index):
-        tab = self.tab_widget.currentWidget()
-        if tab:
-            tab.update_window_title()
-            self.statusBar().showMessage(f"Tokens: in={tab.total_input}, out={tab.total_output}, ctx={tab.context_length}")
-
-    def create_menu_bar(self):
-        menu_bar = QMenuBar(self)
-        self.setMenuBar(menu_bar)
-        # File menu
-        file_menu = menu_bar.addMenu("File")
-        save_config_action = QAction("Save Configuration", self)
-        save_config_action.triggered.connect(lambda: self.current_tab().save_config())
-        file_menu.addAction(save_config_action)
-        load_config_action = QAction("Load Configuration", self)
-        load_config_action.triggered.connect(lambda: self.current_tab().load_config())
-        file_menu.addAction(load_config_action)
-        file_menu.addSeparator()
-        # Export submenu
-        export_menu = file_menu.addMenu("Export Conversation")
-        export_text_action = QAction("As Plain Text", self)
-        export_text_action.triggered.connect(lambda: self.current_tab().export_conversation_text())
-        export_menu.addAction(export_text_action)
-        export_html_action = QAction("As HTML", self)
-        export_html_action.triggered.connect(lambda: self.current_tab().export_conversation_html())
-        export_menu.addAction(export_html_action)
-        export_pdf_action = QAction("As PDF", self)
-        export_pdf_action.triggered.connect(lambda: self.current_tab().export_conversation_pdf())
-        export_menu.addAction(export_pdf_action)
-        file_menu.addSeparator()
-        # Session management actions
-        save_session_action = QAction("Save Session As...", self)
-        save_session_action.triggered.connect(lambda: self.current_tab().save_session_as())
-        file_menu.addAction(save_session_action)
-        open_session_action = QAction("Open Session...", self)
-        open_session_action.triggered.connect(lambda: self.current_tab().open_session())
-        file_menu.addAction(open_session_action)
-        file_menu.addSeparator()
-        exit_action = QAction("Exit", self)
-        exit_action.triggered.connect(self.close)
-        file_menu.addAction(exit_action)
-        # View menu for theme
-        view_menu = menu_bar.addMenu("View")
-        theme_menu = view_menu.addMenu("Theme")
-        light_theme_action = QAction("Light", self)
-        light_theme_action.triggered.connect(lambda: self.set_theme("light"))
-        theme_menu.addAction(light_theme_action)
-        dark_theme_action = QAction("Dark", self)
-        dark_theme_action.triggered.connect(lambda: self.set_theme("dark"))
-        theme_menu.addAction(dark_theme_action)
-        high_contrast_theme_action = QAction("High Contrast", self)
-        high_contrast_theme_action.triggered.connect(lambda: self.set_theme("high_contrast"))
-        theme_menu.addAction(high_contrast_theme_action)
-        # Shortcuts
-        save_config_action.setShortcut("Ctrl+S")
-        load_config_action.setShortcut("Ctrl+O")
-        exit_action.setShortcut("Ctrl+Q")
-
-    def current_tab(self):
-        return self.tab_widget.currentWidget()
-
-    def closeEvent(self, event):
-        # Close all tabs by calling close() on each; if any rejects, abort the application close.
-        # Tabs will remove themselves upon acceptance.
-        if self._closing:
-            event.accept()
-            return
-        self._closing = True
-        print("[AgentGUI] closeEvent called")
-        
-        while self.tab_widget.count() > 0:
-            tab = self.tab_widget.widget(0)
-            if tab:
-                if not tab.close():
-                    event.ignore()
-                    self._closing = False
-                    return
-            else:
-                break
-        event.accept()
-        print("[AgentGUI] closeEvent accepted")
-
-
-# ----- Main Function -----
-def main():
-    app = QApplication(sys.argv)
-    app.setStyle('Fusion')
-    gui = AgentGUI()
-    gui.show()
-    sys.exit(app.exec())
-
-
+# Maintain original entry point behavior
 if __name__ == "__main__":
-    main()
+    gui_main()

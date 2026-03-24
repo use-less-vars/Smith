@@ -80,6 +80,9 @@ class Agent:
         # Prepare tool definitions
         self.tool_classes = config.tool_classes if config.tool_classes is not None else SIMPLIFIED_TOOL_CLASSES
         self.tool_definitions = [model_to_openai_tool(cls) for cls in self.tool_classes]
+        
+        # Initialize token encoder
+        self._token_encoder = None
 
         # Ensure system prompt is present (only if conversation is empty or no system)
         self._ensure_system_prompt()
@@ -113,7 +116,19 @@ class Agent:
                     self._handle_state_event(event)
             # else: new session
 
-        self._token_encoder = None        
+        # Calculate initial token count for the conversation
+        self._update_conversation_token_estimate()        
+    def _update_conversation_token_estimate(self):
+        """Update current_conversation_tokens by estimating tokens for all messages in conversation."""
+        estimated_tokens = 0
+        for msg in self.conversation:
+            estimated_tokens += self._estimate_tokens(msg)
+        self.state.current_conversation_tokens = estimated_tokens
+        if self.logger and hasattr(self.logger, 'py_logger'):
+            self.logger.py_logger.info(
+                f"[TOKEN_ESTIMATE] Updated conversation token estimate: {estimated_tokens} tokens"
+            )
+
     def _estimate_tokens(self, text_or_message):
         """Estimate token count for a string or message dict using tiktoken."""
         if self._token_encoder is None:
@@ -130,13 +145,88 @@ class Agent:
                     return len(str(text_or_message)) // 4
         
         if isinstance(text_or_message, dict):
-            # Convert dict to JSON string for tokenization
-            text = str(text_or_message)
+            # Convert dict to JSON string for tokenization (more accurate for API)
+            text = json.dumps(text_or_message)
         else:
             text = str(text_or_message)
         
-        tokens = self._token_encoder.encode(text)
-        return len(tokens)
+        if self._token_encoder is not None:
+            tokens = self._token_encoder.encode(text)
+            return len(tokens)
+        else:
+            # Fallback when encoder not available
+            return len(text) // 4
+
+    def _estimate_request_tokens(self, messages, tool_definitions=None):
+        """Estimate tokens for an API request including messages and tool definitions."""
+        # Use provider's count_tokens method if available
+        if hasattr(self.provider, 'count_tokens'):
+            try:
+                return self.provider.count_tokens(messages, tool_definitions)
+            except Exception:
+                pass
+        
+        # Fallback: estimate ourselves
+        total_tokens = 0
+        for msg in messages:
+            total_tokens += self._estimate_tokens(msg)
+        
+        # Add tool definition tokens (crude estimate)
+        if tool_definitions:
+            # JSON stringify and estimate
+            tools_json = json.dumps(tool_definitions)
+            total_tokens += len(tools_json) // 4
+        
+        # Add some overhead for JSON structure, field names, etc.
+        # OpenAI's actual token count includes JSON structure, field names, etc.
+        # Add 10% overhead as rough estimate
+        total_tokens = int(total_tokens * 1.1)
+        
+        return total_tokens
+
+    def _get_model_context_window(self):
+        """Get approximate context window size for the current model."""
+        model = self.config.model.lower()
+        
+        # Common model context windows
+        context_windows = {
+            # OpenAI models
+            "gpt-4": 8192,
+            "gpt-4-32k": 32768,
+            "gpt-4-turbo": 128000,
+            "gpt-4o": 128000,
+            "gpt-3.5-turbo": 16385,
+            "gpt-3.5-turbo-16k": 16385,
+            "gpt-3.5-turbo-instruct": 4096,
+            # DeepSeek models
+            "deepseek-reasoner": 128000,
+            "deepseek-chat": 128000,
+            "deepseek-coder": 128000,
+            # Anthropic models
+            "claude-3-opus": 200000,
+            "claude-3-sonnet": 200000,
+            "claude-3-haiku": 200000,
+            # Default fallback
+            "default": 128000
+        }
+        
+        # Check for exact match
+        for key, window in context_windows.items():
+            if key in model:
+                return window
+        
+        # Check for partial matches
+        if "gpt-4" in model:
+            return 128000  # Most GPT-4 variants are 128k
+        elif "gpt-3.5" in model:
+            return 16385
+        elif "claude" in model:
+            return 200000
+        elif "deepseek" in model:
+            return 128000
+        
+        # Default to 128k for unknown models
+        return 128000
 
     def _create_context_builder(self):
         """Create a ContextBuilder based on configuration."""
@@ -195,6 +285,9 @@ class Agent:
         # Process any events from reset (though usually none for fresh reset)
         for event in reset_events:
             self._handle_state_event(event)
+        
+        # Update token estimate after resetting conversation and adding system prompt
+        self._update_conversation_token_estimate()
 
     def update_runtime_params(self, **kwargs):
         """Update mutable runtime parameters (temperature, max_tokens, top_p)."""
@@ -384,13 +477,10 @@ class Agent:
         # Update current conversation tokens estimate after pruning
         # We need to estimate because we won't get accurate token count until next API call
         old_token_count = self.state.current_conversation_tokens
-        estimated_tokens = 0
-        for msg in self.conversation:
-            estimated_tokens += self._estimate_tokens(msg)
-        self.state.current_conversation_tokens = estimated_tokens
+        self._update_conversation_token_estimate()
         if self.logger and hasattr(self.logger, 'py_logger'):
             self.logger.py_logger.info(
-                f"[PRUNING] Updated token estimate: {estimated_tokens} tokens (was {old_token_count})"
+                f"[PRUNING] Updated token estimate: {self.state.current_conversation_tokens} tokens (was {old_token_count})"
             )
     
     def _format_tokens(self, tokens):
@@ -503,6 +593,8 @@ class Agent:
                     }
                 }
 
+            # Update conversation token estimate from scratch to prevent drift
+            self._update_conversation_token_estimate()
             # Token monitoring warning
             token_events = self.state.update_token_state(self.state.current_conversation_tokens)
             for event in token_events:
@@ -543,6 +635,79 @@ class Agent:
             
             # Call LLM provider
             formatted_tools = self.provider.format_tools(self.tool_definitions)
+            
+            # Estimate request tokens and check against model context window
+            request_tokens = self._estimate_request_tokens(messages, formatted_tools)
+            # Get model context window (approximate)
+            model_context_window = self._get_model_context_window()
+            critical_threshold = int(model_context_window * 0.95)  # 95% of context window
+            warning_threshold = int(model_context_window * 0.85)  # 85% of context window
+            
+            if request_tokens > model_context_window:
+                # Cannot proceed - request exceeds model context window
+                error = f"[SYSTEM] Request token count ({request_tokens}) exceeds model context window ({model_context_window}). Cannot make API call. Please use SummarizeTool to reduce context size."
+                error_msg = {"role": "user", "content": error}
+                self._add_to_conversation(error_msg)
+                error_tokens = self._estimate_tokens(error_msg)
+                self.state.current_conversation_tokens += error_tokens
+                # Yield error event
+                yield {
+                    "type": "token_warning",
+                    "message": error,
+                    "token_count": request_tokens,
+                    "state": "critical",
+                    "request_tokens": request_tokens,
+                    "model_context_window": model_context_window
+                }
+                # Still attempt API call but it will likely fail
+                if self.logger:
+                    self.logger.log_token_warning(
+                        "low", "critical", request_tokens,
+                        f"Request tokens {request_tokens} exceed model context window {model_context_window}"
+                    )
+            elif request_tokens > critical_threshold:
+                # Critical warning - near context limit
+                warning = f"[SYSTEM] Request token count ({request_tokens}) is near model context window limit ({model_context_window}). Please use SummarizeTool immediately to reduce context size."
+                warning_msg = {"role": "user", "content": warning}
+                self._add_to_conversation(warning_msg)
+                warning_tokens = self._estimate_tokens(warning_msg)
+                self.state.current_conversation_tokens += warning_tokens
+                # Yield token warning event
+                yield {
+                    "type": "token_warning",
+                    "message": warning,
+                    "token_count": request_tokens,
+                    "state": "critical",
+                    "request_tokens": request_tokens,
+                    "model_context_window": model_context_window
+                }
+                if self.logger:
+                    self.logger.log_token_warning(
+                        "low", "critical", request_tokens,
+                        f"Request tokens {request_tokens} near model context window {model_context_window}"
+                    )
+            elif request_tokens > warning_threshold:
+                # Warning - approaching context limit
+                warning = f"[SYSTEM] Request token count ({request_tokens}) is approaching model context window ({model_context_window}). Consider using SummarizeTool soon."
+                warning_msg = {"role": "user", "content": warning}
+                self._add_to_conversation(warning_msg)
+                warning_tokens = self._estimate_tokens(warning_msg)
+                self.state.current_conversation_tokens += warning_tokens
+                # Yield token warning event
+                yield {
+                    "type": "token_warning",
+                    "message": warning,
+                    "token_count": request_tokens,
+                    "state": "warning",
+                    "request_tokens": request_tokens,
+                    "model_context_window": model_context_window
+                }
+                if self.logger:
+                    self.logger.log_token_warning(
+                        "low", "warning", request_tokens,
+                        f"Request tokens {request_tokens} approaching model context window {model_context_window}"
+                    )
+            
             try:
                 # Build chat kwargs using runtime parameters (overrides config)
                 chat_kwargs = {
