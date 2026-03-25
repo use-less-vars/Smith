@@ -1093,6 +1093,7 @@ class SessionTab(QWidget):
 
     def save_session_as(self):
         """Rename/relocate existing session (Save As)."""
+        debug_log(f"save_session_as called, current session_name={self.presenter.session_name}")
         # Check if there is a session to rename
         if not self.presenter.user_history and not self.presenter._initial_conversation:
             QMessageBox.warning(self, "No Session", "No conversation to rename.")
@@ -1148,6 +1149,7 @@ class SessionTab(QWidget):
         if success:
             self.presenter.session_name = new_name
             self.presenter._name_explicitly_set = True
+            debug_log(f"save_session_as: calling update_window_title and _update_tab_label after rename success")
             self.update_window_title()
             self._update_tab_label()
             QMessageBox.information(self, "Session Saved", f"Session saved as '{new_name}' to {file_path}")
@@ -1155,6 +1157,7 @@ class SessionTab(QWidget):
             # Metadata rename failed but file was saved, still inform user
             self.presenter.session_name = new_name
             self.presenter._name_explicitly_set = True
+            debug_log(f"save_session_as: calling update_window_title and _update_tab_label after rename failed")
             self.update_window_title()
             self._update_tab_label()
             QMessageBox.information(self, "Session Saved", f"Session saved as '{new_name}' to {file_path} (metadata update failed)")
@@ -1439,27 +1442,60 @@ class SessionTab(QWidget):
         except Exception as e:
             QMessageBox.critical(self, "Load Error", f"Failed to load session: {e}")
 
+    def _find_tab_widget(self):
+        """Find the QTabWidget that contains this session tab."""
+        from PyQt6.QtWidgets import QTabWidget
+        parent = self.parent()
+        while parent is not None:
+            if isinstance(parent, QTabWidget):
+                debug_log(f"_find_tab_widget: found QTabWidget at {parent}")
+                return parent
+            parent = parent.parent()
+        # Fallback: search through window
+        main_window = self.window()
+        if main_window:
+            tab_widgets = main_window.findChildren(QTabWidget)
+            if tab_widgets:
+                debug_log(f"_find_tab_widget: fallback found {len(tab_widgets)} QTabWidgets")
+                return tab_widgets[0]
+        debug_log("_find_tab_widget: no QTabWidget found")
+        return None
+
     def update_window_title(self):
         """Update the main window title to reflect the current session name."""
+        debug_log(f"update_window_title called, session_name={self.presenter.session_name}")
         name = self.presenter.session_name
         if not name:
             name = "Untitled Session"
-        self.setWindowTitle(f"Agent Workbench – {name}")
-        # Update tab text if parent is QTabWidget
-        parent = self.parent()
-        if parent and hasattr(parent, 'indexOf') and hasattr(parent, 'setTabText'):
-            idx = parent.indexOf(self)
+        # Set the main window title
+        main_window = self.window()
+        if main_window and main_window != self:
+            debug_log(f"Setting window title to: ThoughtMachine – {name}")
+            main_window.setWindowTitle(f"ThoughtMachine – {name}")
+        # Update tab text if we're in a QTabWidget
+        tab_widget = self._find_tab_widget()
+        if tab_widget:
+            idx = tab_widget.indexOf(self)
+            debug_log(f"Tab widget found, index={idx}, name={name}")
             if idx >= 0:
-                parent.setTabText(idx, name)
+                debug_log(f"Setting tab text at index {idx} to {name}")
+                tab_widget.setTabText(idx, name)
+        else:
+            debug_log("No tab widget found in update_window_title")
 
     def _update_tab_label(self):
         """Update the tab label in the main tab widget."""
-        parent = self.parent()
-        if parent and hasattr(parent, 'indexOf') and hasattr(parent, 'setTabText'):
-            idx = parent.indexOf(self)
+        debug_log(f"_update_tab_label called, session_name={self.presenter.session_name}")
+        tab_widget = self._find_tab_widget()
+        if tab_widget:
+            idx = tab_widget.indexOf(self)
+            debug_log(f"_update_tab_label: tab widget found, index={idx}")
             if idx >= 0:
                 name = self.presenter.session_name or "Untitled"
-                parent.setTabText(idx, name)
+                debug_log(f"_update_tab_label: setting tab text to {name}")
+                tab_widget.setTabText(idx, name)
+        else:
+            debug_log("_update_tab_label: no tab widget found")
 
     def _auto_save_session(self):
         """Auto-save the current session periodically."""

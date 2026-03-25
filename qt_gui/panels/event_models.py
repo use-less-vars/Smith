@@ -248,6 +248,8 @@ class EventDelegate(QStyledItemDelegate):
             add_line(event.get("message", ""), style="color: #FFA500; font-weight: bold;")
         elif etype == "turn_warning":
             add_line(event.get("message", ""), style="color: #FFA500; font-weight: bold;")
+        elif etype == "rate_limit_warning":
+            add_line(event.get("message", ""), style="color: #FF8C00; font-weight: bold;")
         elif etype == "paused":
             add_line("Agent paused, ready for next query.", style="color: #808080;")
         elif etype == "max_turns":
@@ -335,6 +337,8 @@ class EventDelegate(QStyledItemDelegate):
         elif etype == "token_warning":
             add_line(event.get("message", ""))
         elif etype == "turn_warning":
+            add_line(event.get("message", ""))
+        elif etype == "rate_limit_warning":
             add_line(event.get("message", ""))
         elif etype == "paused":
             add_line("Agent paused, ready for next query.")

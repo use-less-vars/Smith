@@ -170,7 +170,12 @@ class AgentPresenter(QObject):
         self._dirty = False
         self._name_explicitly_set = bool(session.metadata.get('name'))
         # Restore external file path from metadata if present
-        self._external_file_path = session.metadata.get('external_file_path')
+        external_file_path = session.metadata.get('external_file_path')
+        if external_file_path:
+            # Convert to absolute path for consistency
+            self._external_file_path = os.path.abspath(external_file_path)
+        else:
+            self._external_file_path = None
 
         self.config_changed.emit(self._config.copy())
     
@@ -187,7 +192,8 @@ class AgentPresenter(QObject):
             self.current_session.updated_at = datetime.now()
             self.session_store.save_session(self.current_session)
 
-    def create_agent_config(self, config_dict: Optional[dict] = None) -> AgentConfig:        """
+    def create_agent_config(self, config_dict: Optional[dict] = None) -> AgentConfig:
+        """
         Create AgentConfig instance from configuration dictionary.
 
         Args:
@@ -424,6 +430,15 @@ class AgentPresenter(QObject):
         """Common restart cleanup: reset controller and state.
         Preserves current session identity, conversation history, and cumulative token totals.
         """
+        # Reset rate limiting on current agent if it exists
+        if hasattr(self.controller, 'agent') and self.controller.agent is not None:
+            agent = self.controller.agent
+            if hasattr(agent, 'reset_rate_limiting'):
+                try:
+                    agent.reset_rate_limiting()
+                    print(f"[Presenter] Reset rate limiting on agent before restart")
+                except Exception as e:
+                    print(f"[Presenter] Failed to reset rate limiting: {e}")
         self.controller.reset()
         # NOTE: Do NOT reset total_input/total_output/context_length; they are session properties.
         # They will be carried over to the new agent via config's initial_* tokens.
@@ -614,6 +629,8 @@ class AgentPresenter(QObject):
             True if exported successfully, False otherwise
         """
         try:
+            # Convert to absolute path for consistency
+            filepath = os.path.abspath(filepath)
             session = self._build_session_from_current_state()
             if session is None:
                 print(f"[Presenter] No session to export")
@@ -702,6 +719,8 @@ class AgentPresenter(QObject):
             self.auto_save_current_session()
         
         try:
+            # Convert to absolute path for consistency
+            filepath = os.path.abspath(filepath)
             with open(filepath, 'r') as f:
                 session_dict = json.load(f)
 
@@ -751,6 +770,8 @@ class AgentPresenter(QObject):
         # Restore external file path from metadata if present
         external_file_path = session.metadata.get('external_file_path')
         if external_file_path:
+            # Convert to absolute path for consistency
+            external_file_path = os.path.abspath(external_file_path)
             self._update_external_file_path(external_file_path)
         # If session name was not set by binding, format a fallback
         if not self.session_name:
@@ -775,6 +796,8 @@ class AgentPresenter(QObject):
         # Restore external file path from metadata if present
         external_file_path = session.metadata.get('external_file_path')
         if external_file_path:
+            # Convert to absolute path for consistency
+            external_file_path = os.path.abspath(external_file_path)
             self._update_external_file_path(external_file_path)
         # If session name was not set by binding, format a fallback
         if not self.session_name:
@@ -1039,7 +1062,7 @@ class AgentPresenter(QObject):
         print(f"[Presenter] Processing event: {event_type}")
         
         # Skip filtering for state/terminal events as they need to be shown regardless
-        state_event_types = ["error", "paused", "stopped", "thread_finished", "final", "max_turns", "user_interaction_requested"]
+        state_event_types = ["error", "paused", "stopped", "thread_finished", "final", "max_turns", "user_interaction_requested", "rate_limit_warning", "token_warning", "turn_warning"]
         if event_type not in state_event_types:
             event_session_id = event.get("session_id")
             # Ensure both session IDs are strings for comparison to avoid type mismatch issues

@@ -8,7 +8,7 @@ from typing import Optional, List, Dict, Any, TYPE_CHECKING
 
 from pydantic import ValidationError
 from llm_providers.factory import ProviderFactory
-from llm_providers.exceptions import ProviderError
+from llm_providers.exceptions import ProviderError, RateLimitExceeded
 from tools import SIMPLIFIED_TOOL_CLASSES
 from tools.utils import model_to_openai_tool
 from tools.final import Final
@@ -103,6 +103,13 @@ class Agent:
         self._next_query_queue = queue.Queue()
         self._paused = False
         self._should_reset = False
+        # Rate limiting state
+        self.rate_limit_delay = 1.0  # seconds between turns when rate limited
+        self.rate_limit_base_wait = 10.0  # initial wait when rate limit hit
+        self.rate_limit_backoff_factor = 1.2  # multiply delay by this factor on repeated errors
+        self.rate_limit_count = 0  # number of consecutive rate limit errors
+        self.rate_limit_max_wait = 60.0  # maximum wait between turns
+        self.rate_limit_active = False  # whether we're currently in rate limited mode
         # State management
         self.state = AgentState(self.config, self.logger)
 
@@ -122,6 +129,14 @@ class Agent:
 
         # Calculate initial token count for the conversation
         self._update_conversation_token_estimate()        
+    def reset_rate_limiting(self):
+        """Reset rate limiting state when user restarts the agent."""
+        self.rate_limit_delay = 1.0
+        self.rate_limit_count = 0
+        self.rate_limit_active = False
+        if self.logger:
+            self.logger.log_info("RATE_LIMIT", "Rate limiting reset to initial state")
+    
     def _update_conversation_token_estimate(self):
         """Update current_conversation_tokens by estimating tokens for all messages in conversation."""
         estimated_tokens = 0
@@ -637,11 +652,19 @@ class Agent:
             if self.logger:
                 self.logger.log_llm_request(messages, self.tool_definitions)
             
+            # Apply rate limiting delay if active
+            if self.rate_limit_active:
+                delay = min(self.rate_limit_delay, self.rate_limit_max_wait)
+                if delay > 0:
+                    if self.logger:
+                        self.logger.log_info("RATE_LIMIT", f"Applying rate limit delay: {delay}s between turns")
+                    import time
+                    time.sleep(delay)
+            
             # Call LLM provider
             formatted_tools = self.provider.format_tools(self.tool_definitions)
-            
-            # Estimate request tokens and check against model context window
-            request_tokens = self._estimate_request_tokens(messages, formatted_tools)
+
+            # Estimate request tokens and check against model context window            request_tokens = self._estimate_request_tokens(messages, formatted_tools)
             # Get model context window (approximate)
             model_context_window = self._get_model_context_window()
             critical_threshold = int(model_context_window * 0.95)  # 95% of context window
@@ -735,8 +758,55 @@ class Agent:
                         raw = raw[:1000] + f"... (truncated, total {len(raw)} chars)"
                     print(f"[DEBUG_RAW_RESPONSE] Raw response type: {type(response.raw_response)}")
                     print(f"[DEBUG_RAW_RESPONSE] Raw response: {raw}")
+            except RateLimitExceeded as e:
+                # Handle rate limit errors with exponential backoff
+                import os
+                if os.environ.get('DEBUG_RAW_RESPONSE'):
+                    print(f"[DEBUG_RAW_RESPONSE_ERROR] RateLimitExceeded: {e}")
+                    # Try to get raw response if available
+                    if hasattr(e, 'raw_response'):
+                        raw = str(e.raw_response)
+                        if len(raw) > 1000:
+                            raw = raw[:1000] + f"... (truncated, total {len(raw)} chars)"
+                        print(f"[DEBUG_RAW_RESPONSE_ERROR] Raw error response: {raw}")
+                    else:
+                        print(f"[DEBUG_RAW_RESPONSE_ERROR] No raw_response attribute in error")
+                
+                # Increment rate limit count and calculate delays
+                self.rate_limit_count += 1
+                self.rate_limit_active = True
+                
+                # Increase delay for future turns (exponential backoff)
+                if self.rate_limit_count > 1:
+                    self.rate_limit_delay = min(
+                        self.rate_limit_delay * self.rate_limit_backoff_factor,
+                        self.rate_limit_max_wait
+                    )
+                
+                # Initial wait (10 seconds)
+                wait_time = self.rate_limit_base_wait
+                if self.logger:
+                    self.logger.log_error("RATE_LIMIT", f"Rate limit exceeded, waiting {wait_time}s, delay between turns: {self.rate_limit_delay}s")
+                
+                # Yield rate limit warning event
+                yield {
+                    "type": "rate_limit_warning",
+                    "message": f"Rate limit exceeded. Waiting {wait_time}s before retrying. Delay between turns: {self.rate_limit_delay}s",
+                    "wait_time": wait_time,
+                    "turn_delay": self.rate_limit_delay,
+                    "rate_limit_count": self.rate_limit_count,
+                    "turn": turn,
+                }
+                
+                # Wait the initial wait time
+                import time
+                time.sleep(wait_time)
+                
+                # Continue to next turn with delay between turns
+                break
+                
             except ProviderError as e:
-                # Print debug info for provider errors too
+                # Handle other provider errors (non-rate-limit)
                 import os
                 if os.environ.get('DEBUG_RAW_RESPONSE'):
                     print(f"[DEBUG_RAW_RESPONSE_ERROR] ProviderError: {e}")
@@ -818,6 +888,26 @@ class Agent:
                 has_accurate_usage = False
             self.total_input_tokens += input_tokens
             self.total_output_tokens += output_tokens
+            # Reset rate limit count on successful LLM call (but keep delay and active flag)
+            if self.rate_limit_count > 0:
+                self.rate_limit_count = 0
+                if self.logger:
+                    self.logger.log_info("RATE_LIMIT", f"Successful LLM call, reset rate limit count to 0 (delay remains: {self.rate_limit_delay}s)")
+            
+            # Gradually reduce delay after successful calls when rate limiting was active
+            if self.rate_limit_active and self.rate_limit_delay > 1.0:
+                # Reduce delay by 10% each successful turn, down to minimum of 1.0
+                new_delay = max(self.rate_limit_delay * 0.9, 1.0)
+                if new_delay < self.rate_limit_delay:
+                    self.rate_limit_delay = new_delay
+                    if self.logger:
+                        self.logger.log_info("RATE_LIMIT", f"Reducing turn delay to {self.rate_limit_delay:.2f}s after successful call")
+                # If delay is back to 1.0, we're no longer rate limited
+                if self.rate_limit_delay <= 1.0:
+                    self.rate_limit_active = False
+                    if self.logger:
+                        self.logger.log_info("RATE_LIMIT", "Rate limiting deactivated (delay back to 1.0s)")
+            
             if has_accurate_usage:
                 # Accurate token counts available from provider
                 # Note: input_tokens + output_tokens represents tokens for this API call
