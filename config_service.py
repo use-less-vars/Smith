@@ -38,7 +38,7 @@ class ConfigService:
         self._listeners = []
         self._save_timer = None
         self._save_delay = 2.0  # seconds
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
         
         # Validate default config against schema
         if self.schema:
@@ -99,31 +99,43 @@ class ConfigService:
         Returns:
             True if saved (or scheduled), False on error
         """
+        print(f"[ConfigService DEBUG] save called: immediate={immediate}, thread={threading.get_ident()}")
         if immediate:
-            return self._do_save()
+            result = self._do_save()
+            print(f"[ConfigService DEBUG] save immediate result: {result}")
+            return result
         else:
             self._schedule_save()
+            print(f"[ConfigService DEBUG] save scheduled, thread={threading.get_ident()}")
             return True
     
     def _do_save(self) -> bool:
         """Perform actual file save."""
+        import threading
+        import time
+        thread_id = threading.get_ident()
+        print(f"[ConfigService DEBUG] _do_save start, thread {thread_id}, lock={self._lock}")
         try:
+            print(f"[ConfigService DEBUG] _do_save acquiring lock, thread {thread_id}")
             with self._lock:
+                print(f"[ConfigService DEBUG] _do_save lock acquired, thread {thread_id}")
                 config_to_save = self._config.copy()
-            
+                print(f"[ConfigService DEBUG] _do_save config copied, thread {thread_id}")
+            print(f"[ConfigService DEBUG] _do_save lock released, thread {thread_id}")
             # Ensure directory exists
             os.makedirs(os.path.dirname(os.path.abspath(self.config_path)), exist_ok=True)
-            
+
             with open(self.config_path, 'w') as f:
                 json.dump(config_to_save, f, indent=2)
-            
+
             print(f"[ConfigService] Saved config to {self.config_path}")
+            print(f"[ConfigService DEBUG] _do_save completed, thread {thread_id}")
             return True
-            
+
         except Exception as e:
             print(f"[ConfigService] Error saving config: {e}")
-            return False
-    
+            print(f"[ConfigService DEBUG] _do_save error, thread {thread_id}: {e}")
+            return False    
     def _schedule_save(self):
         """Schedule a debounced save."""
         if self._save_timer is not None:

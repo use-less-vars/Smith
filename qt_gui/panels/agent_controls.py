@@ -4,7 +4,7 @@ import yaml
 from PyQt6.QtWidgets import (
     QGroupBox, QVBoxLayout, QHBoxLayout, QGridLayout, QWidget, QLabel,
     QPushButton, QComboBox, QLineEdit, QSpinBox, QDoubleSpinBox,
-    QCheckBox, QScrollArea, QStyle
+    QCheckBox, QScrollArea, QStyle, QSizePolicy
 )
 from PyQt6.QtCore import Qt, QTimer
 

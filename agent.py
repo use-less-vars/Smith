@@ -90,8 +90,12 @@ class Agent:
         self.context_builder = self._create_context_builder()
 
         # Token totals
-        self.total_input_tokens = config.initial_input_tokens
-        self.total_output_tokens = config.initial_output_tokens
+        if session is not None:
+            self.total_input_tokens = session.total_input_tokens
+            self.total_output_tokens = session.total_output_tokens
+        else:
+            self.total_input_tokens = config.initial_input_tokens
+            self.total_output_tokens = config.initial_output_tokens
 
         # Stop check
         self.stop_check = config.stop_check

@@ -35,6 +35,16 @@ from tools import TOOL_CLASSES, SIMPLIFIED_TOOL_CLASSES
 
 load_dotenv()
 
+# Debug logging
+import datetime
+from pathlib import Path
+DEBUG_LOG_PATH = Path("debug_close.log")
+def debug_log(msg: str):
+    timestamp = datetime.datetime.now().strftime("%H:%M:%S.%f")[:-3]
+    with open(DEBUG_LOG_PATH, "a", encoding="utf-8") as f:
+        f.write(f"[{timestamp}] {msg}\n")
+    print(f"[DEBUG] {msg}")  # Also print for immediate visibility
+
 from qt_gui.utils.constants import MAX_RESULT_LENGTH
 
 from qt_gui.themes import apply_theme
@@ -1900,7 +1910,11 @@ class SessionTab(QWidget):
     @pyqtSlot(ExecutionState)
     def on_state_changed(self, state):
         """Handle agent state changes."""
+        debug_log(f"on_state_changed: {state}, _closing={self._closing}")
         print(f"[GUI] State changed to: {state}")
+        if self._closing:
+            debug_log("on_state_changed: skipping due to _closing")
+            return
         
         # Update UI based on state
         if state == ExecutionState.IDLE:
@@ -2353,16 +2367,20 @@ class SessionTab(QWidget):
         Args:
             immediate: If True, save immediately; otherwise use debounced save
         """
+        debug_log(f"save_config called: immediate={immediate}, _loading_config={self._loading_config}")
         if self._loading_config:
             return
 
         try:
             config = self.agent_controls_panel.get_config_dict()
+            debug_log(f"save_config: config keys: {list(config.keys())}")
             print(f"[GUI] Saving config: {config} (immediate={immediate})")
             # Use config bridge for saving
             self.config_bridge.save_config(config, immediate=immediate)
+            debug_log("save_config: bridge save completed")
             print("[GUI] Configuration saved via bridge")
         except Exception as e:
+            debug_log(f"save_config error: {e}")
             print(f"[GUI] Error saving config: {e}")    
     def _update_model_suggestions(self):
         """Update model suggestions based on selected provider."""
@@ -3079,12 +3097,14 @@ class SessionTab(QWidget):
 
     def closeEvent(self, event):
         """Handle closing the tab with save/discard prompts for unsaved changes."""
+        debug_log("closeEvent: started")
         from PyQt6.QtWidgets import QInputDialog
         # Stop auto-save timer to prevent interference during close
         self._auto_save_timer.stop()
 
         # Check if there are unsaved changes
         if self.presenter.has_unsaved_changes():
+            debug_log("closeEvent: has unsaved changes")
             has_name = bool(self.presenter.session_name)
             msg = QMessageBox(self)
             msg.setIcon(QMessageBox.Icon.Question)
@@ -3153,13 +3173,24 @@ class SessionTab(QWidget):
                         self.presenter.session_name = name.strip()
                         self.update_window_title()
 
+        debug_log("closeEvent: proceeding with closing")
         # Proceed with closing
+        self._closing = True
         # Save UI configuration
+        debug_log("closeEvent: calling save_config")
         self.save_config(immediate=True)
+        debug_log("closeEvent: save_config returned")
         # Stop controller if running and reset state (without auto-saving)
         if self.presenter.controller.is_running:
+            debug_log("closeEvent: stopping controller")
             self.presenter.controller.stop()
-        self.presenter.state = ExecutionState.IDLE
+            debug_log("closeEvent: controller stopped")
+        # self.presenter.state = ExecutionState.IDLE  # Disabled to avoid infinite loop
+        print("[GUI] closeEvent: skipping state reset to avoid infinite loop")
+        # Auto-save session and cleanup presenter
+        debug_log("closeEvent: calling presenter.cleanup")
+        self.presenter.cleanup()
+        debug_log("closeEvent: presenter.cleanup returned")
         # Remove this tab from the parent QTabWidget
         parent = self.parent()
         if parent and hasattr(parent, 'removeTab'):

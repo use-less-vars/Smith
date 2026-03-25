@@ -69,6 +69,7 @@ class AgentPresenter(QObject):
         self.session_store = FileSystemSessionStore()
         self._dirty = False  # Tracks unsaved changes since last save
         self._name_explicitly_set = False  # Tracks whether the session has been explicitly named by the user
+        self._external_file_path = None  # Path to external file if session was saved via Save As
         print(f"[Presenter] Session store directory: {self.session_store.sessions_dir}")
         self.context_builder = LastNBuilder(keep_last_messages=100000, keep_system_prompt=True)  # Keep effectively unlimited messages to preserve full session history during loading
         self.user_history: List[Dict[str, Any]] = []
@@ -412,6 +413,7 @@ class AgentPresenter(QObject):
         self.controller.reset()
         # NOTE: Do NOT reset total_input/total_output/context_length; they are session properties.
         # They will be carried over to the new agent via config's initial_* tokens.
+        # Context length will be updated when agent emits its first event with accurate token count.
         self.state = ExecutionState.IDLE
         self._restarting = False
         # Rebuild initial conversation from user_history for continuation
@@ -488,6 +490,7 @@ class AgentPresenter(QObject):
             metadata={'name': name} if name else {}
         )
         self._bind_session(session)
+        self._external_file_path = None
         # Clear final content
         self.final_content = None
         self.final_reasoning = None
@@ -573,17 +576,25 @@ class AgentPresenter(QObject):
             self._name_explicitly_set = True
 
             print(f"[Presenter] Session saved to store: {self.session_store.get_session_path(session.session_id)}")
+            # Also export to external file if set
+            if self._external_file_path:
+                try:
+                    self.export_session(self._external_file_path, set_as_external=False)
+                except Exception as e:
+                    print(f"[Presenter] Failed to export to external file: {e}")
             return True
         except Exception as e:
             print(f"[Presenter] Error saving session: {e}")
             traceback.print_exc()
             return False
 
-    def export_session(self, filepath: str) -> bool:
+    def export_session(self, filepath: str, set_as_external: bool = False) -> bool:
         """Export current session to a specified file path (for backup/transfer).
 
         Args:
             filepath: Path to export the session JSON file
+            set_as_external: If True, set this file as the external file path
+                for future auto-saves. Default False.
 
         Returns:
             True if exported successfully, False otherwise
@@ -614,8 +625,9 @@ class AgentPresenter(QObject):
                 json.dump(session_dict, f, indent=2)
 
             print(f"[Presenter] Session exported to {filepath}")
-            # Mark as clean after successful export
-            self._dirty = False
+            if set_as_external:
+                self._external_file_path = filepath
+            # Note: we do NOT clear dirty flag because export does not affect session store
             return True
         except Exception as e:
             print(f"[Presenter] Error exporting session: {e}")
@@ -647,6 +659,12 @@ class AgentPresenter(QObject):
             success = self.save_session()
             if success:
                 print("[Presenter] Auto-saved session successfully")
+                # Also export to external file if set
+                if self._external_file_path:
+                    try:
+                        self.export_session(self._external_file_path, set_as_external=False)
+                    except Exception as e:
+                        print(f"[Presenter] Failed to export to external file: {e}")
                 return True
             else:
                 print("[Presenter] Auto-save failed")
@@ -682,6 +700,7 @@ class AgentPresenter(QObject):
             session = Session.from_persistable_dict(session_dict)
 
             self._bind_session(session)
+            self._external_file_path = filepath
             # If session name was not set by binding (i.e., metadata lacks name), use fallback
             if not self.session_name:
                 self.session_name = os.path.basename(filepath)
@@ -720,6 +739,26 @@ class AgentPresenter(QObject):
             else:
                 self.session_name = "Untitled Session"
         print(f"[Presenter] Current session loaded from store: {session_id} ({self.session_name})")
+        return True
+
+    def load_session_by_id(self, session_id: str) -> bool:
+        """Load a session by ID from the session store."""
+        print(f"[Presenter] Loading session {session_id} from store")
+        session = self.session_store.load_session(session_id)
+        if session is None:
+            print(f"[Presenter] Session {session_id} not found in store")
+            return False
+        # Set as current session
+        self.current_session = session
+        self.current_session_id = str(session.session_id)
+        self._bind_session(session)
+        # If session name was not set by binding, format a fallback
+        if not self.session_name:
+            if isinstance(session.created_at, datetime):
+                self.session_name = f"Session {session.created_at:%Y-%m-%d %H:%M}"
+            else:
+                self.session_name = "Untitled Session"
+        print(f"[Presenter] Session loaded from store: {session_id} ({self.session_name})")
         return True
 
     def list_sessions(self) -> List[Dict[str, Any]]:
@@ -787,16 +826,23 @@ class AgentPresenter(QObject):
             True if renamed successfully, False otherwise
         """
         try:
-            session = self.session_store.load_session(session_id)
-            if session is None:
-                return False
-            session.metadata['name'] = new_name
-            session.updated_at = datetime.now()
-            self.session_store.save_session(session)
-            # If the renamed session is currently loaded, update its metadata in memory
             if self.current_session and self.current_session.session_id == session_id:
+                # Update current session metadata
                 self.current_session.metadata['name'] = new_name
-            return True
+                self.current_session.updated_at = datetime.now()
+                self.session_store.save_session(self.current_session)
+                self.session_name = new_name
+                self._name_explicitly_set = True
+                return True
+            else:
+                # Session not currently loaded, load from store
+                session = self.session_store.load_session(session_id)
+                if session is None:
+                    return False
+                session.metadata['name'] = new_name
+                session.updated_at = datetime.now()
+                self.session_store.save_session(session)
+                return True
         except Exception as e:
             print(f"[Presenter] Error renaming session {session_id}: {e}")
             return False

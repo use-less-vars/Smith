@@ -1,12 +1,14 @@
 """Main window for the ThoughtMachine GUI."""
 from PyQt6.QtWidgets import (
     QMainWindow, QTabWidget, QPushButton, QMenuBar, QMenu,
-    QWidget, QVBoxLayout, QHBoxLayout
+    QWidget, QVBoxLayout, QHBoxLayout, QApplication
 )
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QKeySequence, QAction
 from session.store import FileSystemSessionStore
 from qt_gui.themes import apply_theme
+import json
+from pathlib import Path
 class AgentGUI(QMainWindow):
     """Main application window with tab management and menu bar."""
 
@@ -15,6 +17,8 @@ class AgentGUI(QMainWindow):
         self.setWindowTitle("ThoughtMachine")
         self._closing = False
         self.current_theme = None
+        # Ensure window is deleted when closed
+        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
         self.session_store = FileSystemSessionStore()
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
@@ -24,6 +28,7 @@ class AgentGUI(QMainWindow):
         self.tab_widget.setTabsClosable(True)
         self.tab_widget.tabCloseRequested.connect(self.close_tab)
         self.tab_widget.currentChanged.connect(self.on_current_tab_changed)
+
         # Add new tab button on the tab bar
         new_tab_btn = QPushButton("+")
         new_tab_btn.setFixedSize(24, 24)
@@ -31,26 +36,99 @@ class AgentGUI(QMainWindow):
         new_tab_btn.clicked.connect(self.new_tab)
         self.tab_widget.setCornerWidget(new_tab_btn, Qt.Corner.TopRightCorner)
         main_layout.addWidget(self.tab_widget)
-        self.new_tab(auto_load_current=True)  # create initial tab
+        self.restore_open_sessions()
+        if self.tab_widget.count() == 0:
+            self.new_tab(auto_load_current=True)  # create initial tab
         self.create_menu_bar()
 
     def new_tab(self, session_id=None, auto_load_current=False):
-        from qt_gui_refactored import SessionTab
+        from qt_gui.session_tab import SessionTab
         tab = SessionTab(session_store=self.session_store, auto_load_current=auto_load_current)
         if session_id:
             try:
-                tab.presenter.load_session(session_id)
-                tab.display_loaded_conversation()
-                tab.update_window_title()
+                success = tab.presenter.load_session_by_id(session_id)
+                if success:
+                    tab.display_loaded_conversation()
+                else:
+                    print(f"[GUI] Session {session_id} not found in store")
             except Exception as e:
                 print(f"[GUI] Failed to load session {session_id}: {e}")
         index = self.tab_widget.addTab(tab, tab.presenter.session_name or "Untitled")
         self.tab_widget.setCurrentWidget(tab)
+        # Update tab label after adding to tab widget
+        if session_id:
+            tab.update_window_title()
+            tab._update_tab_label()
+
+    def restore_open_sessions(self):
+        """Restore previously open sessions from open_sessions.json."""
+        open_sessions_path = self.session_store.sessions_dir / "open_sessions.json"
+        if not open_sessions_path.exists():
+            print(f"[GUI] No open sessions file at {open_sessions_path}")
+            return
+        try:
+            with open(open_sessions_path, 'r') as f:
+                session_ids = json.load(f)
+            if not isinstance(session_ids, list):
+                print(f"[GUI] Invalid open_sessions.json content: {session_ids}")
+                return
+            # Filter out session IDs that no longer exist
+            existing_ids = []
+            for sid in session_ids:
+                if (self.session_store.sessions_dir / f"{sid}.json").exists():
+                    existing_ids.append(sid)
+                else:
+                    print(f"[GUI] Session {sid} no longer exists, skipping")
+            # Create tabs for each session ID
+            for sid in existing_ids:
+                self.new_tab(session_id=sid)
+            print(f"[GUI] Restored {len(existing_ids)} open sessions")
+        except Exception as e:
+            print(f"[GUI] Failed to restore open sessions: {e}")
+
+    def save_open_sessions(self):
+        """Save list of open session IDs to open_sessions.json."""
+        session_ids = []
+        for i in range(self.tab_widget.count()):
+            tab = self.tab_widget.widget(i)
+            if tab and tab.presenter.current_session_id:
+                session_ids.append(tab.presenter.current_session_id)
+        open_sessions_path = self.session_store.sessions_dir / "open_sessions.json"
+        try:
+            with open(open_sessions_path, 'w') as f:
+                json.dump(session_ids, f)
+            print(f"[GUI] Saved {len(session_ids)} open sessions to {open_sessions_path}")
+        except Exception as e:
+            print(f"[GUI] Failed to save open sessions: {e}")
+
+    def open_session_in_new_tab(self, file_path):
+        """Open a session file in a new tab."""
+        from qt_gui.session_tab import SessionTab
+        tab = SessionTab(session_store=self.session_store, auto_load_current=False)
+        try:
+            success = tab.presenter.load_session(file_path)
+            if success:
+                tab.display_loaded_conversation()
+            else:
+                print(f"[GUI] Failed to load session from file: {file_path}")
+                # Close the tab?
+                tab.close()
+                return
+        except Exception as e:
+            print(f"[GUI] Failed to load session {file_path}: {e}")
+            tab.close()
+            return
+        index = self.tab_widget.addTab(tab, tab.presenter.session_name or "Untitled")
+        self.tab_widget.setCurrentWidget(tab)
+        tab.update_window_title()
+        tab._update_tab_label()
 
     def close_tab(self, index):
         tab = self.tab_widget.widget(index)
         if tab:
-            tab.close()  # triggers closeEvent; the tab will remove itself if accepted
+            if tab.close():  # triggers closeEvent; the tab will remove itself if accepted
+                # Save open sessions after tab removal
+                self.save_open_sessions()
             # If no tabs remain, create a new empty tab
             if self.tab_widget.count() == 0:
                 self.new_tab()
@@ -60,6 +138,8 @@ class AgentGUI(QMainWindow):
         if tab:
             tab.update_window_title()
             self.statusBar().showMessage(f"Tokens: in={tab.total_input}, out={tab.total_output}, ctx={tab.context_length}")
+
+
 
     def create_menu_bar(self):
         menu_bar = QMenuBar(self)
@@ -129,18 +209,37 @@ class AgentGUI(QMainWindow):
         # Tabs will remove themselves upon acceptance.
         if self._closing:
             event.accept()
+            super().closeEvent(event)
             return
         self._closing = True
         print("[AgentGUI] closeEvent called")
+        # Save open sessions before closing tabs
+        self.save_open_sessions()
 
+        print(f"[AgentGUI] Starting tab close loop, count={self.tab_widget.count()}")
         while self.tab_widget.count() > 0:
             tab = self.tab_widget.widget(0)
             if tab:
+                print(f"[AgentGUI] Calling tab.close()")
                 if not tab.close():
                     event.ignore()
                     self._closing = False
+                    super().closeEvent(event)
                     return
+                print(f"[AgentGUI] Tab closed successfully, new count={self.tab_widget.count()}")
+                # Safety check: ensure tab count decreased after successful close
+                if self.tab_widget.count() > 0 and self.tab_widget.widget(0) is tab:
+                    # Tab didn't close, break to avoid infinite loop
+                    print(f"[AgentGUI] WARNING: tab.close() returned True but tab not removed")
+                    break
             else:
+                print(f"[AgentGUI] No tab at index 0, breaking")
                 break
+        print(f"[AgentGUI] All tabs closed, accepting window close")
         event.accept()
-        print("[AgentGUI] closeEvent accepted")
+        super().closeEvent(event)
+        # Force hide the window to ensure it closes
+        self.hide()
+        # Quit the application since main window is closing
+        QApplication.instance().quit()
+        print("[AgentGUI] closeEvent accepted, window hidden, app quitting")
