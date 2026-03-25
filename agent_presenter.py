@@ -169,11 +169,25 @@ class AgentPresenter(QObject):
         # Mark as clean (no unsaved changes)
         self._dirty = False
         self._name_explicitly_set = bool(session.metadata.get('name'))
+        # Restore external file path from metadata if present
+        self._external_file_path = session.metadata.get('external_file_path')
 
         self.config_changed.emit(self._config.copy())
     
-    def create_agent_config(self, config_dict: Optional[dict] = None) -> AgentConfig:
-        """
+    def _update_external_file_path(self, filepath: Optional[str]):
+        """Update external file path in session metadata and persist to store."""
+        self._external_file_path = filepath
+        if self.current_session:
+            if filepath:
+                self.current_session.metadata['external_file_path'] = filepath
+            else:
+                # Remove key if filepath is None
+                self.current_session.metadata.pop('external_file_path', None)
+            # Save updated metadata to store
+            self.current_session.updated_at = datetime.now()
+            self.session_store.save_session(self.current_session)
+
+    def create_agent_config(self, config_dict: Optional[dict] = None) -> AgentConfig:        """
         Create AgentConfig instance from configuration dictionary.
 
         Args:
@@ -626,7 +640,7 @@ class AgentPresenter(QObject):
 
             print(f"[Presenter] Session exported to {filepath}")
             if set_as_external:
-                self._external_file_path = filepath
+                self._update_external_file_path(filepath)
             # Note: we do NOT clear dirty flag because export does not affect session store
             return True
         except Exception as e:
@@ -700,10 +714,12 @@ class AgentPresenter(QObject):
             session = Session.from_persistable_dict(session_dict)
 
             self._bind_session(session)
-            self._external_file_path = filepath
+            self._update_external_file_path(filepath)
+            self._name_explicitly_set = True
             # If session name was not set by binding (i.e., metadata lacks name), use fallback
             if not self.session_name:
                 self.session_name = os.path.basename(filepath)
+                self._name_explicitly_set = True
             print(f"[Presenter] Session loaded from {filepath}: {len(session.user_history)} messages")
             return True
         except Exception as e:
@@ -732,6 +748,10 @@ class AgentPresenter(QObject):
         self.current_session = session
         self.current_session_id = str(session.session_id)
         self._bind_session(session)
+        # Restore external file path from metadata if present
+        external_file_path = session.metadata.get('external_file_path')
+        if external_file_path:
+            self._update_external_file_path(external_file_path)
         # If session name was not set by binding, format a fallback
         if not self.session_name:
             if isinstance(session.created_at, datetime):
@@ -752,6 +772,10 @@ class AgentPresenter(QObject):
         self.current_session = session
         self.current_session_id = str(session.session_id)
         self._bind_session(session)
+        # Restore external file path from metadata if present
+        external_file_path = session.metadata.get('external_file_path')
+        if external_file_path:
+            self._update_external_file_path(external_file_path)
         # If session name was not set by binding, format a fallback
         if not self.session_name:
             if isinstance(session.created_at, datetime):
