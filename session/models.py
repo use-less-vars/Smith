@@ -13,6 +13,68 @@ from typing import List, Dict, Any, Optional
 import uuid
 
 
+class ObservableList(list):
+    """A list that notifies a callback when mutated."""
+    def __init__(self, iterable=(), callback=None):
+        super().__init__(iterable)
+        self.callback = callback
+
+    def _notify(self):
+        if self.callback:
+            self.callback()
+
+    def __setitem__(self, key, value):
+        super().__setitem__(key, value)
+        self._notify()
+
+    def __delitem__(self, key):
+        super().__delitem__(key)
+        self._notify()
+
+    def append(self, item):
+        super().append(item)
+        self._notify()
+
+    def extend(self, iterable):
+        super().extend(iterable)
+        self._notify()
+
+    def insert(self, index, item):
+        super().insert(index, item)
+        self._notify()
+
+    def pop(self, index=-1):
+        result = super().pop(index)
+        self._notify()
+        return result
+
+    def remove(self, item):
+        super().remove(item)
+        self._notify()
+
+    def clear(self):
+        super().clear()
+        self._notify()
+
+    def __iadd__(self, other):
+        result = super().__iadd__(other)
+        self._notify()
+        return result
+
+    def __imul__(self, other):
+        result = super().__imul__(other)
+        self._notify()
+        return result
+
+    def sort(self, *, key=None, reverse=False):
+        super().sort(key=key, reverse=reverse)
+        self._notify()
+
+    def reverse(self):
+        super().reverse()
+        self._notify()
+
+
 @dataclass
 class RuntimeParams:
     """Mutable runtime parameters that can be adjusted during a session."""
@@ -110,11 +172,42 @@ class Session:
     agent_instance: Optional[Any] = field(default=None, compare=False, repr=False)
 
     metadata: Dict[str, Any] = field(default_factory=dict)  # name, tags, notes, etc.
+    _conversation_changed_callbacks: List[Any] = field(default_factory=list, compare=False, repr=False)
 
     def __post_init__(self):
         # Ensure context_length reflects token counts if not already set
         if self.context_length == 0:
             self.context_length = self.total_input_tokens + self.total_output_tokens
+        # Wrap user_history with observable list
+        self._wrap_user_history()
+
+    def _wrap_user_history(self):
+        """Wrap user_history with ObservableList if not already wrapped."""
+        if not isinstance(self.user_history, ObservableList):
+            self.user_history = ObservableList(self.user_history, callback=self._on_conversation_changed)
+        else:
+            # Ensure callback is set
+            self.user_history.callback = self._on_conversation_changed
+
+    def _on_conversation_changed(self):
+        """Called when user_history is mutated."""
+        self.updated_at = datetime.now()
+        for callback in self._conversation_changed_callbacks:
+            try:
+                callback()
+            except Exception as e:
+                # Log but don't break
+                import traceback
+                traceback.print_exc()
+
+    def connect_conversation_changed(self, callback):
+        """Register a callback to be invoked when user_history changes."""
+        self._conversation_changed_callbacks.append(callback)
+
+    def disconnect_conversation_changed(self, callback):
+        """Remove a previously registered callback."""
+        if callback in self._conversation_changed_callbacks:
+            self._conversation_changed_callbacks.remove(callback)
 
     def update_runtime_params(self, **kwargs) -> None:
         """Update mutable runtime parameters."""
@@ -136,7 +229,7 @@ class Session:
             'updated_at': datetime.now().isoformat(),
             'config': self.config.to_dict(),
             'runtime_params': self.runtime_params.to_dict(),
-            'user_history': self.user_history,
+            'user_history': list(self.user_history),  # Convert ObservableList to plain list
             'containers': [c.to_dict() for c in self.containers],
             'preset_name': self.preset_name,
             'metadata': self.metadata,

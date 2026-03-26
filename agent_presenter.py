@@ -11,7 +11,7 @@ import json
 import uuid
 from datetime import datetime
 import traceback
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Callable
 
 from PyQt6.QtCore import QObject, pyqtSignal
 from agent_controller import AgentController
@@ -47,6 +47,7 @@ class AgentPresenter(QObject):
     status_message = pyqtSignal(str)
     error_occurred = pyqtSignal(str, str)
     config_changed = pyqtSignal(dict)
+    conversation_changed = pyqtSignal()
     
     def __init__(self, config_path: Optional[str] = None):
         super().__init__()
@@ -78,6 +79,7 @@ class AgentPresenter(QObject):
         self.final_content: Optional[str] = None
         self.final_reasoning: Optional[str] = None
         self._initial_conversation: Optional[List[Dict[str, Any]]] = None  # For loading sessions
+        self._session_callback: Optional[Callable] = None  # callback for session conversation change notifications
 
         # Event processing via signals
         print(f"[Presenter] Connecting controller event_occurred to _process_event")
@@ -176,6 +178,20 @@ class AgentPresenter(QObject):
             self._external_file_path = os.path.abspath(external_file_path)
         else:
             self._external_file_path = None
+
+        # Connect to session's conversation change notifications
+        if self._session_callback is not None and self.current_session:
+            # Disconnect previous callback if any
+            self.current_session.disconnect_conversation_changed(self._session_callback)
+            self._session_callback = None
+        
+        # Connect new callback
+        def on_conversation_changed():
+            # Session already updates updated_at; just emit signal for UI updates
+            self.conversation_changed.emit()
+            self._dirty = True
+        
+        self._session_callback = session.connect_conversation_changed(on_conversation_changed)
 
         self.config_changed.emit(self._config.copy())
     
@@ -320,9 +336,13 @@ class AgentPresenter(QObject):
             # Mutate in-place to preserve existing list references (e.g., agent.conversation)
             self.user_history[:] = event_history
             # If a session is bound, its user_history should be the same object (via _bind_session)
-            # No need to reassign; but ensure consistency if it was somehow detached
+            # If they differ, log warning and sync content while preserving ObservableList
             if self.current_session is not None and self.current_session.user_history is not self.user_history:
-                self.current_session.user_history = self.user_history
+                print(f"[Presenter] WARNING: user_history references differ, syncing content")
+                # Copy content to session's ObservableList (triggers notification)
+                self.current_session.user_history[:] = self.user_history
+                # Update our reference to the session's ObservableList
+                self.user_history = self.current_session.user_history
             # Mark as dirty (unsaved changes)
             self._dirty = True
     def start_session(self, query: str, config: Optional[dict] = None, preset_name: str = None):
@@ -1092,7 +1112,54 @@ class AgentPresenter(QObject):
             # Update user_history with full conversation
             if "history" in event:
                 self._update_user_history(event["history"])
+
+        elif event_type == "token_update":
+            # Real-time token update event
+            # Update token counts if available
+            # Support both naming conventions: total_input_tokens/total_output_tokens and total_input/total_output
+            input_tokens = None
+            output_tokens = None
             
+            # First check top-level
+            if "total_input_tokens" in event and "total_output_tokens" in event:
+                input_tokens = event["total_input_tokens"]
+                output_tokens = event["total_output_tokens"]
+            elif "total_input" in event and "total_output" in event:
+                input_tokens = event["total_input"]
+                output_tokens = event["total_output"]
+            # Also check usage dict
+            else:
+                usage = event.get("usage", {})
+                if "total_input_tokens" in usage and "total_output_tokens" in usage:
+                    input_tokens = usage["total_input_tokens"]
+                    output_tokens = usage["total_output_tokens"]
+                elif "total_input" in usage and "total_output" in usage:
+                    input_tokens = usage["total_input"]
+                    output_tokens = usage["total_output"]
+            
+            if input_tokens is not None and output_tokens is not None:
+                self.total_input = input_tokens
+                self.total_output = output_tokens
+                if self.current_session is not None:
+                    self.current_session.total_input_tokens = input_tokens
+                    self.current_session.total_output_tokens = output_tokens
+                self.tokens_updated.emit(self.total_input, self.total_output)
+            
+            # Update context length if available
+            context_length = None
+            if "context_length" in event:
+                context_length = event["context_length"]
+            elif "usage" in event and "context_length" in event["usage"]:
+                context_length = event["usage"]["context_length"]
+            elif "usage" in event and "current_conversation_tokens" in event["usage"]:
+                context_length = event["usage"]["current_conversation_tokens"]
+            
+            if context_length is not None:
+                self.context_length = context_length
+                if self.current_session is not None:
+                    self.current_session.context_length = context_length
+                self.context_updated.emit(self.context_length)
+
         elif event_type == "user_interaction_requested":
             self.state = ExecutionState.WAITING_FOR_USER
             self.status_message.emit("Waiting for user input")

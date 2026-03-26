@@ -194,13 +194,15 @@ class Agent:
             if len(self.session.user_history) > 0:
                 events = self.state.set_session_state(SessionState.CONTINUING)
                 for event in events:
-                    self._handle_state_event(event)
+                    # Consume any yielded events (e.g., token_update) but ignore
+                    list(self._handle_state_event(event))
             # else: new session with no history, keep default NEW state
         else:
             if initial_conversation is not None and len(initial_conversation) > 0:
                 events = self.state.set_session_state(SessionState.CONTINUING)
                 for event in events:
-                    self._handle_state_event(event)
+                    # Consume any yielded events (e.g., token_update) but ignore
+                    list(self._handle_state_event(event))
             # else: new session
 
         # Calculate initial token count for the conversation
@@ -412,6 +414,20 @@ class Agent:
         if self.conversation is not self.session.user_history:
             self.conversation = self.session.user_history
 
+    def _create_token_update_event(self) -> dict:
+        """Create a token_update event with current token counts."""
+        return {
+            "type": "token_update",
+            "total_input_tokens": self.total_input_tokens,
+            "total_output_tokens": self.total_output_tokens,
+            "context_length": self.state.current_conversation_tokens,
+            "usage": {
+                "total_input": self.total_input_tokens,
+                "total_output": self.total_output_tokens,
+                "current_conversation_tokens": self.state.current_conversation_tokens
+            }
+        }
+
     def reset(self):
         self.conversation.clear()
         self._ensure_system_prompt()
@@ -427,7 +443,8 @@ class Agent:
         reset_events = self.state.reset()
         # Process any events from reset (though usually none for fresh reset)
         for event in reset_events:
-            self._handle_state_event(event)
+            # Consume any yielded events (e.g., token_update) but ignore
+            list(self._handle_state_event(event))
         
         # Update token estimate after resetting conversation and adding system prompt
         self._update_conversation_token_estimate()
@@ -455,6 +472,8 @@ class Agent:
             # Estimate tokens for warning message and update state
             warning_tokens = self._estimate_tokens(warning_msg)
             self.state.current_conversation_tokens += warning_tokens
+            # Emit token update event for real-time tracking
+            yield self._create_token_update_event()
         elif event.get("type") == "turn_warning":
             # Note: turn_warning events from AgentState have "message" field
             warning = event.get("message", event.get("warning", ""))
@@ -463,6 +482,8 @@ class Agent:
             self._add_to_conversation(warning_msg)
             warning_tokens = self._estimate_tokens(warning_msg)
             self.state.current_conversation_tokens += warning_tokens
+            # Emit token update event for real-time tracking
+            yield self._create_token_update_event()
         elif event.get("type") in ("critical_countdown_start", "token_critical_active", "turn_critical_active"):
             # Handle countdown events - inject as system message
             message = event.get("message", "")
@@ -471,6 +492,8 @@ class Agent:
             self._add_to_conversation(warning_msg)
             warning_tokens = self._estimate_tokens(warning_msg)
             self.state.current_conversation_tokens += warning_tokens
+            # Emit token update event for real-time tracking
+            yield self._create_token_update_event()
         elif event.get("type") == "execution_state_change":
             # Log execution state changes
             old_state = event.get("old_state")
@@ -533,6 +556,13 @@ class Agent:
             # No session - fallback to old behavior (modify conversation directly)
             logger.warning("[DEBUG_PRUNING] No session available, using fallback pruning")
             self._apply_summary_pruning_fallback(summary, keep_recent_turns)
+            # Update token estimate after fallback pruning
+            old_token_count = self.state.current_conversation_tokens
+            self._update_conversation_token_estimate()
+            if self.logger and hasattr(self.logger, 'py_logger'):
+                self.logger.py_logger.info(
+                    f"[PRUNING] Updated token estimate after fallback: {self.state.current_conversation_tokens} tokens (was {old_token_count})"
+                )
             return
         
         # Use the full append-only history
@@ -623,6 +653,11 @@ class Agent:
         # Update token estimate (will use HistoryProvider to compute runtime context tokens)
         old_token_count = self.state.current_conversation_tokens
         self._update_conversation_token_estimate()
+        # Emit token update event for real-time tracking after pruning
+        # Note: This is called from process_query, so we need to yield
+        # but _apply_summary_pruning is not a generator.
+        # The caller will yield the event.
+        # Instead, we'll rely on process_query to emit after summary
         if self.logger and hasattr(self.logger, 'py_logger'):
             self.logger.py_logger.info(
                 f"[PRUNING] Updated token estimate: {self.state.current_conversation_tokens} tokens (was {old_token_count})"
@@ -805,16 +840,19 @@ class Agent:
             # Resuming from pause or user interaction - go directly to RUNNING
             events = self.state.set_execution_state(ExecutionState.RUNNING)
             for event in events:
-                self._handle_state_event(event)
+                for yielded_event in self._handle_state_event(event):
+                    yield yielded_event
         else:
             # Starting from IDLE, STOPPED, etc. - use STARTING intermediate state
             events = self.state.set_execution_state(ExecutionState.STARTING)
             for event in events:
-                self._handle_state_event(event)
+                for yielded_event in self._handle_state_event(event):
+                    yield yielded_event
             # Immediately transition to RUNNING
             events = self.state.set_execution_state(ExecutionState.RUNNING)
             for event in events:
-                self._handle_state_event(event)
+                for yielded_event in self._handle_state_event(event):
+                    yield yielded_event
         
         # Log agent start if logger exists
         if self.logger:
@@ -834,7 +872,9 @@ class Agent:
         # Estimate tokens for the new user message (including JSON structure) and update current count
         estimated_tokens = self._estimate_tokens(user_msg)
         self.state.current_conversation_tokens += estimated_tokens
-        
+        # Emit token update event for real-time tracking
+        yield self._create_token_update_event()
+
         prev_conversation_len = len(self.conversation)
         last_input_tokens = 0
         last_output_tokens = 0
@@ -849,11 +889,13 @@ class Agent:
                 # Update execution state: transition through STOPPING intermediate state
                 events = self.state.set_execution_state(ExecutionState.STOPPING)
                 for event in events:
-                    self._handle_state_event(event)
+                    for yielded_event in self._handle_state_event(event):
+                        yield yielded_event
                 # Then transition to STOPPED
                 events = self.state.set_execution_state(ExecutionState.STOPPED)
                 for event in events:
-                    self._handle_state_event(event)
+                    for yielded_event in self._handle_state_event(event):
+                        yield yielded_event
 
                 if self.logger:
                     self.logger.log_stop_signal()
@@ -878,6 +920,8 @@ class Agent:
                     # Update token count for warning message
                     warning_tokens = self._estimate_tokens(warning_msg)
                     self.state.current_conversation_tokens += warning_tokens
+                    # Emit token update event for real-time tracking
+                    yield self._create_token_update_event()
                 # Yield event with usage info
                 yield {
                     "type": event["type"],
@@ -894,6 +938,8 @@ class Agent:
 
             # Update conversation token estimate from scratch to prevent drift
             self._update_conversation_token_estimate()
+            # Emit token update event for real-time tracking after token estimate update
+            yield self._create_token_update_event()
             # Token monitoring warning
             token_events = self.state.update_token_state(self.state.current_conversation_tokens)
             for event in token_events:
@@ -904,6 +950,8 @@ class Agent:
                     # Update token count for warning message
                     warning_tokens = self._estimate_tokens(warning_msg)
                     self.state.current_conversation_tokens += warning_tokens
+                    # Emit token update event for real-time tracking
+                    yield self._create_token_update_event()
                 # Yield event with usage info
                 yield {
                     "type": event["type"],
@@ -993,6 +1041,8 @@ class Agent:
                 self._add_to_conversation(error_msg)
                 error_tokens = self._estimate_tokens(error_msg)
                 self.state.current_conversation_tokens += error_tokens
+                # Emit token update event for real-time tracking
+                yield self._create_token_update_event()
                 # Yield error event
                 yield {
                     "type": "token_warning",
@@ -1015,6 +1065,8 @@ class Agent:
                 self._add_to_conversation(warning_msg)
                 warning_tokens = self._estimate_tokens(warning_msg)
                 self.state.current_conversation_tokens += warning_tokens
+                # Emit token update event for real-time tracking
+                yield self._create_token_update_event()
                 # Yield token warning event
                 yield {
                     "type": "token_warning",
@@ -1036,6 +1088,8 @@ class Agent:
                 self._add_to_conversation(warning_msg)
                 warning_tokens = self._estimate_tokens(warning_msg)
                 self.state.current_conversation_tokens += warning_tokens
+                # Emit token update event for real-time tracking
+                yield self._create_token_update_event()
                 # Yield token warning event
                 yield {
                     "type": "token_warning",
@@ -1155,11 +1209,13 @@ class Agent:
                 # Update execution state: transition through STOPPING intermediate state
                 events = self.state.set_execution_state(ExecutionState.STOPPING)
                 for event in events:
-                    self._handle_state_event(event)
+                    for yielded_event in self._handle_state_event(event):
+                        yield yielded_event
                 # Then transition to STOPPED
                 events = self.state.set_execution_state(ExecutionState.STOPPED)
                 for event in events:
-                    self._handle_state_event(event)
+                    for yielded_event in self._handle_state_event(event):
+                        yield yielded_event
                 if self.logger:
                     self.logger.log_error("PROVIDER_ERROR", str(e))
                     self.logger.log_agent_end("provider_error", f"Provider error: {e}")
@@ -1186,11 +1242,13 @@ class Agent:
                 # Update execution state: transition through STOPPING intermediate state
                 events = self.state.set_execution_state(ExecutionState.STOPPING)
                 for event in events:
-                    self._handle_state_event(event)
+                    for yielded_event in self._handle_state_event(event):
+                        yield yielded_event
                 # Then transition to STOPPED
                 events = self.state.set_execution_state(ExecutionState.STOPPED)
                 for event in events:
-                    self._handle_state_event(event)
+                    for yielded_event in self._handle_state_event(event):
+                        yield yielded_event
                 if self.logger:
                     self.logger.log_error("UNEXPECTED_ERROR", str(e))
                     self.logger.log_agent_end("unexpected_error", f"Unexpected error: {e}")
@@ -1222,6 +1280,8 @@ class Agent:
                 has_accurate_usage = False
             self.total_input_tokens += input_tokens
             self.total_output_tokens += output_tokens
+            # Emit token update event for real-time tracking
+            yield self._create_token_update_event()
             # Reset rate limit count on successful LLM call (but keep delay and active flag)
             if self.rate_limit_count > 0:
                 self.rate_limit_count = 0
@@ -1283,9 +1343,13 @@ class Agent:
             if has_accurate_usage:
                 # Use accurate output token count from provider
                 self.state.current_conversation_tokens += output_tokens
+                # Emit token update event for real-time tracking
+                yield self._create_token_update_event()
             else:
                 # Use estimated assistant tokens
                 self.state.current_conversation_tokens += assistant_tokens
+                # Emit token update event for real-time tracking
+                yield self._create_token_update_event()
             
             if self.logger:
                 self.logger.log_conversation_update(self.conversation, "append_assistant")
@@ -1341,7 +1405,9 @@ Check system warnings for required actions.'''
                         # Estimate tokens for tool result
                         tool_tokens = len(str(tool_result)) // 4
                         self.state.current_conversation_tokens += tool_tokens
-                        
+                        # Emit token update event for real-time tracking
+                        yield self._create_token_update_event()
+
                         executed_tools.append({
                             "name": tool_name,
                             "arguments": {},
@@ -1432,7 +1498,9 @@ Check system warnings for required actions.'''
                     # Estimate tokens for tool result
                     tool_tokens = len(str(tool_result)) // 4
                     self.state.current_conversation_tokens += tool_tokens
-                    
+                    # Emit token update event for real-time tracking
+                    yield self._create_token_update_event()
+
                     if self.logger:
                         self.logger.log_conversation_update(self.conversation, "append_tool_result")
                     
@@ -1445,11 +1513,14 @@ Check system warnings for required actions.'''
                 # Decrement critical countdowns after tools have executed
                 countdown_events = self.state.decrement_critical_countdown()
                 for event in countdown_events:
-                    self._handle_state_event(event)
+                    for yielded_event in self._handle_state_event(event):
+                        yield yielded_event
 
                 # Apply summary pruning if requested
                 if summary_requested:
                     self._apply_summary_pruning(summary_text, summary_keep_recent_turns)
+                    # Emit token update event for real-time tracking after pruning
+                    yield self._create_token_update_event()
                     # Yield system event for GUI to display summary
                     yield {
                         "type": "system",
@@ -1497,7 +1568,8 @@ Check system warnings for required actions.'''
                     # Update execution state: transition to WAITING_FOR_USER
                     events = self.state.set_execution_state(ExecutionState.WAITING_FOR_USER)
                     for event in events:
-                        self._handle_state_event(event)
+                        for yielded_event in self._handle_state_event(event):
+                            yield yielded_event
                     
                     if self.logger:
                         self.logger.log_user_interaction_requested(user_interaction_message)
@@ -1523,7 +1595,8 @@ Check system warnings for required actions.'''
                     # Update execution state: transition to FINALIZED
                     events = self.state.set_execution_state(ExecutionState.FINALIZED)
                     for event in events:
-                        self._handle_state_event(event)
+                        for yielded_event in self._handle_state_event(event):
+                            yield yielded_event
                     
                     if self.logger:
                         self.logger.log_final_detected(final_content)
@@ -1549,7 +1622,8 @@ Check system warnings for required actions.'''
                 # Update execution state: transition to FINALIZED
                 events = self.state.set_execution_state(ExecutionState.FINALIZED)
                 for event in events:
-                    self._handle_state_event(event)
+                    for yielded_event in self._handle_state_event(event):
+                        yield yielded_event
                 
                 if self.logger:
                     self.logger.log_agent_end("final_no_tools", "Final answer without tool calls", content)
@@ -1573,7 +1647,8 @@ Check system warnings for required actions.'''
         # Update execution state: transition to MAX_TURNS_REACHED
         events = self.state.set_execution_state(ExecutionState.MAX_TURNS_REACHED)
         for event in events:
-            self._handle_state_event(event)
+            for yielded_event in self._handle_state_event(event):
+                yield yielded_event
         
         if self.logger:
             self.logger.log_max_turns_reached()

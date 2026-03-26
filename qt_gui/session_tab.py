@@ -312,6 +312,7 @@ class SessionTab(QWidget):
         self.presenter.status_message.connect(self.on_status_message)
         self.presenter.error_occurred.connect(self.on_error_occurred)
         self.presenter.config_changed.connect(self.on_config_changed)
+        self.presenter.conversation_changed.connect(self.on_conversation_changed)
 
     # ----- Signal Handlers -----
 
@@ -480,6 +481,12 @@ class SessionTab(QWidget):
         """Handle configuration changes from presenter."""
         # Update UI controls if needed
         pass
+    
+    @pyqtSlot()
+    def on_conversation_changed(self):
+        """Handle conversation changes from presenter."""
+        # Refresh conversation display
+        self.display_loaded_conversation()
     # ----- Agent Control Methods -----
     
     def run_agent(self):
