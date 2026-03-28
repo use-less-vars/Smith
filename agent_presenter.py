@@ -71,7 +71,8 @@ class AgentPresenter(QObject):
         self._dirty = False  # Tracks unsaved changes since last save
 
         self._external_file_path = None  # Path to external file if session was saved via Save As
-        print(f"[Presenter] Session store directory: {self.session_store.sessions_dir}")
+        if os.environ.get('THOUGHTMACHINE_DEBUG'):
+            print(f"[Presenter] Session store directory: {self.session_store.sessions_dir}")
         self.context_builder = LastNBuilder(keep_last_messages=100000, keep_system_prompt=True)  # Keep effectively unlimited messages to preserve full session history during loading
         self.user_history: List[Dict[str, Any]] = []
         self.current_session: Optional[Session] = None
@@ -82,9 +83,11 @@ class AgentPresenter(QObject):
         self._session_callback: Optional[Callable] = None  # callback for session conversation change notifications
 
         # Event processing via signals
-        print(f"[Presenter] Connecting controller event_occurred to _process_event")
+        if os.environ.get('THOUGHTMACHINE_DEBUG'):
+            print(f"[Presenter] Connecting controller event_occurred to _process_event")
         self.controller.event_occurred.connect(self._process_event)
-        print(f"[Presenter] Connection made")
+        if os.environ.get('THOUGHTMACHINE_DEBUG'):
+            print(f"[Presenter] Connection made")
         
         # Load saved configuration if available
         self._load_config()
@@ -97,11 +100,13 @@ class AgentPresenter(QObject):
     @state.setter
     def state(self, new_state: ExecutionState):
         """Update state and emit signal."""
-        print(f"[Presenter] state setter: {self._state} -> {new_state}")
+        if os.environ.get('THOUGHTMACHINE_DEBUG'):
+            print(f"[Presenter] state setter: {self._state} -> {new_state}")
         if self._state != new_state:
             self._state = new_state
             self.state_changed.emit(new_state)
-            print(f"[Presenter] state changed signal emitted")
+            if os.environ.get('THOUGHTMACHINE_DEBUG'):
+                print(f"[Presenter] state changed signal emitted")
     
     def _load_default_config(self) -> dict:
         """Return default configuration dictionary."""
@@ -133,9 +138,11 @@ class AgentPresenter(QObject):
                 for key, value in saved_config.items():
                     if key in self._config:
                         self._config[key] = value
-                print(f"[Presenter] Loaded config from {self.config_path}")
+                if os.environ.get('THOUGHTMACHINE_DEBUG'):
+                    print(f"[Presenter] Loaded config from {self.config_path}")
         except Exception as e:
-            print(f"[Presenter] Error loading config: {e}")
+            if os.environ.get('THOUGHTMACHINE_DEBUG'):
+                print(f"[Presenter] Error loading config: {e}")
     
     def save_config(self, config: Optional[dict] = None):
         """Save configuration to file."""
@@ -143,9 +150,11 @@ class AgentPresenter(QObject):
             config_to_save = config or self._config
             with open(self.config_path, 'w') as f:
                 json.dump(config_to_save, f, indent=2)
-            print(f"[Presenter] Saved config to {self.config_path}")
+            if os.environ.get('THOUGHTMACHINE_DEBUG'):
+                print(f"[Presenter] Saved config to {self.config_path}")
         except Exception as e:
-            print(f"[Presenter] Error saving config: {e}")
+            if os.environ.get('THOUGHTMACHINE_DEBUG'):
+                print(f"[Presenter] Error saving config: {e}")
     
     def get_config(self) -> dict:
         """Return current configuration dictionary."""
@@ -338,7 +347,8 @@ class AgentPresenter(QObject):
             # If a session is bound, its user_history should be the same object (via _bind_session)
             # If they differ, log warning and sync content while preserving ObservableList
             if self.current_session is not None and self.current_session.user_history is not self.user_history:
-                print(f"[Presenter] WARNING: user_history references differ, syncing content")
+                if os.environ.get('THOUGHTMACHINE_DEBUG'):
+                    print(f"[Presenter] WARNING: user_history references differ, syncing content")
                 # Copy content to session's ObservableList (triggers notification)
                 self.current_session.user_history[:] = self.user_history
                 # Update our reference to the session's ObservableList
@@ -355,7 +365,8 @@ class AgentPresenter(QObject):
             preset_name: Optional preset name to use instead of config
         """
         if self.state != ExecutionState.IDLE:
-            print(f"[Presenter] Cannot start session in state {self.state}")
+            if os.environ.get('THOUGHTMACHINE_DEBUG'):
+                print(f"[Presenter] Cannot start session in state {self.state}")
             return
 
         # Clear session name only for a brand new session (no existing session ID)
@@ -413,7 +424,8 @@ class AgentPresenter(QObject):
         except Exception as e:
             self.state = ExecutionState.STOPPED
             self.error_occurred.emit(f"Failed to start session: {str(e)}", "")
-            print(f"[Presenter] Error starting session: {e}")
+            if os.environ.get('THOUGHTMACHINE_DEBUG'):
+                print(f"[Presenter] Error starting session: {e}")
     
 
 
@@ -427,9 +439,11 @@ class AgentPresenter(QObject):
             if hasattr(agent, 'reset_rate_limiting'):
                 try:
                     agent.reset_rate_limiting()
-                    print(f"[Presenter] Reset rate limiting on agent before restart")
+                    if os.environ.get('THOUGHTMACHINE_DEBUG'):
+                        print(f"[Presenter] Reset rate limiting on agent before restart")
                 except Exception as e:
-                    print(f"[Presenter] Failed to reset rate limiting: {e}")
+                    if os.environ.get('THOUGHTMACHINE_DEBUG'):
+                        print(f"[Presenter] Failed to reset rate limiting: {e}")
         self.controller.reset()
         # NOTE: Do NOT reset total_input/total_output/context_length; they are session properties.
         # They will be carried over to the new agent via config's initial_* tokens.
@@ -461,7 +475,8 @@ class AgentPresenter(QObject):
             try:
                 self.save_session()
             except Exception as e:
-                print(f"[Presenter] Auto-save before restart failed: {e}")
+                if os.environ.get('THOUGHTMACHINE_DEBUG'):
+                    print(f"[Presenter] Auto-save before restart failed: {e}")
                 # Continue anyway
 
         # If already IDLE, finalize immediately
@@ -494,7 +509,8 @@ class AgentPresenter(QObject):
         """
         # Auto-save current session if requested and has unsaved changes
         if auto_save_current and self.has_unsaved_changes():
-            print("[Presenter] Auto-saving current session before starting new session")
+            if os.environ.get('THOUGHTMACHINE_DEBUG'):
+                print("[Presenter] Auto-saving current session before starting new session")
             self.auto_save_current_session()
         
         # If agent is running, stop it first (best effort)
@@ -517,7 +533,8 @@ class AgentPresenter(QObject):
         # Ensure state is IDLE
         self.state = ExecutionState.IDLE
         self.status_message.emit("Ready for new session")
-        print(f"[Presenter] Started new session{' named ' + name if name else ''}")
+        if os.environ.get('THOUGHTMACHINE_DEBUG'):
+            print(f"[Presenter] Started new session{' named ' + name if name else ''}")
 
     def continue_session(self, query: str):
         """
@@ -527,7 +544,8 @@ class AgentPresenter(QObject):
             query: User query string
         """
         if self.state not in [ExecutionState.PAUSED, ExecutionState.WAITING_FOR_USER]:
-            print(f"[Presenter] Cannot continue session in state {self.state}")
+            if os.environ.get('THOUGHTMACHINE_DEBUG'):
+                print(f"[Presenter] Cannot continue session in state {self.state}")
             return
         
         try:
@@ -543,7 +561,8 @@ class AgentPresenter(QObject):
             self.controller.request_pause()
             self.state = ExecutionState.PAUSING
         else:
-            print(f"[Presenter] Cannot pause in state {self.state}")
+            if os.environ.get('THOUGHTMACHINE_DEBUG'):
+                print(f"[Presenter] Cannot pause in state {self.state}")
     
 
         self.state = ExecutionState.STOPPING
@@ -560,7 +579,8 @@ class AgentPresenter(QObject):
             # Build session from current state
             session = self._build_session_from_current_state()
             if session is None:
-                print(f"[Presenter] No session to save")
+                if os.environ.get('THOUGHTMACHINE_DEBUG'):
+                    print(f"[Presenter] No session to save")
                 return False
 
             # Ensure we have a session_id (new session if None)
@@ -593,16 +613,19 @@ class AgentPresenter(QObject):
             self._dirty = False
 
 
-            print(f"[Presenter] Session saved to store: {self.session_store.get_session_path(session.session_id)}")
+            if os.environ.get('THOUGHTMACHINE_DEBUG'):
+                print(f"[Presenter] Session saved to store: {self.session_store.get_session_path(session.session_id)}")
             # Also export to external file if set
             if self._external_file_path:
                 try:
                     self.export_session(self._external_file_path, set_as_external=False)
                 except Exception as e:
-                    print(f"[Presenter] Failed to export to external file: {e}")
+                    if os.environ.get('THOUGHTMACHINE_DEBUG'):
+                        print(f"[Presenter] Failed to export to external file: {e}")
             return True
         except Exception as e:
-            print(f"[Presenter] Error saving session: {e}")
+            if os.environ.get('THOUGHTMACHINE_DEBUG'):
+                print(f"[Presenter] Error saving session: {e}")
             traceback.print_exc()
             return False
 
@@ -622,7 +645,8 @@ class AgentPresenter(QObject):
             filepath = os.path.abspath(filepath)
             session = self._build_session_from_current_state()
             if session is None:
-                print(f"[Presenter] No session to export")
+                if os.environ.get('THOUGHTMACHINE_DEBUG'):
+                    print(f"[Presenter] No session to export")
                 return False
 
             # Use the session's ID if available, otherwise generate a temporary one for export
@@ -644,13 +668,15 @@ class AgentPresenter(QObject):
             with open(filepath, 'w') as f:
                 json.dump(session_dict, f, indent=2)
 
-            print(f"[Presenter] Session exported to {filepath}")
+            if os.environ.get('THOUGHTMACHINE_DEBUG'):
+                print(f"[Presenter] Session exported to {filepath}")
             if set_as_external:
                 self._update_external_file_path(filepath)
             # Note: we do NOT clear dirty flag because export does not affect session store
             return True
         except Exception as e:
-            print(f"[Presenter] Error exporting session: {e}")
+            if os.environ.get('THOUGHTMACHINE_DEBUG'):
+                print(f"[Presenter] Error exporting session: {e}")
             traceback.print_exc()
             return False
 
@@ -668,7 +694,8 @@ class AgentPresenter(QObject):
             True if saved or no need to save, False on error.
         """
         if not self.has_unsaved_changes():
-            print("[Presenter] No unsaved changes, skipping auto-save")
+            if os.environ.get('THOUGHTMACHINE_DEBUG'):
+                print("[Presenter] No unsaved changes, skipping auto-save")
             return True
         
 
@@ -676,19 +703,23 @@ class AgentPresenter(QObject):
         try:
             success = self.save_session()
             if success:
-                print("[Presenter] Auto-saved session successfully")
+                if os.environ.get('THOUGHTMACHINE_DEBUG'):
+                    print("[Presenter] Auto-saved session successfully")
                 # Also export to external file if set
                 if self._external_file_path:
                     try:
                         self.export_session(self._external_file_path, set_as_external=False)
                     except Exception as e:
-                        print(f"[Presenter] Failed to export to external file: {e}")
+                        if os.environ.get('THOUGHTMACHINE_DEBUG'):
+                            print(f"[Presenter] Failed to export to external file: {e}")
                 return True
             else:
-                print("[Presenter] Auto-save failed")
+                if os.environ.get('THOUGHTMACHINE_DEBUG'):
+                    print("[Presenter] Auto-save failed")
                 return False
         except Exception as e:
-            print(f"[Presenter] Error in auto-save: {e}")
+            if os.environ.get('THOUGHTMACHINE_DEBUG'):
+                print(f"[Presenter] Error in auto-save: {e}")
             return False        
     def load_session(self, filepath: str, auto_save: bool = True) -> bool:
         """Load a session from a JSON file.
@@ -702,7 +733,8 @@ class AgentPresenter(QObject):
         """
         # Auto-save current session before loading new one
         if auto_save and self.has_unsaved_changes():
-            print("[Presenter] Auto-saving current session before loading new session")
+            if os.environ.get('THOUGHTMACHINE_DEBUG'):
+                print("[Presenter] Auto-saving current session before loading new session")
             self.auto_save_current_session()
         
         try:
@@ -714,7 +746,8 @@ class AgentPresenter(QObject):
             # Check session version
             version = session_dict.get('version', 0)
             if version != 1:
-                print(f"[Presenter] Warning: Session version {version} is not current (1). Attempting to load anyway.")
+                if os.environ.get('THOUGHTMACHINE_DEBUG'):
+                    print(f"[Presenter] Warning: Session version {version} is not current (1). Attempting to load anyway.")
 
             # Reconstruct Session object
             session = Session.from_persistable_dict(session_dict)
@@ -726,10 +759,12 @@ class AgentPresenter(QObject):
             if not self.session_name:
                 self.session_name = os.path.basename(filepath)
     
-            print(f"[Presenter] Session loaded from {filepath}: {len(session.user_history)} messages")
+            if os.environ.get('THOUGHTMACHINE_DEBUG'):
+                print(f"[Presenter] Session loaded from {filepath}: {len(session.user_history)} messages")
             return True
         except Exception as e:
-            print(f"[Presenter] Error loading session: {e}")
+            if os.environ.get('THOUGHTMACHINE_DEBUG'):
+                print(f"[Presenter] Error loading session: {e}")
             traceback.print_exc()
             return False
 
@@ -737,17 +772,22 @@ class AgentPresenter(QObject):
         """Load the session marked as current from the store.
         Typically called on application startup.
         """
-        print(f"[Presenter] load_current_session called")
+        if os.environ.get('THOUGHTMACHINE_DEBUG'):
+            print(f"[Presenter] load_current_session called")
         session_id = self.session_store.get_current_session_id()
-        print(f"[Presenter] Got session_id from store: {session_id}")
+        if os.environ.get('THOUGHTMACHINE_DEBUG'):
+            print(f"[Presenter] Got session_id from store: {session_id}")
         if not session_id:
-            print(f"[Presenter] No current session marker")
+            if os.environ.get('THOUGHTMACHINE_DEBUG'):
+                print(f"[Presenter] No current session marker")
             return False
-        print(f"[Presenter] Loading session {session_id} from store")
+        if os.environ.get('THOUGHTMACHINE_DEBUG'):
+            print(f"[Presenter] Loading session {session_id} from store")
         session = self.session_store.load_session(session_id)
         if session is None:
             # Stale marker, clear it
-            print(f"[Presenter] Session not found, clearing stale marker")
+            if os.environ.get('THOUGHTMACHINE_DEBUG'):
+                print(f"[Presenter] Session not found, clearing stale marker")
             self.session_store.set_current_session_id(None)
             return False
         # Set as current session
@@ -766,15 +806,18 @@ class AgentPresenter(QObject):
                 self.session_name = f"Session {session.created_at:%Y-%m-%d %H:%M}"
             else:
                 self.session_name = "Untitled Session"
-        print(f"[Presenter] Current session loaded from store: {session_id} ({self.session_name})")
+        if os.environ.get('THOUGHTMACHINE_DEBUG'):
+            print(f"[Presenter] Current session loaded from store: {session_id} ({self.session_name})")
         return True
 
     def load_session_by_id(self, session_id: str) -> bool:
         """Load a session by ID from the session store."""
-        print(f"[Presenter] Loading session {session_id} from store")
+        if os.environ.get('THOUGHTMACHINE_DEBUG'):
+            print(f"[Presenter] Loading session {session_id} from store")
         session = self.session_store.load_session(session_id)
         if session is None:
-            print(f"[Presenter] Session {session_id} not found in store")
+            if os.environ.get('THOUGHTMACHINE_DEBUG'):
+                print(f"[Presenter] Session {session_id} not found in store")
             return False
         # Set as current session
         self.current_session = session
@@ -792,7 +835,8 @@ class AgentPresenter(QObject):
                 self.session_name = f"Session {session.created_at:%Y-%m-%d %H:%M}"
             else:
                 self.session_name = "Untitled Session"
-        print(f"[Presenter] Session loaded from store: {session_id} ({self.session_name})")
+        if os.environ.get('THOUGHTMACHINE_DEBUG'):
+            print(f"[Presenter] Session loaded from store: {session_id} ({self.session_name})")
         return True
 
     def list_sessions(self) -> List[Dict[str, Any]]:
@@ -817,7 +861,8 @@ class AgentPresenter(QObject):
                 })
             return result
         except Exception as e:
-            print(f"[Presenter] Error listing sessions: {e}")
+            if os.environ.get('THOUGHTMACHINE_DEBUG'):
+                print(f"[Presenter] Error listing sessions: {e}")
             return []
 
     def delete_session(self, session_id: str) -> bool:
@@ -832,7 +877,8 @@ class AgentPresenter(QObject):
         try:
             success = self.session_store.delete_session(session_id)
             if success:
-                print(f"[Presenter] Deleted session {session_id}")
+                if os.environ.get('THOUGHTMACHINE_DEBUG'):
+                    print(f"[Presenter] Deleted session {session_id}")
                 # If we deleted the current session, clear session state
                 if self.current_session_id == session_id:
                     self.current_session = None
@@ -843,10 +889,12 @@ class AgentPresenter(QObject):
                     # Clear the marker file
                     self.session_store.set_current_session_id(None)
             else:
-                print(f"[Presenter] Session {session_id} not found")
+                if os.environ.get('THOUGHTMACHINE_DEBUG'):
+                    print(f"[Presenter] Session {session_id} not found")
             return success
         except Exception as e:
-            print(f"[Presenter] Error deleting session: {e}")
+            if os.environ.get('THOUGHTMACHINE_DEBUG'):
+                print(f"[Presenter] Error deleting session: {e}")
             return False
 
     def rename_session(self, session_id: str, new_name: str) -> bool:
@@ -878,7 +926,8 @@ class AgentPresenter(QObject):
                 self.session_store.save_session(session)
                 return True
         except Exception as e:
-            print(f"[Presenter] Error renaming session {session_id}: {e}")
+            if os.environ.get('THOUGHTMACHINE_DEBUG'):
+                print(f"[Presenter] Error renaming session {session_id}: {e}")
             return False
 
     def _build_session_from_current_state(self) -> Optional[Session]:
@@ -903,7 +952,8 @@ class AgentPresenter(QObject):
             agent_config = self.create_agent_config()
             session_config = self._build_session_config(agent_config)
         except Exception as e:
-            print(f"[Presenter] Error building session config: {e}")
+            if os.environ.get('THOUGHTMACHINE_DEBUG'):
+                print(f"[Presenter] Error building session config: {e}")
             return None
 
         # Preserve full conversation including system, user, assistant, and tool messages
@@ -1046,7 +1096,8 @@ class AgentPresenter(QObject):
             event: Event dictionary from AgentController
         """
         event_type = event.get("type")
-        print(f"[Presenter] Processing event: {event_type}")
+        if os.environ.get('THOUGHTMACHINE_DEBUG'):
+            print(f"[Presenter] Processing event: {event_type}")
         
         # Skip filtering for state/terminal events as they need to be shown regardless
         state_event_types = ["error", "paused", "stopped", "thread_finished", "final", "max_turns", "user_interaction_requested", "rate_limit_warning", "token_warning", "turn_warning"]
@@ -1056,11 +1107,13 @@ class AgentPresenter(QObject):
             if event_session_id is not None:
                 event_session_id = str(event_session_id)
                 if event_session_id != self.current_session_id:
-                    print(f"[Presenter] Ignoring event from old session {event_session_id}, current is {self.current_session_id}")
+                    if os.environ.get('THOUGHTMACHINE_DEBUG'):
+                        print(f"[Presenter] Ignoring event from old session {event_session_id}, current is {self.current_session_id}")
                     return
         
         # Emit raw event for UI to handle display
-        print(f"[Presenter] Emitting event_received: {event_type}")
+        if os.environ.get('THOUGHTMACHINE_DEBUG'):
+            print(f"[Presenter] Emitting event_received: {event_type}")
         if event_type != "token_update":
             self.event_received.emit(event)
         
@@ -1172,7 +1225,8 @@ class AgentPresenter(QObject):
                 self.auto_save_current_session()
             
         elif event_type == "paused":
-            print(f"[Presenter] Handling paused event")
+            if os.environ.get('THOUGHTMACHINE_DEBUG'):
+                print(f"[Presenter] Handling paused event")
             self.state = ExecutionState.PAUSED
             self.status_message.emit("Paused")
             # Auto-save session on pause to preserve state
@@ -1180,7 +1234,8 @@ class AgentPresenter(QObject):
                 self.auto_save_current_session()
             
         elif event_type in ["final", "stopped", "max_turns", "thread_finished"]:
-            print(f"[Presenter] Handling terminal event: {event_type}")
+            if os.environ.get('THOUGHTMACHINE_DEBUG'):
+                print(f"[Presenter] Handling terminal event: {event_type}")
             if event_type == "final":
                 self.state = ExecutionState.FINALIZED
                 self.status_message.emit("Completed successfully")
@@ -1240,5 +1295,6 @@ class AgentPresenter(QObject):
             try:
                 self.auto_save_current_session()
             except Exception as e:
-                print(f"[Presenter] Auto-save on cleanup failed: {e}")
+                if os.environ.get('THOUGHTMACHINE_DEBUG'):
+                    print(f"[Presenter] Auto-save on cleanup failed: {e}")
         self.state = ExecutionState.IDLE

@@ -87,7 +87,8 @@ class Agent:
             logger.debug(f"Session ID: {self.session_id}")
             logger.debug(f"Original session.user_history length: {len(session.user_history)}")
             logger.debug("--- Original history ---")
-            for i, msg in enumerate(session.user_history):
+            max_to_show = 10
+            for i, msg in enumerate(session.user_history[:max_to_show]):
                 role = msg.get('role', 'NO_ROLE')
                 content_preview = str(msg.get('content', ''))[:80].replace('\n', ' ')
                 if role == 'tool':
@@ -101,6 +102,8 @@ class Agent:
                         logger.debug(f"  [{i}] {role}: {content_preview}...")
                 else:
                     logger.debug(f"  [{i}] {role}: {content_preview}...")
+            if len(session.user_history) > max_to_show:
+                logger.debug(f"  ... {len(session.user_history) - max_to_show} more messages")
             
             # Reconstruct pruned conversation: sysprompt + most recent summary + recent turns
             self._reconstruct_pruned_conversation_from_session()
@@ -108,7 +111,8 @@ class Agent:
             # DEBUG: Print reconstructed conversation
             logger.debug("\n--- Reconstructed conversation ---")
             logger.debug(f"Reconstructed conversation length: {len(self.conversation)}")
-            for i, msg in enumerate(self.conversation):
+            max_to_show = 10
+            for i, msg in enumerate(self.conversation[:max_to_show]):
                 role = msg.get('role', 'NO_ROLE')
                 content_preview = str(msg.get('content', ''))[:80].replace('\n', ' ')
                 if role == 'tool':
@@ -122,6 +126,8 @@ class Agent:
                         logger.debug(f"  [{i}] {role}: {content_preview}...")
                 else:
                     logger.debug(f"  [{i}] {role}: {content_preview}...")
+            if len(self.conversation) > max_to_show:
+                logger.debug(f"  ... {len(self.conversation) - max_to_show} more messages")
             logger.debug("=== END DEBUG ===\n")
         else:
             self.session = None
@@ -228,7 +234,7 @@ class Agent:
         if self.session is not None:
             full_history = self.session.user_history
             logger.debug(f"Full session history: {len(full_history)} messages")
-            for i, msg in enumerate(full_history):
+            for i, msg in enumerate(full_history[:10]):
                 role = msg.get('role', 'NO_ROLE')
                 content_preview = str(msg.get('content', ''))[:60].replace('\n', ' ')
                 metadata = {k: v for k, v in msg.items() if k not in ['role', 'content', 'tool_calls', 'tool_call_id', 'name', 'reasoning_content']}
@@ -245,9 +251,10 @@ class Agent:
                 else:
                     logger.debug(f"  [{i}] {role}: {content_preview}...{meta_str}")
         
+            if len(full_history) > 10: logger.debug(f"  ... {len(full_history) - 10} more messages")
         # Show current conversation (what agent sees)
         logger.debug(f"\nAgent conversation: {len(self.conversation)} messages")
-        for i, msg in enumerate(self.conversation):
+        for i, msg in enumerate(self.conversation[:10]):
             role = msg.get('role', 'NO_ROLE')
             content_preview = str(msg.get('content', ''))[:60].replace('\n', ' ')
             if role == 'tool':
@@ -262,11 +269,12 @@ class Agent:
             else:
                 logger.debug(f"  [{i}] {role}: {content_preview}...")
         
+        if len(self.conversation) > 10: logger.debug(f"  ... {len(self.conversation) - 10} more messages")
         # Show runtime context if provided
         if messages is not None:
             logger.debug(f"\nRuntime context (sent to LLM): {len(messages)} messages")
             estimated_tokens = 0
-            for i, msg in enumerate(messages):
+            for i, msg in enumerate(messages[:10]):
                 role = msg.get('role', 'NO_ROLE')
                 content_preview = str(msg.get('content', ''))[:60].replace('\n', ' ')
                 estimated_tokens += self._estimate_tokens(msg)
@@ -283,6 +291,7 @@ class Agent:
                     logger.debug(f"  [{i}] {role}: {content_preview}...")
             logger.debug(f"Estimated tokens for runtime context: ~{estimated_tokens}")
         
+            if len(messages) > 10: logger.debug(f"  ... {len(messages) - 10} more messages")
         # Show token usage comparison if available
         if usage is not None:
             logger.debug(f"\nToken usage from LLM:")
@@ -667,37 +676,27 @@ class Agent:
         logger.debug(f"[DEBUG_PRUNING] session.user_history length: {len(user_history)}")
         logger.debug(f"[DEBUG_PRUNING] session.summary set: {self.session.summary is not None}")
         
-        # Separate system messages and other messages
-        system_messages = [msg for msg in user_history if msg.get("role") == "system"]
+        # Find insertion index where summary should be inserted
+        # This is the index in user_history where the first kept turn begins
+        # We need to scan the history and count turns, ignoring system messages
+        insertion_idx = self._find_summary_insertion_index(user_history, keep_recent_turns)
+        logger.debug(f"[DEBUG_PRUNING] Computed insertion_idx={insertion_idx} for keep_recent_turns={keep_recent_turns}")
+
+        # For logging: compute turns count
         other_messages = [msg for msg in user_history if msg.get("role") != "system"]
+        turns = self._group_messages_into_turns(other_messages) if other_messages else []
+        kept_turns_count = min(keep_recent_turns, len(turns)) if keep_recent_turns > 0 else 0
+        logger.debug(f"[DEBUG_PRUNING] Found {len(turns)} turns total, keeping {kept_turns_count} turns")
         
-        if not other_messages:
-            logger.debug("[DEBUG_PRUNING] No non-system messages to prune")
-            return
-        
-        # Group messages into turns
-        turns = self._group_messages_into_turns(other_messages)
-        logger.debug(f"[DEBUG_PRUNING] Grouped into {len(turns)} turns from {len(other_messages)} non-system messages")
-        
-        # Determine how many turns to keep from the end
-        if keep_recent_turns <= 0:
-            kept_turns = []
+        # Count discarded messages for metadata
+        if insertion_idx >= len(user_history):
+            discarded_msg_count = len(user_history)
         else:
-            kept_turns = turns[-keep_recent_turns:] if keep_recent_turns <= len(turns) else turns
-        
-        logger.debug(f"[DEBUG_PRUNING] Keeping {len(kept_turns)} turns (requested keep_recent_turns={keep_recent_turns}, total turns={len(turns)})")
-        
-        # Compute insertion index: where summary should be inserted in user_history
-        # This is the point where we conceptually "prune" older turns
-        if kept_turns:
-            first_kept_turn_idx = len(turns) - len(kept_turns)
-            # Count messages in discarded turns
-            discarded_msg_count = sum(len(turns[i]) for i in range(first_kept_turn_idx))
-        else:
-            discarded_msg_count = len(other_messages)
-        
-        insertion_idx = discarded_msg_count + len(system_messages)
-        
+            # Count non-system messages before insertion_idx
+            discarded_msg_count = 0
+            for i in range(insertion_idx):
+                if user_history[i].get("role") != "system":
+                    discarded_msg_count += 1        
         # Create summary system message with metadata
         MAX_SUMMARY_LENGTH = 4000
         truncated_summary = summary
@@ -742,7 +741,7 @@ class Agent:
         # Debug logging
         if self.logger and hasattr(self.logger, 'py_logger'):
             self.logger.py_logger.info(
-                f"[PRUNING] Added summary to append-only history: kept {len(kept_turns)} turns, "
+                f"[PRUNING] Added summary to append-only history: kept {kept_turns_count} turns, "
                 f"inserted summary at index {insertion_idx}, "
                 f"history length: {len(user_history)} messages"
             )
@@ -842,11 +841,14 @@ class Agent:
         debug = os.environ.get('DEBUG_TURN_GROUPING')
         if debug:
             logger.debug(f"[DEBUG_TURN_GROUPING] Grouping {len(messages)} messages")
-            for i, msg in enumerate(messages):
+            max_to_show = 10
+            for i, msg in enumerate(messages[:max_to_show]):
                 role = msg.get("role")
                 content_preview = str(msg.get("content", ""))[:50]
                 has_tool_calls = "tool_calls" in msg and msg["tool_calls"]
                 logger.debug(f"  [{i}] {role}: {content_preview}... tool_calls={has_tool_calls}")
+            if len(messages) > max_to_show:
+                logger.debug(f"  ... and {len(messages) - max_to_show} more messages")
         
         for msg in messages:
             role = msg.get("role")
@@ -862,13 +864,34 @@ class Agent:
                 current_turn = [msg]
             elif role == "assistant" and msg.get("tool_calls"):
                 # Assistant with tool_calls can start a turn (after pruning)
+                # However, if current turn already starts with a user, this assistant belongs to that turn
                 if current_turn:
-                    turns.append(current_turn)
-                current_turn = [msg]
+                    if current_turn[0].get("role") == "user":
+                        # Continue current turn (user -> assistant with tools)
+                        current_turn.append(msg)
+                    else:
+                        # Start new turn
+                        turns.append(current_turn)
+                        current_turn = [msg]
+                else:
+                    # Start new turn
+                    current_turn = [msg]
             else:
-                # Other messages (assistant without tools, tool) - add to current turn
+                # Other messages (assistant without tools, tool) - add to current turn with validation
                 if current_turn:
-                    current_turn.append(msg)
+                    # For tool messages, validate they follow an assistant with tool_calls
+                    if role == 'tool':
+                        if current_turn and current_turn[-1].get('role') == 'assistant' and current_turn[-1].get('tool_calls'):
+                            current_turn.append(msg)
+                        else:
+                            # Orphaned tool message - skip it
+                            if debug:
+                                tool_call_id = msg.get('tool_call_id', 'unknown')
+                                logger.debug(f"[DEBUG_TURN_GROUPING] Discarding orphaned tool message: {tool_call_id}")
+                            continue
+                    else:
+                        # assistant without tools - add to current turn
+                        current_turn.append(msg)
                 else:
                     # Orphaned message without user or assistant-with-tools
                     # Discard it
@@ -898,11 +921,107 @@ class Agent:
         
         if debug:
             logger.debug(f"[DEBUG_TURN_GROUPING] Returned {len(valid_turns)} valid turns")
-            for i, turn in enumerate(valid_turns):
+            max_to_show = 10
+            for i, turn in enumerate(valid_turns[:max_to_show]):
                 logger.debug(f"  Turn {i}: {[msg.get('role') for msg in turn]}")
+            if len(valid_turns) > max_to_show:
+                logger.debug(f"  ... and {len(valid_turns) - max_to_show} more turns")
         
         return valid_turns
-    
+
+    def _find_summary_insertion_index(self, user_history: List[Dict[str, Any]], keep_recent_turns: int) -> int:
+        """Find index in user_history where summary should be inserted.
+        
+        Returns the index of the first message of the first kept turn.
+        If keep_recent_turns is 0 or no turns to keep, returns len(user_history).
+        """
+        if keep_recent_turns <= 0:
+            return len(user_history)
+        
+        # Scan history to count turns and find boundary
+        turns = []
+        current_turn = []
+        turn_start_indices = []  # index in user_history where each turn starts
+        
+        for i, msg in enumerate(user_history):
+            role = msg.get("role")
+            
+            if role == "system":
+                # System messages don't affect turn grouping
+                continue
+                
+            if role == "user":
+                # User starts new turn
+                if current_turn:
+                    turns.append(current_turn)
+                current_turn = [msg]
+                turn_start_indices.append(i)  # Record start index of this new turn
+            elif role == "assistant" and msg.get("tool_calls"):
+                # Assistant with tool_calls can start a turn (after pruning)
+                # However, if current turn already starts with a user, this assistant belongs to that turn
+                if current_turn:
+                    if current_turn[0].get("role") == "user":
+                        # Continue current turn (user -> assistant with tools)
+                        current_turn.append(msg)
+                    else:
+                        # Start new turn
+                        turns.append(current_turn)
+                        current_turn = [msg]
+                        turn_start_indices.append(i)  # Record start index of this new turn
+                else:
+                    # Start new turn
+                    current_turn = [msg]
+                    turn_start_indices.append(i)  # Record start index of this new turn
+            else:
+                # Other messages (assistant without tools, tool) - add to current turn if we have one
+                if current_turn:
+                    # For tool messages, validate they follow an assistant with tool_calls
+                    if role == 'tool':
+                        if current_turn and current_turn[-1].get('role') == 'assistant' and current_turn[-1].get('tool_calls'):
+                            current_turn.append(msg)
+                        else:
+                            # Orphaned tool message - skip it
+                            continue
+                    else:
+                        # assistant without tools - add to current turn
+                        current_turn.append(msg)
+                else:
+                    # Orphaned message without user or assistant-with-tools
+                    # Skip for turn counting
+                    continue
+        
+        if current_turn:
+            turns.append(current_turn)
+        
+        # Filter valid turns (starting with user or assistant-with-tools)
+        valid_turn_indices = []
+        for idx, turn in enumerate(turns):
+            if not turn:
+                continue
+            first_msg = turn[0]
+            first_role = first_msg.get("role")
+            if first_role == "user" or (first_role == "assistant" and first_msg.get("tool_calls")):
+                valid_turn_indices.append(idx)
+        
+        if not valid_turn_indices:
+            return len(user_history)
+        
+        # Determine which turns to keep
+        if keep_recent_turns > len(valid_turn_indices):
+            keep_recent_turns = len(valid_turn_indices)
+        
+        # Index of first kept turn in valid_turn_indices
+        first_kept_valid_idx = len(valid_turn_indices) - keep_recent_turns
+        # Map back to turns list index
+        first_kept_turn_idx = valid_turn_indices[first_kept_valid_idx]
+        
+        # Get start index of that turn in user_history
+        if first_kept_turn_idx < len(turn_start_indices):
+            return turn_start_indices[first_kept_turn_idx]
+        else:
+            # Should not happen, fallback
+            return len(user_history)
+
     def _reconstruct_pruned_conversation_from_session(self):
         """No-op with HistoryProvider: runtime context is built dynamically."""
         # With HistoryProvider, we keep the full append-only history in self.conversation
@@ -1082,7 +1201,8 @@ class Agent:
                 self.logger.py_logger.info(f"[CONTEXT] Max context tokens: {max_context_tokens}, model: {self.config.model}")
             # DEBUG: Print conversation before building context
             logger.debug("\n=== CONVERSATION BEFORE CONTEXT BUILDER ===")
-            for i, msg in enumerate(self.conversation):
+            max_to_show = 10
+            for i, msg in enumerate(self.conversation[:max_to_show]):
                 role = msg.get('role', 'NO_ROLE')
                 content_preview = str(msg.get('content', ''))[:80].replace('\n', ' ')
                 if role == 'tool':
@@ -1096,6 +1216,8 @@ class Agent:
                         logger.debug(f"  [{i}] {role}: {content_preview}...")
                 else:
                     logger.debug(f"  [{i}] {role}: {content_preview}...")
+            if len(self.conversation) > max_to_show:
+                logger.debug(f"  ... {len(self.conversation) - max_to_show} more messages")
             logger.debug("=== END DEBUG ===\n")
             
             # Debug context monitoring
@@ -1221,7 +1343,8 @@ class Agent:
                     chat_kwargs["top_p"] = self.runtime_params.top_p
                 # DEBUG: Print messages being sent to API
                 logger.debug("\n=== CHAT COMPLETION MESSAGES ===")
-                for i, msg in enumerate(messages):
+                max_to_show = 10
+                for i, msg in enumerate(messages[:max_to_show]):
                     role = msg.get('role', 'NO_ROLE')
                     content_preview = str(msg.get('content', ''))[:80].replace('\n', ' ')
                     if role == 'tool':
@@ -1235,6 +1358,8 @@ class Agent:
                             logger.debug(f"  [{i}] {role}: {content_preview}...")
                     else:
                         logger.debug(f"  [{i}] {role}: {content_preview}...")
+                if len(messages) > max_to_show:
+                    logger.debug(f"  ... {len(messages) - max_to_show} more messages")
                 logger.debug("=== END DEBUG ===\n")
                 
                 response = self.provider.chat_completion(

@@ -20,6 +20,37 @@ logger = logging.getLogger(__name__)
 # Default number of recent turns to keep after a summary
 DEFAULT_KEEP_TURNS = 5
 
+# Debug flag for detailed history provider logging
+DEBUG_HISTORY_PROVIDER = os.environ.get('DEBUG_HISTORY_PROVIDER') is not None
+DEBUG_CONTEXT = os.environ.get('DEBUG_CONTEXT') is not None
+
+# Configure logging if debug flags are set
+if DEBUG_HISTORY_PROVIDER or DEBUG_CONTEXT:
+    import sys
+    # Only configure specific loggers, not the root logger
+    # This prevents verbose output from openai, httpcore, httpx, etc.
+    debug_loggers = ['session.history_provider', 'session.context_builder', 'agent']
+    
+    # Create a formatter
+    formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    
+    # Create a handler for stderr
+    handler = logging.StreamHandler(sys.stderr)
+    handler.setFormatter(formatter)
+    handler.setLevel(logging.DEBUG)
+    
+    # Configure each logger
+    for logger_name in debug_loggers:
+        logger_obj = logging.getLogger(logger_name)
+        logger_obj.setLevel(logging.DEBUG)
+        # Remove existing handlers to avoid duplicates
+        logger_obj.handlers = []
+        logger_obj.addHandler(handler)
+        logger_obj.propagate = False  # Don't propagate to root logger
+    
+    # Also set root logger to WARNING to suppress other DEBUG messages
+    logging.getLogger().setLevel(logging.WARNING)
+
 
 class HistoryProvider:
     """Manages conversation history for token-limited LLM context windows."""
@@ -44,11 +75,63 @@ class HistoryProvider:
         )
         
         # Debug output
-        if os.environ.get('DEBUG_CONTEXT'):
+        if DEBUG_CONTEXT:
             logger.debug(f'[DEBUG_CONTEXT] HistoryProvider.get_context_for_llm: full history={len(self.session.user_history)} messages, context={len(context)} messages')
             # Show token count if token_limit set
             if self.token_limit:
                 logger.debug(f'[DEBUG_CONTEXT] Token limit: {self.token_limit}')
+        
+        # Validate context and debug logging
+        if DEBUG_HISTORY_PROVIDER:
+            logger.info(f'[DEBUG_HISTORY_PROVIDER] Original history ({len(self.session.user_history)} messages):')
+            max_to_show = 10
+            for i, msg in enumerate(self.session.user_history[:max_to_show]):
+                role = msg.get('role')
+                content_preview = str(msg.get('content', ''))[:100].replace('\n', ' ')
+                tool_calls = msg.get('tool_calls')
+                logger.info(f'  [{i}] {role}: {content_preview} tool_calls={tool_calls}')
+            if len(self.session.user_history) > max_to_show:
+                logger.info(f'  ... and {len(self.session.user_history) - max_to_show} more messages')
+            logger.info(f'[DEBUG_HISTORY_PROVIDER] Context ({len(context)} messages):')
+            max_to_show = 10
+            for i, msg in enumerate(context[:max_to_show]):
+                role = msg.get('role')
+                content_preview = str(msg.get('content', ''))[:100].replace('\n', ' ')
+                tool_calls = msg.get('tool_calls')
+                logger.info(f'  [{i}] {role}: {content_preview} tool_calls={tool_calls}')
+            if len(context) > max_to_show:
+                logger.info(f'  ... and {len(context) - max_to_show} more messages')
+        
+        # Validate tool message ordering
+        valid = True
+        for i, msg in enumerate(context):
+            role = msg.get('role')
+            if role == 'tool':
+                # Check previous messages backwards until we find an assistant message
+                found_assistant_with_tool_calls = False
+                for j in range(i-1, -1, -1):
+                    prev_msg = context[j]
+                    prev_role = prev_msg.get('role')
+                    if prev_role == 'assistant':
+                        # Check if this assistant has tool_calls
+                        if prev_msg.get('tool_calls'):
+                            found_assistant_with_tool_calls = True
+                        # Stop searching at previous assistant
+                        break
+                    elif prev_role == 'user':
+                        # No assistant between user and tool -> invalid
+                        break
+                if not found_assistant_with_tool_calls:
+                    logger.warning(
+                        f'[DEBUG_HISTORY_PROVIDER] Tool message at index {i} '
+                        f'does not follow assistant message with tool_calls'
+                    )
+                    if DEBUG_HISTORY_PROVIDER:
+                        logger.warning(f'  Tool message: {msg}')
+                    valid = False
+        
+        if not valid:
+            logger.error('[DEBUG_HISTORY_PROVIDER] Context validation failed: tool messages without preceding assistant tool_calls')
         
         self._cached_context = context
         return context
@@ -70,7 +153,7 @@ class HistoryProvider:
         self._cached_context = None
         
         # Debug output
-        if os.environ.get('DEBUG_CONTEXT'):
+        if DEBUG_CONTEXT:
             logger.debug(f'[DEBUG_CONTEXT] HistoryProvider.add_message: role={message.get("role")}, type={message.get("type", "N/A")}, tool_calls={message.get("tool_calls", "N/A")}')
         
         # Log the addition
@@ -191,7 +274,14 @@ class HistoryProvider:
             elif role == 'assistant':
                 current_turn.append(msg)
             elif role == 'tool':
-                current_turn.append(msg)
+                # Validate that previous message in current_turn is assistant with tool_calls
+                if current_turn and current_turn[-1].get('role') == 'assistant' and current_turn[-1].get('tool_calls'):
+                    current_turn.append(msg)
+                else:
+                    # Orphaned tool message - skip it (cannot be used without assistant)
+                    tool_call_id = msg.get('tool_call_id', 'unknown')
+                    logging.warning(f'[DEBUG_CONTEXT] Orphaned tool message skipped in history provider: {tool_call_id}. Previous message in turn: {current_turn[-1] if current_turn else "none"}')
+                    continue
             # system messages should already be filtered out
         
         if current_turn:
