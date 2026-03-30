@@ -125,7 +125,7 @@ class EventProcessor:
     
     def _process_user_interaction_event(self, event: Dict[str, Any]) -> None:
         """Process user interaction request event."""
-        self.session_lifecycle.state = ExecutionState.WAITING_FOR_USER
+        self.session_lifecycle.state = ExecutionState.PAUSED
         if self.gui_integration:
             self.gui_integration.emit_status_message("Waiting for user input")
         
@@ -152,7 +152,7 @@ class EventProcessor:
     def _process_terminal_event(self, event: Dict[str, Any], event_type: str) -> None:
         """Process terminal event (final, stopped, max_turns, thread_finished)."""
         if event_type == "final":
-            self.session_lifecycle.state = ExecutionState.FINALIZED
+            self.session_lifecycle.state = ExecutionState.PAUSED
             if self.gui_integration:
                 self.gui_integration.emit_status_message("Completed successfully")
             
@@ -163,7 +163,7 @@ class EventProcessor:
                 self.state_bridge.current_session.final_content = content
                 self.state_bridge.current_session.final_reasoning = reasoning
         elif event_type == "max_turns":
-            self.session_lifecycle.state = ExecutionState.MAX_TURNS_REACHED
+            self.session_lifecycle.state = ExecutionState.PAUSED
             if self.gui_integration:
                 self.gui_integration.emit_status_message("Max turns reached")
         else:  # "stopped" or "thread_finished"
@@ -172,9 +172,9 @@ class EventProcessor:
                 # This will be implemented in session lifecycle
                 pass
             else:
-                self.session_lifecycle.state = ExecutionState.STOPPED
+                self.session_lifecycle.state = ExecutionState.PAUSED
                 if self.gui_integration:
-                    message = "Stopped" if event_type == "stopped" else "Thread finished"
+                    message = "Paused" if event_type == "stopped" else "Thread finished"
                     self.gui_integration.emit_status_message(message)
         
         # Update conversation history
@@ -183,7 +183,7 @@ class EventProcessor:
     
     def _process_error_event(self, event: Dict[str, Any]) -> None:
         """Process error event."""
-        self.session_lifecycle.state = ExecutionState.STOPPED
+        self.session_lifecycle.state = ExecutionState.PAUSED
         error_msg = event.get("message", "Unknown error")
         traceback_text = event.get("traceback", "")
         

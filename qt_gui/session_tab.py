@@ -1308,18 +1308,95 @@ class SessionTab(QWidget):
         if not conversation:
             return
 
-        # Collect events from conversation
+        # Collect events from conversation with proper turn numbering
         events = []
+        current_turn = 0
+        in_turn = False  # Whether we're currently processing a turn (user->assistant->tools)
+        
         for msg in conversation:
-            # Map reasoning_content to reasoning for display
+            role = msg['role']
+            content = msg['content']
             reasoning = msg.get('reasoning_content')
+            tool_calls = msg.get('tool_calls')
+            tool_call_id = msg.get('tool_call_id')
+            
+            # Start new turn on user messages
+            if role == 'user':
+                current_turn += 1
+                in_turn = True
+            
+            # Assign turn number
+            turn = current_turn if in_turn else 0
+            
+            # Handle system messages separately (no turn)
+            if role == 'system':
+                event = {
+                    'type': 'system',
+                    'content': content,
+                    'timestamp': datetime.datetime.now().isoformat(),
+                    '_detail_level': self.presenter._config.get('detail', 'normal')
+                }
+                events.append(event)
+                continue
+            
+            # Handle tool messages (tool results)
+            if role == 'tool':
+                event = {
+                    'type': 'tool_result',
+                    'content': content,
+                    'tool_call_id': tool_call_id,
+                    'timestamp': datetime.datetime.now().isoformat(),
+                    '_detail_level': self.presenter._config.get('detail', 'normal')
+                }
+                event['turn'] = turn
+                events.append(event)
+                continue
+            
+            # Handle assistant messages with tool_calls
+            if role == 'assistant' and tool_calls:
+                # Create assistant turn event (without embedded tool_calls)
+                event = {
+                    'type': 'turn',
+                    'assistant_content': content,
+                    'timestamp': datetime.datetime.now().isoformat(),
+                    '_detail_level': self.presenter._config.get('detail', 'normal')
+                }
+                if reasoning is not None:
+                    event['reasoning'] = reasoning
+                event['turn'] = turn
+                events.append(event)
+                
+                # Create separate tool_call events for each tool call
+                for tc in tool_calls:
+                    # Extract function name and arguments from OpenAI format
+                    func = tc.get('function', {})
+                    tool_name = func.get('name', 'unknown')
+                    arguments = func.get('arguments', {})
+                    # Try to parse JSON arguments if string
+                    if isinstance(arguments, str):
+                        try:
+                            arguments = json.loads(arguments)
+                        except:
+                            pass
+                    
+                    tool_event = {
+                        'type': 'tool_call',
+                        'tool_name': tool_name,
+                        'arguments': arguments,
+                        'turn': turn,
+                        'timestamp': datetime.datetime.now().isoformat(),
+                        '_detail_level': self.presenter._config.get('detail', 'normal')
+                    }
+                    # Store tool_call_id for matching with tool results
+                    tool_event['tool_call_id'] = tc.get('id')
+                    events.append(tool_event)
+                continue
+            
+            # For other roles (user, assistant without tool_calls), use _create_chat_event
             event = self._create_chat_event(
-                msg['role'],
-                msg['content'],
-                msg.get('tool_calls'),
-                msg.get('tool_call_id'),
-                reasoning=reasoning
+                role, content, tool_calls, tool_call_id, reasoning=reasoning
             )
+            event['turn'] = turn
             events.append(event)
 
         # If the session has a final_content (from Final tool), add it as a final event
@@ -1335,6 +1412,11 @@ class SessionTab(QWidget):
         
         # Delegate batch display to output panel
         if events:
+            # Debug: print event count and structure
+            print(f"[DEBUG] display_loaded_conversation: Created {len(events)} events from {len(conversation)} messages")
+            if events:
+                print(f"[DEBUG] First event type: {events[0].get('type')}, turn: {events[0].get('turn', 'N/A')}")
+                print(f"[DEBUG] Event types: {[e.get('type') for e in events[:5]]}")
             self.output_panel.display_loaded_conversation(events)
 
 
@@ -1534,7 +1616,14 @@ class SessionTab(QWidget):
             }
         
         # Create event dictionary with appropriate type and fields based on role
-        if role == 'user':
+        if role == 'system':
+            event = {
+                'type': 'system',
+                'content': content,
+                'timestamp': datetime.datetime.now().isoformat(),
+                '_detail_level': detail_level
+            }
+        elif role == 'user':
             event = {
                 'type': 'user_query',
                 'content': content,
@@ -1553,7 +1642,7 @@ class SessionTab(QWidget):
             if tool_calls:
                 event['tool_calls'] = tool_calls
         else:
-            # Fallback for unknown roles
+            # Fallback for unknown roles (including 'tool' which should be handled earlier)
             event = {
                 'type': 'turn',
                 'assistant_content': content,

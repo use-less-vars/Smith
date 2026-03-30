@@ -89,14 +89,29 @@ class EventFilterProxyModel(QSortFilterProxyModel):
             search_text = self.filter_text
             content = event.get("content", "").lower()
             reasoning = event.get("reasoning", "").lower()
-            # Also search in tool calls
-            tool_calls = event.get("tool_calls", [])
-            tool_text = " ".join([tc.get("name", "") + " " + str(tc.get("arguments", "")) for tc in tool_calls]).lower()
+            # Handle tool-related events
+            tool_text = ""
+            etype = event.get("type", "")
+
+            if etype in ["tool_call", "tool_result"]:
+                # Search in tool_name for separate tool events
+                tool_name = event.get("tool_name", event.get("name", ""))
+                arguments = event.get("arguments", {})
+                result = event.get("result", event.get("content", ""))
+                tool_text = f"{tool_name} {arguments} {result}".lower()
+            else:
+                # Legacy: search in embedded tool_calls array
+                tool_calls = event.get("tool_calls", [])
+                tool_text = " ".join([
+                    tc.get("name", "") + " " + str(tc.get("arguments", ""))
+                    for tc in tool_calls
+                ]).lower()
+
             if (search_text not in content and
                 search_text not in reasoning and
                 search_text not in tool_text):
                 # Also check type
-                if search_text not in event.get("type", "").lower():
+                if search_text not in etype.lower():
                     return False
 
         return True
@@ -250,6 +265,19 @@ class EventDelegate(QStyledItemDelegate):
 
         elif etype == "user_query":
             add_line(f"User query: {event.get('content', '')}", style="font-weight: bold; color: #8B008B;", use_markdown=True)
+
+        elif etype == "tool_call":
+            # Handle separate tool call events
+            tool_name = event.get('tool_name', event.get('name', 'unknown'))
+            tool_call_id = event.get('tool_call_id', 'unknown')
+            arguments = event.get('arguments', {})
+            
+            display_name = tool_name if tool_name != 'unknown' else f"call {tool_call_id}"
+            
+            if arguments:
+                add_line(f"🛠️ Calling {display_name} with arguments: {arguments}", style="color: #0000FF; font-weight: bold;", use_markdown=True)
+            else:
+                add_line(f"🛠️ Calling {display_name}", style="color: #0000FF; font-weight: bold;", use_markdown=True)
 
         elif etype == "tool_result":
             # Handle both legacy and new formats
@@ -476,6 +504,37 @@ class EventDelegate(QStyledItemDelegate):
 
         elif etype == "user_query":
             add_line(f"User query: {event.get('content', '')}")
+
+        elif etype == "tool_call":
+            # Handle separate tool call events
+            tool_name = event.get('tool_name', event.get('name', 'unknown'))
+            tool_call_id = event.get('tool_call_id', 'unknown')
+            arguments = event.get('arguments', {})
+            
+            display_name = tool_name if tool_name != 'unknown' else f"call {tool_call_id}"
+            
+            if arguments:
+                add_line(f"Tool call: {display_name} with arguments: {arguments}")
+            else:
+                add_line(f"Tool call: {display_name}")
+
+        elif etype == "tool_result":
+            # Handle both legacy and new formats
+            tool_name = event.get('tool_name', event.get('name', 'unknown'))
+            tool_call_id = event.get('tool_call_id', 'unknown')
+            # Try content first (legacy), then result (new)
+            result_text = event.get('content', event.get('result', ''))
+            success = event.get('success', True)
+            error = event.get('error')
+            
+            display_name = tool_name if tool_name != 'unknown' else f"call {tool_call_id}"
+            
+            if error:
+                add_line(f"Tool {display_name} failed: {error}")
+            elif not success:
+                add_line(f"Tool {display_name} returned warning: {result_text}")
+            else:
+                add_line(f"Tool {display_name} result: {result_text}")
 
         elif etype == "system":
             add_line(f"System: {event.get('content', '')}")

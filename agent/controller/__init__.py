@@ -158,9 +158,8 @@ class AgentController(QObject):
         self.thread.start()
 
     def stop(self):
-        """Request the agent to stop after the current turn/tool."""
-        self.stop_event.set()
-        self.pause_event.set()   # if paused, resume so stop can be noticed
+        """Request the agent to pause after the current turn/tool."""
+        self.pause()   # treat stop as pause
 
     def continue_session(self, query: str):
         """Submit a new query to the already running agent."""
@@ -269,9 +268,10 @@ class AgentController(QObject):
                 try:
                     query = self.query_queue.get(timeout=1.0)
                 except queue.Empty:
-                    # Check if we should stop
+                    # Check if we should stop (treat as pause)
                     if self.stop_event.is_set():
-                        break
+                        self.stop_event.clear()
+                        self._emit_event({"type": "paused"})
                     continue
 
                 if query == "[RESET]":
@@ -295,11 +295,11 @@ class AgentController(QObject):
 
                     # If this is a terminal event, decide what to do
                     if event["type"] in ("stopped", "error", "max_turns"):
-                        # These are fatal, stop the whole agent thread
+                        # Treat as pause, keep thread alive
                         if os.environ.get('THOUGHTMACHINE_DEBUG'):
-                            print(f"[Controller] Terminal event {event['type']} detected, setting _keep_alive=False")
-                        self._keep_alive = False
-                        self._running = False  # Mark as not running immediately
+                            print(f"[Controller] Terminal event {event['type']} detected, treating as pause")
+                        # Send paused event to inform GUI
+                        self._emit_event({"type": "paused"})
                         break
                     elif event["type"] in ("final", "user_interaction_requested"):
                         # Agent has completed this query, pause and wait for next query

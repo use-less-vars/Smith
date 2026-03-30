@@ -467,13 +467,13 @@ class Agent:
             
             # Check stop signal
             if self.stop_check and self.stop_check():
-                # Update execution state: transition through STOPPING intermediate state
-                events = self.state.set_execution_state(ExecutionState.STOPPING)
+                # Update execution state: transition through PAUSING intermediate state
+                events = self.state.set_execution_state(ExecutionState.PAUSING)
                 for event in events:
                     for yielded_event in self._handle_state_event(event):
                         yield yielded_event
-                # Then transition to STOPPED
-                events = self.state.set_execution_state(ExecutionState.STOPPED)
+                # Then transition to PAUSED
+                events = self.state.set_execution_state(ExecutionState.PAUSED)
                 for event in events:
                     for yielded_event in self._handle_state_event(event):
                         yield yielded_event
@@ -744,13 +744,13 @@ class Agent:
                 
             except ProviderError as e:
                 # Handle other provider errors (non-rate-limit)
-                # Update execution state: transition through STOPPING intermediate state
-                events = self.state.set_execution_state(ExecutionState.STOPPING)
+                # Update execution state: transition through PAUSING intermediate state
+                events = self.state.set_execution_state(ExecutionState.PAUSING)
                 for event in events:
                     for yielded_event in self._handle_state_event(event):
                         yield yielded_event
-                # Then transition to STOPPED
-                events = self.state.set_execution_state(ExecutionState.STOPPED)
+                # Then transition to PAUSED
+                events = self.state.set_execution_state(ExecutionState.PAUSED)
                 for event in events:
                     for yielded_event in self._handle_state_event(event):
                         yield yielded_event
@@ -778,13 +778,13 @@ class Agent:
                 # Catch any other unexpected exception
                 logger.exception(f"[Agent] Unexpected exception in process_query: {e}")
 
-                # Update execution state: transition through STOPPING intermediate state
-                events = self.state.set_execution_state(ExecutionState.STOPPING)
+                # Update execution state: transition through PAUSING intermediate state
+                events = self.state.set_execution_state(ExecutionState.PAUSING)
                 for event in events:
                     for yielded_event in self._handle_state_event(event):
                         yield yielded_event
-                # Then transition to STOPPED
-                events = self.state.set_execution_state(ExecutionState.STOPPED)
+                # Then transition to PAUSED
+                events = self.state.set_execution_state(ExecutionState.PAUSED)
                 for event in events:
                     for yielded_event in self._handle_state_event(event):
                         yield yielded_event
@@ -894,6 +894,16 @@ class Agent:
                 
                 # Handle final detection
                 if final_detected:
+                    # Update execution state: transition through PAUSING intermediate state
+                    events = self.state.set_execution_state(ExecutionState.PAUSING)
+                    for event in events:
+                        for yielded_event in self._handle_state_event(event):
+                            yield yielded_event
+                    # Then transition to PAUSED
+                    events = self.state.set_execution_state(ExecutionState.PAUSED)
+                    for event in events:
+                        for yielded_event in self._handle_state_event(event):
+                            yield yielded_event
                     # Yield final event
                     yield {
                         "type": "final",
@@ -911,7 +921,12 @@ class Agent:
                 
                 # Handle user interaction request
                 if user_interaction_requested:
-                    # Pause execution
+                    # Update execution state to WAITING_FOR_USER
+                    events = self.state.set_execution_state(ExecutionState.PAUSED)
+                    for event in events:
+                        for yielded_event in self._handle_state_event(event):
+                            yield yielded_event
+                    # Yield user interaction requested event
                     yield {
                         "type": "user_interaction_requested",
                         "message": "Waiting for user input",
@@ -933,13 +948,13 @@ class Agent:
             # Check if we should continue (no tool calls, or tool calls didn't result in user interaction/final)
             if not tool_calls:
                 # No tool calls means the assistant gave a direct answer - we can stop
-                # Update execution state: transition through STOPPING intermediate state
-                events = self.state.set_execution_state(ExecutionState.STOPPING)
+                # Update execution state: transition through PAUSING intermediate state
+                events = self.state.set_execution_state(ExecutionState.PAUSING)
                 for event in events:
                     for yielded_event in self._handle_state_event(event):
                         yield yielded_event
-                # Then transition to STOPPED
-                events = self.state.set_execution_state(ExecutionState.STOPPED)
+                # Then transition to PAUSED
+                events = self.state.set_execution_state(ExecutionState.PAUSED)
                 for event in events:
                     for yielded_event in self._handle_state_event(event):
                         yield yielded_event

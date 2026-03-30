@@ -137,7 +137,7 @@ class SessionLifecycle:
             # Status message will be emitted through event processing
 
         except Exception as e:
-            self.state = ExecutionState.STOPPED
+            self.state = ExecutionState.PAUSED
             # Error will be emitted through event processing
             if os.environ.get('THOUGHTMACHINE_DEBUG'):
                 print(f"[SessionLifecycle] Error starting session: {e}")
@@ -274,7 +274,7 @@ class SessionLifecycle:
             self._finalize_restart()
             return
 
-        # Otherwise, wait for terminal event; state = STOPPING
+        # Otherwise, wait for terminal event; state = PAUSING
 
     def save_session(self) -> bool:
         """Save current session to the session store.

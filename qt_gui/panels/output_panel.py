@@ -137,12 +137,26 @@ class OutputPanel(QWidget):
         if filter_text:
             content = event.get("content", "").lower()
             reasoning = event.get("reasoning", "").lower()
-            tool_calls = event.get("tool_calls", [])
-            tool_text = " ".join([tc.get("name", "") + " " + str(tc.get("arguments", "")) for tc in tool_calls]).lower()
+            # Handle tool-related events
+            etype = event.get("type", "")
+            tool_text = ""
+
+            if etype in ["tool_call", "tool_result"]:
+                tool_name = event.get("tool_name", event.get("name", ""))
+                arguments = event.get("arguments", {})
+                result = event.get("result", event.get("content", ""))
+                tool_text = f"{tool_name} {arguments} {result}".lower()
+            else:
+                tool_calls = event.get("tool_calls", [])
+                tool_text = " ".join([
+                    tc.get("name", "") + " " + str(tc.get("arguments", ""))
+                    for tc in tool_calls
+                ]).lower()
+
             if (filter_text not in content and
                 filter_text not in reasoning and
                 filter_text not in tool_text and
-                filter_text not in event.get("type", "").lower()):
+                filter_text not in etype.lower()):
                 return False
         return True
 
