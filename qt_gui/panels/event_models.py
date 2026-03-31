@@ -10,7 +10,7 @@ from PyQt6.QtGui import QPainter, QPalette, QTextDocument
 # Import from other extracted modules
 from qt_gui.panels.markdown_renderer import MarkdownRenderer
 
-from qt_gui.utils.constants import MAX_RESULT_LENGTH, MAX_TOOL_RESULTS_PER_TURN, MAX_LINES_PER_RESULT, ENABLE_RESULT_TRUNCATION
+from qt_gui.utils.constants import MAX_RESULT_LENGTH, MAX_TOOL_RESULTS_PER_TURN, MAX_LINES_PER_RESULT, ENABLE_RESULT_TRUNCATION, INTERNAL_EVENT_TYPES
 
 
 class EventModel(QAbstractListModel):
@@ -103,9 +103,14 @@ class EventFilterProxyModel(QSortFilterProxyModel):
         if not event:
             return False
 
+        # Hide internal event types even when "all" is selected
+        event_type = event.get("type", "")
+        if event_type in INTERNAL_EVENT_TYPES:
+            return False
+
         # Type filter
         if self.filter_type != "all":
-            if event.get("type") != self.filter_type:
+            if event_type != self.filter_type:
                 return False
 
         # Text filter
@@ -192,8 +197,14 @@ class EventDelegate(QStyledItemDelegate):
 
         return QSize(int(doc.idealWidth()) + 10, int(doc.size().height()) + 10)
 
-    def _event_to_html(self, event):
-        """Convert event dictionary to HTML representation."""
+    def _event_to_html(self, event, suppress_turn_header=False, suppress_title_bar=False):
+        """Convert event dictionary to HTML representation.
+        
+        Args:
+            event: The event dictionary
+            suppress_turn_header: If True, skip the "Turn X" line for turn events
+            suppress_title_bar: If True, skip the event type title bar
+        """
         etype = event.get('type', 'unknown')
         detail_level = event.get('_detail_level', 'normal')
 
@@ -218,14 +229,18 @@ class EventDelegate(QStyledItemDelegate):
                         lines.append(f'<div>{escaped_text}</div>')
 
         # Title bar
-        html_content = f'<div style="font-weight: bold; background-color: #e0e0e0; padding: 3px;">{html.escape(etype.upper())}</div>'
-
+        if not suppress_title_bar:
+            html_content = f'<div style="font-weight: bold; background-color: #e0e0e0; padding: 3px; display: block; clear: both;">{html.escape(etype.upper())}</div>'
+        else:
+            html_content = ''
+        
         # Content container
         html_content += '<div style="padding: 5px;">'
 
         if etype == "turn":
             turn = event.get("turn", "?")
-            add_line(f"Turn {turn}", style="font-weight: bold;")
+            if not suppress_turn_header:
+                add_line(f"Turn {turn}", style="font-weight: bold;")
 
             assistant_content = event.get("assistant_content", "")
             if assistant_content and detail_level != "minimal":
@@ -320,7 +335,26 @@ class EventDelegate(QStyledItemDelegate):
             elif not success:
                 add_line(f"⚠️ Tool {display_name} returned warning: {result_text}", style="color: #FFA500;", use_markdown=True)
             else:
-                add_line(f"✅ Tool {display_name} result: {result_text}", style="color: #006400;", use_markdown=True)
+                # Truncate result if needed
+                unescaped_result = html.unescape(result_text)
+                if ENABLE_RESULT_TRUNCATION:
+                    # Limit lines
+                    lines_result = unescaped_result.split('\n')
+                    if len(lines_result) > MAX_LINES_PER_RESULT:
+                        lines_result = lines_result[:MAX_LINES_PER_RESULT]
+                        lines_result.append("…")
+                        unescaped_result = '\n'.join(lines_result)
+                    # Limit characters
+                    if len(unescaped_result) > MAX_RESULT_LENGTH:
+                        truncated = unescaped_result[:MAX_RESULT_LENGTH] + "…"
+                        add_line(f"✅ Tool {display_name} result: {truncated}", 
+                                 style="color: #006400;", use_markdown=True, title=unescaped_result)
+                    else:
+                        add_line(f"✅ Tool {display_name} result: {unescaped_result}", 
+                                 style="color: #006400;", use_markdown=True)
+                else:
+                    add_line(f"✅ Tool {display_name} result: {unescaped_result}", 
+                             style="color: #006400;", use_markdown=True)
 
         elif etype == "system":
             add_line(f"System: {event.get('content', '')}", style="color: #808080; font-style: italic;", use_markdown=True)
@@ -424,10 +458,7 @@ class EventDelegate(QStyledItemDelegate):
             # Ensure result_text is string
             result_text = str(result_text) if result_text is not None else ''
             if result_text:
-                # Truncate result if needed - use hardcoded constants to avoid import issues
-                MAX_RESULT_LENGTH = 200
-                MAX_LINES_PER_RESULT = 5
-                ENABLE_RESULT_TRUNCATION = True
+                # Truncate result if needed
                 
                 unescaped_result = html.unescape(result_text)
                 

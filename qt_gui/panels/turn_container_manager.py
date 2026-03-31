@@ -1,0 +1,128 @@
+"""Turn Container Manager - Manages turn grouping and incremental display state."""
+from PyQt6.QtCore import Qt
+from PyQt6.QtGui import QTextCursor
+
+from qt_gui.panels.event_models import EventDelegate
+
+
+class TurnContainerManager:
+    """Manages turn container state and incremental event display."""
+    
+    def __init__(self, output_widget, proxy_model):
+        """
+        Initialize the turn container manager.
+        
+        Args:
+            output_widget: QTextEdit widget where output is displayed
+            proxy_model: EventFilterProxyModel used for filtering events
+        """
+        self.output_widget = output_widget
+        self.proxy_model = proxy_model
+        self.delegate = EventDelegate()
+        
+        # State variables
+        self.last_row_count = 0
+        self.last_displayed_turn = -1
+        self.cached_turns = {}
+        self.last_appended_turn = -1
+        self.open_turn_container = None
+    
+    def reset(self):
+        """Reset all incremental display state."""
+        self.last_row_count = 0
+        self.last_displayed_turn = -1
+        self.cached_turns.clear()
+        self.last_appended_turn = -1
+        self.open_turn_container = None
+    
+    def append_new_events(self):
+        """Append new events to output widget incrementally."""
+        current_row_count = self.proxy_model.rowCount()
+        if current_row_count <= self.last_row_count:
+            return
+        
+        # Process only new rows
+        for row in range(self.last_row_count, current_row_count):
+            index = self.proxy_model.index(row, 0)
+            event = index.data(Qt.ItemDataRole.UserRole)
+            if not event:
+                continue
+                
+            etype = event.get('type', 'unknown')
+            turn_num = event.get('turn', 0)
+            
+            # Add turn header if this is a new turn
+            if turn_num != self.last_displayed_turn and turn_num > 0:
+                self._append_turn_header(turn_num)
+                self.last_displayed_turn = turn_num
+            
+            # Format and append event HTML
+            suppress_turn_header = (etype == "turn")
+            # Suppress title bar for tool calls/results within a turn
+            top_level_event_types = {"turn", "user_query", "final", "system", "error", "stopped", 
+                                     "user_interaction_requested", "token_warning", "turn_warning", 
+                                     "rate_limit_warning", "paused", "max_turns", "thread_finished"}
+            suppress_title_bar = (etype not in top_level_event_types) and (turn_num > 0)
+            html = self.delegate._event_to_html(event, suppress_turn_header=suppress_turn_header, 
+                                              suppress_title_bar=suppress_title_bar)
+            if html:
+                cursor = self.output_widget.textCursor()
+                cursor.movePosition(QTextCursor.MoveOperation.End)
+                # Close container for turn 0 events
+                if turn_num == 0 and self.open_turn_container is not None:
+                    cursor.insertHtml("</div>")
+                    self.open_turn_container = None
+                # Add separator only if there's already content AND we're still in the same turn
+                # (don't add separator right after turn header)
+                if self.output_widget.document().characterCount() > 0 and self.last_appended_turn == turn_num:
+                    # Light separator for events within same turn
+                    cursor.insertHtml("<hr style='margin: 3px 0; border: none; border-top: 1px dotted #eee;'>")
+                cursor.insertHtml(html)
+                self.last_appended_turn = turn_num
+        
+        self.last_row_count = current_row_count
+    
+    def _append_turn_header(self, turn_num):
+        """Append a turn header to the output."""
+        cursor = self.output_widget.textCursor()
+        cursor.movePosition(QTextCursor.MoveOperation.End)
+        
+        # Close previous turn container if open and different turn
+        if self.open_turn_container is not None and self.open_turn_container != turn_num:
+            cursor.insertHtml("</div>")
+            self.open_turn_container = None
+        # Add separator before new turn (except at very beginning)
+        if self.output_widget.document().characterCount() > 0:
+            cursor.insertHtml("<hr style='margin: 10px 0; border: 1px solid #ddd;'>")
+        # Open new turn container
+        cursor.insertHtml('<div style="border: 1px solid #ddd; border-radius: 5px; margin: 10px 0; overflow: hidden;">\n')
+        # Turn header
+        header_html = f'''
+        <div style="
+            background-color: #f0f0f0; 
+            padding: 8px 10px; 
+            font-weight: bold; 
+            border-radius: 5px 5px 0 0;
+            border: 1px solid #ddd;
+            border-bottom: none;
+            margin-bottom: 5px;
+            display: block;
+            width: 100%;
+            clear: both;
+        ">
+            Turn {turn_num}
+        </div>
+        '''
+        cursor.insertHtml(header_html)
+        # Open content area for turn events
+        cursor.insertHtml('<div style="padding: 10px;">\n')
+        self.open_turn_container = turn_num
+    
+    def close_open_turn_container(self):
+        """Close any open turn container."""
+        if self.open_turn_container is not None:
+            cursor = self.output_widget.textCursor()
+            cursor.movePosition(QTextCursor.MoveOperation.End)
+            # Close content area div and container div
+            cursor.insertHtml("</div>\n</div>")
+            self.open_turn_container = None

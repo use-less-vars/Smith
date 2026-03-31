@@ -56,6 +56,7 @@ class SessionTab(QWidget):
         if session_store is not None:
             self.presenter.session_store = session_store
         self.config_bridge = GUIConfigBridge(create_agent_config_service())
+        self.config_bridge.add_change_listener(self._on_config_changed)
 
         # Token tracking (now managed by presenter but also cached locally for UI)
         self.total_input = 0
@@ -611,6 +612,10 @@ class SessionTab(QWidget):
                     max_turn = turn
         self._display_turn = max_turn  # Next query will increment from here
 
+        # Update presenter config with current UI config before restart
+        config = self.agent_controls_panel.get_config_dict()
+        self.presenter.update_config(config)
+        
         # Restart the agent (preserves session and conversation)
         self.presenter.restart_session(query)
 
@@ -743,6 +748,11 @@ class SessionTab(QWidget):
         finally:
             self._loading_config = False
     
+    def _on_config_changed(self, config):
+        """Handle configuration changes from bridge (e.g., file changed)."""
+        # Update UI with new config
+        self.load_config()
+    
     def save_config(self, immediate=False):
         """Save current configuration to file.
         
@@ -750,6 +760,7 @@ class SessionTab(QWidget):
             immediate: If True, save immediately; otherwise use debounced save
         """
         debug_log(f"save_config called: immediate={immediate}, _loading_config={self._loading_config}")
+        print(f"[SessionTab] save_config called, immediate={immediate}")
         if self._loading_config:
             return
 
@@ -841,7 +852,7 @@ class SessionTab(QWidget):
         file_menu = menu_bar.addMenu("File")
         
         save_config_action = QAction("Save Configuration", self)
-        save_config_action.triggered.connect(self.save_config)
+        save_config_action.triggered.connect(lambda: self.save_config(immediate=True))
         file_menu.addAction(save_config_action)
         
         load_config_action = QAction("Load Configuration", self)

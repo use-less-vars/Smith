@@ -10,8 +10,9 @@ from PyQt6.QtGui import QTextCursor
 
 # Import from other extracted modules
 from qt_gui.panels.event_models import EventModel, EventFilterProxyModel, EventDelegate
+from qt_gui.panels.turn_container_manager import TurnContainerManager
 from qt_gui.panels.markdown_renderer import MarkdownRenderer
-from qt_gui.utils.constants import MAX_RESULT_LENGTH, MAX_TOOL_RESULTS_PER_TURN, MAX_LINES_PER_RESULT, ENABLE_RESULT_TRUNCATION
+from qt_gui.utils.constants import MAX_RESULT_LENGTH, MAX_TOOL_RESULTS_PER_TURN, MAX_LINES_PER_RESULT, ENABLE_RESULT_TRUNCATION, INTERNAL_EVENT_TYPES
 from qt_gui.utils.smart_scrolling import SmartScroller
 
 
@@ -42,8 +43,10 @@ class OutputPanel(QWidget):
         self._batch_update_timer.setSingleShot(True)
         self._batch_update_timer.setInterval(50)  # 50ms batch delay
         self._batch_update_timer.timeout.connect(self._process_batched_events)
+        
 
         self.init_ui()
+        self.turn_container_manager = TurnContainerManager(self.output_textedit, self.filter_proxy_model)
         self.setup_signal_connections()
 
     def init_ui(self):
@@ -125,44 +128,14 @@ class OutputPanel(QWidget):
     def _format_event_html(self, event):
         """Format event as HTML for display in QTextEdit."""
         delegate = EventDelegate()
-        return delegate._event_to_html(event)
+        return delegate._event_to_html(event, suppress_title_bar=False)
 
-    def _event_passes_filter(self, event):
-        """Check if event passes current filter criteria."""
-        filter_type = self.filter_proxy_model.filter_type
-        if filter_type != "all":
-            if event.get("type") != filter_type:
-                return False
-        filter_text = self.filter_proxy_model.filter_text
-        if filter_text:
-            content = event.get("content", "").lower()
-            reasoning = event.get("reasoning", "").lower()
-            # Handle tool-related events
-            etype = event.get("type", "")
-            tool_text = ""
-
-            if etype in ["tool_call", "tool_result"]:
-                tool_name = event.get("tool_name", event.get("name", ""))
-                arguments = event.get("arguments", {})
-                result = event.get("result", event.get("content", ""))
-                tool_text = f"{tool_name} {arguments} {result}".lower()
-            else:
-                tool_calls = event.get("tool_calls", [])
-                tool_text = " ".join([
-                    tc.get("name", "") + " " + str(tc.get("arguments", ""))
-                    for tc in tool_calls
-                ]).lower()
-
-            if (filter_text not in content and
-                filter_text not in reasoning and
-                filter_text not in tool_text and
-                filter_text not in etype.lower()):
-                return False
-        return True
 
     def _rebuild_output_document(self):
         """Rebuild the output text document from filtered events."""
         self.output_textedit.clear()
+        # Reset incremental state
+        self.turn_container_manager.reset()
         delegate = EventDelegate()
         
         # Group events by turn
@@ -205,14 +178,23 @@ class OutputPanel(QWidget):
         sorted_turns = sorted(turns.items())
         
         # Render each turn as a cohesive block
+        max_turn = -1
         for i, (turn_num, turn_data) in enumerate(sorted_turns):
             html = delegate._turn_to_html(turn_num, turn_data)
             if html:
                 cursor = self.output_textedit.textCursor()
                 cursor.movePosition(QTextCursor.MoveOperation.End)
+                # Close container for turn 0 events
+                if turn_num == 0 and self.turn_container_manager.open_turn_container is not None:
+                    cursor.insertHtml("</div>")
+                    self.turn_container_manager.open_turn_container = None
                 if i > 0:  # Add separator between turns, not before first turn
-                    cursor.insertHtml("<hr style='margin: 20px 0; border: 1px solid #ccc;'>")
+                    cursor.insertHtml("<hr style='margin: 10px 0; border: 1px solid #ddd;'>")
                 cursor.insertHtml(html)
+                max_turn = max(max_turn, turn_num)
+        # Update incremental state after rebuild
+        self.turn_container_manager.last_row_count = self.filter_proxy_model.rowCount()
+        self.turn_container_manager.last_displayed_turn = max_turn
 
 
 
@@ -226,18 +208,21 @@ class OutputPanel(QWidget):
         self._batch_update_timer.start()
     
     def _process_batched_events(self):
-        """Process batched events by rebuilding the entire output document."""
+        """Process batched events incrementally without rebuilding entire document."""
         if not self._pending_events:
             return
         
         # Clear pending events (they're already added to model in display_event)
         self._pending_events.clear()
         
-        # Rebuild entire output document to ensure proper turn grouping
-        self._rebuild_output_document()
+        # Append new events incrementally
+        self.turn_container_manager.append_new_events()
         
         # Scroll to bottom if auto-scroll enabled
         self.smart_scroller.deferred_scroll_to_bottom()
+    
+    
+    # Note: _render_pending_turns removed in favor of incremental per-event rendering
 
     def _scroll_to_bottom(self):
         """Scroll output to bottom (for backward compatibility)."""
@@ -248,6 +233,8 @@ class OutputPanel(QWidget):
         self.event_model.clear()
         self.output_textedit.clear()
         self._pending_events.clear()
+        # Reset incremental state
+        self.turn_container_manager.reset()
 
 
     def update_tokens(self, total_input, total_output):
