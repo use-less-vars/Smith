@@ -40,9 +40,10 @@ class SessionLifecycle:
         # State tracking
         self._state = ExecutionState.IDLE
         self._restarting = False
-        self._dirty = False  # Tracks unsaved changes
+
         self._initial_conversation: Optional[List[Dict[str, Any]]] = None
         self._session_callback: Optional[Callable] = None
+        self._conversation_callback: Optional[Callable] = None
         
         # Cached configuration for restart
         self._cached_config = None
@@ -51,6 +52,19 @@ class SessionLifecycle:
         if os.environ.get('THOUGHTMACHINE_DEBUG'):
             print(f"[SessionLifecycle] Initialized")
     
+    def _register_session_callbacks(self, session):
+        """Register callbacks on a session for change tracking."""
+        if os.environ.get('THOUGHTMACHINE_DEBUG'):
+            print(f"[SessionLifecycle] Registering callbacks for session {session.session_id}")
+        # Register conversation change callback if set
+        if self._conversation_callback:
+            session.connect_conversation_changed(self._conversation_callback)
+            if os.environ.get('THOUGHTMACHINE_DEBUG'):
+                print(f"[SessionLifecycle] Registered conversation callback, callbacks count: {len(session._conversation_changed_callbacks)}")
+        else:
+            if os.environ.get('THOUGHTMACHINE_DEBUG'):
+                print(f"[SessionLifecycle] No conversation callback set")
+        # Note: dirty tracking removed, but ObservableList callbacks still needed for UI refresh
     # State management
     @property
     def state(self) -> ExecutionState:
@@ -73,6 +87,11 @@ class SessionLifecycle:
                     if os.environ.get('THOUGHTMACHINE_DEBUG'):
                         print(f"[SessionLifecycle] Error in state callback: {e}")
     
+
+    def mark_clean(self) -> None:
+        """Mark session as clean (no unsaved changes). Dummy method after removing dirty tracking."""
+        if os.environ.get('THOUGHTMACHINE_DEBUG'):
+            print(f'[SessionLifecycle] mark_clean called (dummy method - dirty tracking removed)')
     # Session operations
     def start_session(self, query: str, config: Optional[dict] = None, preset_name: str = None):
         """
@@ -125,6 +144,8 @@ class SessionLifecycle:
                     metadata={}
                 )
                 self.state_bridge.bind_session(new_session)
+                # Register callback for conversation changes
+                self._register_session_callbacks(new_session)
 
             # Clear any initial conversation flag
             self._initial_conversation = None
@@ -159,8 +180,8 @@ class SessionLifecycle:
             name: Optional name for the new session. If None, session will be unnamed.
             auto_save_current: If True, auto-save current session before clearing.
         """
-        # Auto-save current session if requested and has unsaved changes
-        if auto_save_current and self.has_unsaved_changes():
+        # Auto-save current session if requested
+        if auto_save_current:
             if os.environ.get('THOUGHTMACHINE_DEBUG'):
                 print("[SessionLifecycle] Auto-saving current session before starting new session")
             self.auto_save_current_session()
@@ -178,6 +199,8 @@ class SessionLifecycle:
             metadata={'name': name} if name else {}
         )
         self.state_bridge.bind_session(session)
+        # Register callback for conversation changes
+        self._register_session_callbacks(session)
         self.state_bridge.update_external_file_path(None)
         # Clear final content
         if self.state_bridge.current_session:
@@ -302,7 +325,7 @@ class SessionLifecycle:
             True if saved successfully, False otherwise
         """
         if os.environ.get('THOUGHTMACHINE_DEBUG'):
-            print(f"[SessionLifecycle] save_session called, has_unsaved_changes={self.has_unsaved_changes()}, current_session_id={self.state_bridge.current_session_id}")
+            print(f"[SessionLifecycle] save_session called, has_unsaved_changes=False, current_session_id={self.state_bridge.current_session_id}")
         try:
             # Build session from current state
             session = self._build_session_from_current_state()
@@ -330,6 +353,7 @@ class SessionLifecycle:
                     session.metadata['name'] = "Untitled Session"
 
             # Save via session store (writes to store directory)
+            print(f"[SessionLifecycle] About to save session {session.session_id} to store")
             self.session_store.save_session(session)
 
             # Update session name from metadata
@@ -337,9 +361,6 @@ class SessionLifecycle:
 
             # Update current session marker to point to this session
             self.session_store.set_current_session_id(self.state_bridge.current_session_id)
-            # Mark as clean after successful save
-            self.mark_clean()
-
             if os.environ.get('THOUGHTMACHINE_DEBUG'):
                 print(f"[SessionLifecycle] Session saved to store: {self.session_store.get_session_path(session.session_id)}")
             # Also export to external file if set
@@ -353,21 +374,12 @@ class SessionLifecycle:
             return True
         except Exception as e:
             if os.environ.get('THOUGHTMACHINE_DEBUG'):
+                import traceback
                 print(f"[SessionLifecycle] Error saving session: {e}")
+                traceback.print_exc()
             return False
 
-    def has_unsaved_changes(self) -> bool:
-        """Check if current session has unsaved changes."""
-        return self._dirty
     
-    def mark_clean(self) -> None:
-        """Mark session as clean (no unsaved changes)."""
-        self._dirty = False
-    
-    def mark_dirty(self) -> None:
-        """Mark session as dirty (has unsaved changes)."""
-        self._dirty = True
-
     def load_session(self, filepath: str, auto_save: bool = True) -> bool:
         """Load a session from a JSON file.
 
@@ -379,7 +391,7 @@ class SessionLifecycle:
             True if loaded successfully, False otherwise
         """
         # Auto-save current session before loading new one
-        if auto_save and self.has_unsaved_changes():
+        if auto_save:
             if os.environ.get('THOUGHTMACHINE_DEBUG'):
                 print("[SessionLifecycle] Auto-saving current session before loading new session")
             self.auto_save_current_session()
@@ -400,6 +412,8 @@ class SessionLifecycle:
             session = Session.from_persistable_dict(session_dict)
 
             self.state_bridge.bind_session(session)
+            # Register callback for conversation changes
+            self._register_session_callbacks(session)
             self.state_bridge.update_external_file_path(filepath)
 
             # If session name was not set by binding (i.e., metadata lacks name), use fallback
@@ -430,6 +444,8 @@ class SessionLifecycle:
         self.state_bridge.current_session = session
         self.state_bridge.current_session_id = str(session.session_id)
         self.state_bridge.bind_session(session)
+        # Register callback for conversation changes
+        self._register_session_callbacks(session)
         # Restore external file path from metadata if present
         external_file_path = session.metadata.get('external_file_path')
         if external_file_path:
@@ -569,20 +585,23 @@ class SessionLifecycle:
             print(f"[SessionLifecycle] _build_session_from_current_state: user_history length={len(self.state_bridge.user_history) if self.state_bridge.user_history else 0}, current_session_id={self.state_bridge.current_session_id}, current_session exists={self.state_bridge.current_session is not None}")
         # Get the full conversation from the current session
         conversation = None
-        if self.state_bridge.user_history:
+        if self.state_bridge.user_history is not None:
             conversation = self.state_bridge.user_history
         else:
             # Try to get conversation from controller
             conversation = self.controller.get_conversation() if hasattr(self.controller, 'get_conversation') else None
             if conversation is None:
                 conversation = self._initial_conversation
-                if conversation is None:
-                    if os.environ.get('THOUGHTMACHINE_DEBUG'):
-                        print(f"[SessionLifecycle] _build_session_from_current_state: No conversation found")
-                    return None
 
-        if not conversation:
-            return None
+        # If conversation is still None, check if we have a current session
+        if conversation is None:
+            if self.state_bridge.current_session is not None:
+                # We have a session but no conversation (empty session)
+                conversation = []
+            else:
+                if os.environ.get('THOUGHTMACHINE_DEBUG'):
+                    print(f"[SessionLifecycle] _build_session_from_current_state: No conversation found and no current session")
+                return None
 
         # Build session config from current agent config
         try:
@@ -631,11 +650,11 @@ class SessionLifecycle:
             True if saved or no need to save, False on error.
         """
         if os.environ.get('THOUGHTMACHINE_DEBUG'):
-            print(f"[SessionLifecycle] auto_save_current_session called, dirty={self._dirty}, current_session_id={self.state_bridge.current_session_id}, current_session exists={self.state_bridge.current_session is not None}")
-        if not self.has_unsaved_changes():
-            if os.environ.get('THOUGHTMACHINE_DEBUG'):
-                print("[SessionLifecycle] No unsaved changes, skipping auto-save")
-            return True
+            print(f"[SessionLifecycle] auto_save_current_session called, dirty=False (tracking removed), current_session_id={self.state_bridge.current_session_id}, current_session exists={self.state_bridge.current_session is not None}")
+        # Event-driven auto-save: always attempt to save on terminal events
+        # The save_session() method will handle cases where there's nothing to save
+        if os.environ.get('THOUGHTMACHINE_DEBUG'):
+            print("[SessionLifecycle] Attempting auto-save (event-driven)")
 
         try:
             success = self.save_session()

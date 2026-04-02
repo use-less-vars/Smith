@@ -129,9 +129,8 @@ class EventProcessor:
         
 
         
-        # Auto-save if needed
-        if self.session_lifecycle.has_unsaved_changes():
-            self.session_lifecycle.auto_save_current_session()
+        # Auto-save on user interaction
+        self.session_lifecycle.auto_save_current_session()
     
     def _process_paused_event(self, event: Dict[str, Any]) -> None:
         """Process paused event."""
@@ -139,9 +138,8 @@ class EventProcessor:
         if self.gui_integration:
             self.gui_integration.emit_status_message("Paused")
         
-        # Auto-save if needed
-        if self.session_lifecycle.has_unsaved_changes():
-            self.session_lifecycle.auto_save_current_session()
+        # Auto-save on pause
+        self.session_lifecycle.auto_save_current_session()
     
     def _process_terminal_event(self, event: Dict[str, Any], event_type: str) -> None:
         """Process terminal event (final, stopped, max_turns, thread_finished)."""

@@ -15,7 +15,7 @@ from PyQt6.QtGui import QAction, QKeySequence, QFont, QTextDocument, QTextCursor
 from PyQt6.QtPrintSupport import QPrinter
 from dotenv import load_dotenv
 
-from agent.presenter.refactored_agent_presenter import RefactoredAgentPresenter
+from agent.presenter.agent_presenter import RefactoredAgentPresenter
 from agent.core.state import ExecutionState
 from agent.config.service import create_agent_config_service
 from qt_gui.config.config_bridge import GUIConfigBridge
@@ -539,31 +539,6 @@ class SessionTab(QWidget):
         """Start a completely new session."""
         from PyQt6.QtWidgets import QInputDialog, QMessageBox
         
-        # Check if current session has unsaved changes
-        if self.presenter.has_unsaved_changes():
-            has_name = bool(self.presenter.session_name)
-            
-        else:  # btn_rename_save
-            name, ok = QInputDialog.getText(self, "Rename Session", "Enter a name for the session:")
-            if not ok or not name.strip():
-                return
-            # First, auto-save to create a session with a temporary default name
-            success_tmp = self.presenter.save_session()
-            if not success_tmp:
-                QMessageBox.warning(self, "Save Failed", "Failed to auto-save session.")
-                return
-            # Now rename the saved session to the desired name
-            session_id = self.presenter.current_session_id
-            if not session_id:
-                QMessageBox.warning(self, "Rename Failed", "Session ID not available.")
-                return
-            rename_ok = self.presenter.rename_session(session_id, name.strip())
-            if not rename_ok:
-                QMessageBox.warning(self, "Rename Failed", "Failed to rename session.")
-                return
-            # Update session name and UI
-            self.presenter.session_name = name.strip()
-            self.update_window_title()
         
         # Ask for new session name (optional) with default suggestion
         from datetime import datetime
@@ -1455,70 +1430,6 @@ class SessionTab(QWidget):
         """
         from PyQt6.QtWidgets import QMessageBox
         
-        # Check if current session has unsaved changes
-        if self.presenter.has_unsaved_changes():
-            has_name = bool(self.presenter.session_name)
-            msg = QMessageBox(self)
-            msg.setIcon(QMessageBox.Icon.Question)
-            if has_name:
-                msg.setWindowTitle("Unsaved Changes")
-                msg.setText("This session has unsaved changes. Save before loading new session?")
-                btn_save = msg.addButton("Save", QMessageBox.ButtonRole.YesRole)
-                btn_discard = msg.addButton("Discard", QMessageBox.ButtonRole.DestructiveRole)
-                btn_cancel = msg.addButton("Cancel", QMessageBox.ButtonRole.RejectRole)
-            else:
-                msg.setWindowTitle("Unnamed Session")
-                msg.setText("The session has unsaved changes and no name. Choose an action:")
-                btn_save_default = msg.addButton("Save with Default Name", QMessageBox.ButtonRole.YesRole)
-                btn_rename_save = msg.addButton("Rename & Save", QMessageBox.ButtonRole.YesRole)
-                btn_discard = msg.addButton("Discard", QMessageBox.ButtonRole.DestructiveRole)
-                btn_cancel = msg.addButton("Cancel", QMessageBox.ButtonRole.RejectRole)
-            msg.exec()
-            clicked = msg.clickedButton()
-
-            if clicked == btn_cancel:
-                return False
-            elif clicked == btn_discard:
-                # Discard changes; no saving
-                pass
-            else:
-                # Save or Rename & Save
-                if has_name:
-                    # Save with existing name
-                    success = self.presenter.save_session()
-                    if not success:
-                        QMessageBox.warning(self, "Save Failed", "Failed to save session.")
-                        return False
-                else:
-                    if clicked == btn_save_default:
-                        success = self.presenter.save_session()
-                        if not success:
-                            QMessageBox.warning(self, "Save Failed", "Failed to auto-save session.")
-                            return False
-                        self.update_window_title()
-                    else:  # btn_rename_save
-                        from PyQt6.QtWidgets import QInputDialog
-                        name, ok = QInputDialog.getText(self, "Rename Session", "Enter a name for the session:")
-                        if not ok or not name.strip():
-                            return False
-                        # First, auto-save to create a session with a temporary default name
-                        success_tmp = self.presenter.save_session()
-                        if not success_tmp:
-                            QMessageBox.warning(self, "Save Failed", "Failed to auto-save session.")
-                            return False
-                        # Now rename the saved session to the desired name
-                        session_id = self.presenter.current_session_id
-                        if not session_id:
-                            QMessageBox.warning(self, "Rename Failed", "Session ID not available.")
-                            return False
-                        rename_ok = self.presenter.rename_session(session_id, name.strip())
-                        if not rename_ok:
-                            QMessageBox.warning(self, "Rename Failed", "Failed to rename session.")
-                            return False
-                        # Update session name and UI
-                        self.presenter.session_name = name.strip()
-                        self.update_window_title()
-        
         try:
             if self.presenter.controller and hasattr(self.presenter.controller, 'stop'):
                 self.presenter.controller.stop()
@@ -1604,9 +1515,8 @@ class SessionTab(QWidget):
 
     def _auto_save_session(self):
         """Auto-save the current session periodically."""
-        # Skip auto-save if session is empty
-        if not self.presenter.user_history and not self.presenter._initial_conversation:
-            return
+        # Always attempt auto-save - let the presenter decide if there's anything to save
+        # Empty sessions (no conversation) should still be saved to preserve session metadata and config
         try:
             success = self.presenter.auto_save_current_session()
             if success:
@@ -1726,16 +1636,10 @@ class SessionTab(QWidget):
         # Stop auto-save timer to prevent interference during close
         self._auto_save_timer.stop()
 
-        # Check if there are unsaved changes
-        if self.presenter.has_unsaved_changes():
-            debug_log("closeEvent: has unsaved changes")
-            # Determine if session is empty (no content)
-            is_empty = not self.presenter.user_history and not self.presenter._initial_conversation
-            if not is_empty:
-                # Auto-save with current name or default
-                success = self.presenter.save_session()
-                if not success:
-                    debug_log("closeEvent: auto-save failed, closing anyway")
+        # Always attempt to save session before closing
+        if os.environ.get('THOUGHTMACHINE_DEBUG'):
+            import sys
+            sys.stderr.write(f'[SessionTab] closeEvent: attempting to save session, user_history length={len(self.presenter.user_history) if self.presenter.user_history else 0}, current_session_id={self.presenter.current_session_id}\n')
 
         debug_log("closeEvent: proceeding with closing")
         # Proceed with closing
@@ -1751,7 +1655,15 @@ class SessionTab(QWidget):
             debug_log("closeEvent: controller stopped")
         # self.presenter.state = ExecutionState.IDLE  # Disabled to avoid infinite loop
         # print("[GUI] closeEvent: skipping state reset to avoid infinite loop")
-        # Auto-save session and cleanup presenter
+        # Auto-save session before cleanup
+        debug_log("closeEvent: attempting to save session")
+        try:
+            self.presenter.save_session()
+            debug_log("closeEvent: save_session completed")
+        except Exception as e:
+            debug_log(f"closeEvent: save_session failed: {e}")
+        
+        # Cleanup presenter
         debug_log("closeEvent: calling presenter.cleanup")
         self.presenter.cleanup()
         debug_log("closeEvent: presenter.cleanup returned")

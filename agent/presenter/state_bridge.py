@@ -15,7 +15,7 @@ from typing import Optional, Dict, Any, List
 
 from agent.config import AgentConfig, load_default_config, load_config, save_config, update_config
 from tools import SIMPLIFIED_TOOL_CLASSES
-from session.models import Session, SessionConfig, RuntimeParams
+from session.models import Session, SessionConfig, RuntimeParams, ObservableList
 
 
 class StateBridge:
@@ -165,7 +165,11 @@ class StateBridge:
         self.session_name = session.metadata.get('name')
         
         # Copy any pending user history to the session
+        if os.environ.get('THOUGHTMACHINE_DEBUG'):
+            print(f'[StateBridge] bind_session: pending_history={len(self._pending_user_history)}, session.user_history length={len(session.user_history)}, is_ObservableList={isinstance(session.user_history, ObservableList)}')
         if self._pending_user_history and not session.user_history:
+            if os.environ.get('THOUGHTMACHINE_DEBUG'):
+                print(f'[StateBridge] Performing slice assignment: session.user_history[:] = pending_user_history (len={len(self._pending_user_history)})')
             session.user_history[:] = self._pending_user_history
         self._pending_user_history.clear()
         

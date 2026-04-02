@@ -260,6 +260,6 @@ class OutputPanel(QWidget):
             self.event_model.add_event(event)
         # Reset auto-scroll for loaded content
         self.smart_scroller.reset_auto_scroll()
-        # Rebuild output document with all events
-        self._rebuild_output_document()
+        # Append events incrementally for consistent rendering
+        self.turn_container_manager.append_new_events()
         self.smart_scroller.deferred_scroll_to_bottom()

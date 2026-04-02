@@ -60,6 +60,13 @@ class RefactoredAgentPresenter(QObject):
         self.session_lifecycle = SessionLifecycle(self.state_bridge, self.controller)
         # Set up state change callback
         self.session_lifecycle._session_callback = self._on_session_state_change
+        # Set up conversation change callback
+        if os.environ.get('THOUGHTMACHINE_DEBUG'):
+            print(f"[AgentPresenter] Setting conversation callback")
+        self.session_lifecycle._conversation_callback = lambda: self.gui_integration.emit_conversation_changed()
+        if os.environ.get('THOUGHTMACHINE_DEBUG'):
+            print(f"[AgentPresenter] Conversation callback set")
+
         self.event_processor = EventProcessor(
             self.state_bridge, 
             self.session_lifecycle, 
@@ -212,9 +219,7 @@ class RefactoredAgentPresenter(QObject):
         """Auto-save current session with default name if not already saved."""
         return self.session_lifecycle.auto_save_current_session(default_name)
     
-    def has_unsaved_changes(self) -> bool:
-        """Check if current session has unsaved changes."""
-        return self.session_lifecycle.has_unsaved_changes()
+
 
     def create_agent_config(self) -> AgentConfig:
         """Create AgentConfig from current state."""
@@ -346,9 +351,7 @@ class RefactoredAgentPresenter(QObject):
     # Other methods
 
     
-    def mark_clean(self) -> None:
-        """Mark session as clean (no unsaved changes)."""
-        self.session_lifecycle.mark_clean()
+
     
     def request_stop(self):
         """Request stop of current session."""

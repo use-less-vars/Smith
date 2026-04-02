@@ -217,6 +217,7 @@ class AgentGUI(QMainWindow):
         self.save_open_sessions()
 
         print(f"[AgentGUI] Starting tab close loop, count={self.tab_widget.count()}")
+        tabs_closed = 0
         while self.tab_widget.count() > 0:
             tab = self.tab_widget.widget(0)
             if tab:
@@ -229,13 +230,16 @@ class AgentGUI(QMainWindow):
                 print(f"[AgentGUI] Tab closed successfully, new count={self.tab_widget.count()}")
                 # Safety check: ensure tab count decreased after successful close
                 if self.tab_widget.count() > 0 and self.tab_widget.widget(0) is tab:
-                    # Tab didn't close, break to avoid infinite loop
-                    print(f"[AgentGUI] WARNING: tab.close() returned True but tab not removed")
-                    break
+                    # Tab didn't close, manually remove it to avoid infinite loop
+                    print(f"[AgentGUI] WARNING: tab.close() returned True but tab not removed, manually removing")
+                    self.tab_widget.removeTab(0)
+                    tabs_closed += 1
+                    continue  # Continue with next tab (now at index 0)
+                tabs_closed += 1
             else:
                 print(f"[AgentGUI] No tab at index 0, breaking")
                 break
-        print(f"[AgentGUI] All tabs closed, accepting window close")
+        print(f"[AgentGUI] Closed {tabs_closed} tabs, accepting window close")
         event.accept()
         super().closeEvent(event)
         # Force hide the window to ensure it closes
