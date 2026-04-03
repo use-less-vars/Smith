@@ -567,7 +567,7 @@ class SessionTab(QWidget):
                 return
             # Increment turn counter for new user query
             self._display_turn += 1
-            self.display_user_query(query)
+            self.output_panel.show_processing_indicator(query, self._display_turn)
             self.presenter.start_session(query, config_dict, preset_name=preset_name)
             self.query_entry.clear()
             self.update_window_title()
@@ -577,10 +577,16 @@ class SessionTab(QWidget):
             if query:
                 # New user input when continuing - increment turn counter
                 self._display_turn += 1
-                self.display_user_query(query)
+                self.output_panel.show_processing_indicator(query, self._display_turn)
             else:
                 # Display a placeholder for empty resume (no new turn)
-                self.display_user_query("(resumed)")
+                self.output_panel.display_event({
+                    "type": "system",
+                    "content": "Session resumed",
+                    "turn": self._display_turn,
+                    "timestamp": datetime.datetime.now().isoformat(),
+                    "_detail_level": self.agent_controls_panel.detail_combo.currentText()
+                })
             self.presenter.continue_session(query)
             self.query_entry.clear()
 
@@ -689,18 +695,7 @@ class SessionTab(QWidget):
             self.pause_btn.setEnabled(False)
             self.status_panel.update_status("Ready")
     
-    def display_user_query(self, query, turn=None):
-        """Display a user query in the output area."""
-        debug_log(f"display_user_query: query='{query[:50]}...', _display_turn={self._display_turn}, turn={turn}")
-        # Create a synthetic event for user query
-        event = {
-            "type": "user_query",
-            "content": query,
-            "turn": self._display_turn if turn is None else turn,
-            "_detail_level": self.agent_controls_panel.detail_combo.currentText()
-        }
-        # Delegate to output panel for display
-        self.output_panel.display_event(event)
+
     
     def _create_result_widget(self, result_text, full_text):
         """
@@ -1516,10 +1511,14 @@ class SessionTab(QWidget):
             }
             events.append(final_event)
         
+        # Update display turn counter to match the loaded conversation
+        # current_turn now contains the last turn number in the conversation
+        self._display_turn = current_turn
+        
         # Delegate batch display to output panel
         if events:
             # Debug: print event count and structure
-            debug_log(f"display_loaded_conversation: Created {len(events)} events from {len(conversation)} messages")
+            debug_log(f"display_loaded_conversation: Created {len(events)} events from {len(conversation)} messages, setting _display_turn to {self._display_turn}")
             if events:
                 debug_log(f"First event type: {events[0].get('type')}, turn: {events[0].get('turn', 'N/A')}")
                 debug_log(f"Event types: {[e.get('type') for e in events[:5]]}")

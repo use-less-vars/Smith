@@ -62,6 +62,11 @@ class LogEventType(Enum):
     # Tool execution
     TOOL_CALL = "tool_call"
     TOOL_RESULT = "tool_result"
+    TOOL_DEBUG = "tool_debug"
+    TOOL_WARNING = "tool_warning"
+    TOOL_ERROR = "tool_error"
+    TOOL_INTERNAL = "tool_internal"
+    TOOL_PERFORMANCE = "tool_performance"
     
     # Conversation management
     CONVERSATION_UPDATE = "conversation_update"
@@ -110,6 +115,11 @@ EVENT_TYPE_TO_CATEGORY = {
     # Tool execution
     LogEventType.TOOL_CALL: LogCategory.TOOLS,
     LogEventType.TOOL_RESULT: LogCategory.TOOLS,
+    LogEventType.TOOL_DEBUG: LogCategory.TOOLS,
+    LogEventType.TOOL_WARNING: LogCategory.TOOLS,
+    LogEventType.TOOL_ERROR: LogCategory.TOOLS,
+    LogEventType.TOOL_INTERNAL: LogCategory.TOOLS,
+    LogEventType.TOOL_PERFORMANCE: LogCategory.TOOLS,
     
     # Conversation management
     LogEventType.CONVERSATION_UPDATE: LogCategory.SESSION,
@@ -191,12 +201,43 @@ class AgentLogger:
             if env_list:
                 self.enabled_categories = [LogCategory(cat) for cat in env_list]
         self.log_dir = os.path.abspath(log_dir)
+        # Use config.log_level if log_level is default (INFO) and config has log_level
+        if log_level == LogLevel.INFO and hasattr(config, 'log_level'):
+            log_level = config.log_level
         self.log_level = LogLevel(log_level) if isinstance(log_level, str) else log_level
         self.enable_file_logging = enable_file_logging
         self.enable_console_logging = enable_console_logging
         self.jsonl_format = jsonl_format
         self.max_file_size_bytes = max_file_size_mb * 1024 * 1024
         self.max_backup_files = max_backup_files
+        
+        # Log truncation limits from environment variables
+        # DEBUG_TRUNCATE_LENGTH acts as global override
+        debug_length = os.getenv('DEBUG_TRUNCATE_LENGTH')
+        
+        # Tool result truncation
+        tool_result_env = os.getenv('TOOL_RESULT_TRUNCATE_LENGTH', debug_length)
+        self.tool_result_truncate = int(tool_result_env) if tool_result_env else 100
+        
+        # Raw response truncation  
+        raw_response_env = os.getenv('RAW_RESPONSE_TRUNCATE_LENGTH', debug_length)
+        self.raw_response_truncate = int(raw_response_env) if raw_response_env else 100
+        
+        # Tool arguments truncation
+        tool_args_env = os.getenv('TOOL_ARGUMENTS_TRUNCATE_LENGTH', debug_length)
+        self.tool_arguments_truncate = int(tool_args_env) if tool_args_env else 100
+        
+        # Console data truncation
+        console_data_env = os.getenv('CONSOLE_DATA_TRUNCATE_LENGTH', debug_length)
+        self.console_data_truncate = int(console_data_env) if console_data_env else 200
+        
+        # Conversation content truncation
+        conv_content_env = os.getenv('CONVERSATION_CONTENT_TRUNCATE_LENGTH', debug_length)
+        self.conversation_content_truncate = int(conv_content_env) if conv_content_env else 10000
+        
+        # Docker output truncation
+        docker_output_env = os.getenv('DOCKER_OUTPUT_TRUNCATE_LENGTH', debug_length)
+        self.docker_output_truncate = int(docker_output_env) if docker_output_env else 10000
         
         # Generate session ID if not provided
         self.session_id = session_id or datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
@@ -219,9 +260,6 @@ class AgentLogger:
         self.py_logger = python_logging.getLogger(f"agent_{self.session_id}")
         self.py_logger.setLevel(self._to_python_log_level(self.log_level))
         
-        # Initialize
-        self._initialize_logging()
-        
         # Session metadata
         self.session_start_time = datetime.now()
         self.current_turn = 0
@@ -230,6 +268,17 @@ class AgentLogger:
         
         # Performance monitoring: track recent token usage for trend analysis
         self.recent_token_usage: Deque[Tuple[int, int, float]] = deque(maxlen=10)  # (input_tokens, output_tokens, timestamp)
+        
+        # Initialize
+        self._initialize_logging()
+    
+    def _truncate_string(self, text: str, limit: int) -> str:
+        """Truncate string if longer than limit."""
+        if limit <= 0:
+            return text
+        if len(text) > limit:
+            return text[:limit] + "... [truncated]"
+        return text
         
     def _to_python_log_level(self, level: LogLevel) -> int:
         """Convert LogLevel to Python logging level."""
@@ -388,9 +437,10 @@ class AgentLogger:
         log_msg = f"[{event_type.value}] {message}"
         if data:
             # Truncate large data for console output
-            data_str = str(data)
-            if len(data_str) > 200:
-                data_str = data_str[:200] + "..."
+            data_str = self._truncate_string(str(data), self.console_data_truncate)
+            # For console, use simpler ellipsis
+            if "... [truncated]" in data_str:
+                data_str = data_str.replace("... [truncated]", "...")
             log_msg += f" | Data: {data_str}"
         log_method(log_msg)
     
@@ -523,8 +573,8 @@ class AgentLogger:
         sanitized_messages = []
         for msg in messages:
             sanitized_msg = msg.copy()
-            if "content" in sanitized_msg and len(sanitized_msg["content"]) > 10000:
-                sanitized_msg["content"] = sanitized_msg["content"][:10000] + "... [truncated]"
+            if "content" in sanitized_msg:
+                sanitized_msg["content"] = self._truncate_string(sanitized_msg["content"], self.conversation_content_truncate)
             sanitized_messages.append(sanitized_msg)
         
         # Count tools but don't include full schemas
@@ -574,11 +624,8 @@ class AgentLogger:
     
     def log_raw_response(self, raw_response: Any):
         """Log raw LLM response for debugging."""
-        # Convert raw response to string representation
-        raw_str = str(raw_response)
-        # Truncate very large responses
-        if len(raw_str) > 50000:
-            raw_str = raw_str[:50000] + "... [truncated]"
+        # Convert raw response to string representation and truncate
+        raw_str = self._truncate_string(str(raw_response), self.raw_response_truncate)
         
         self._log_event(
             LogEventType.RAW_RESPONSE,
@@ -593,13 +640,37 @@ class AgentLogger:
     
     def log_tool_call(self, tool_name: str, arguments: Dict[str, Any], tool_call_id: str):
         """Log tool execution."""
+        # Truncate large argument strings if needed
+        log_arguments = arguments
+        if arguments and self.tool_arguments_truncate > 0:
+            try:
+                # Convert to JSON string to check length
+                import json
+                args_str = json.dumps(arguments, default=str)
+                if len(args_str) > self.tool_arguments_truncate:
+                    # Create truncated version
+                    log_arguments = {
+                        "__truncated__": True,
+                        "original_length": len(args_str),
+                        "preview": args_str[:self.tool_arguments_truncate]
+                    }
+            except Exception:
+                # If JSON serialization fails, use string representation
+                args_str = str(arguments)
+                if len(args_str) > self.tool_arguments_truncate:
+                    log_arguments = {
+                        "__truncated__": True,
+                        "original_length": len(args_str),
+                        "preview": args_str[:self.tool_arguments_truncate]
+                    }
+        
         self._log_event(
             LogEventType.TOOL_CALL,
             LogLevel.INFO,
             f"Executing tool: {tool_name}",
             {
                 "tool_name": tool_name,
-                "arguments": arguments,
+                "arguments": log_arguments,
                 "tool_call_id": tool_call_id,
             },
             self.current_turn
@@ -608,9 +679,7 @@ class AgentLogger:
     def log_tool_result(self, tool_name: str, result: Any, tool_call_id: str):
         """Log tool result."""
         # Truncate large results
-        result_str = str(result)
-        if len(result_str) > 20000:
-            result_str = result_str[:20000] + "... [truncated]"
+        result_str = self._truncate_string(str(result), self.tool_result_truncate)
         
         self._log_event(
             LogEventType.TOOL_RESULT,
@@ -624,6 +693,101 @@ class AgentLogger:
             },
             self.current_turn
         )
+    
+    def log_tool_debug(self, tool_name: str, message: str, data: Optional[Dict[str, Any]] = None, tool_call_id: Optional[str] = None):
+        """Log tool debug message."""
+        log_data = {"tool_name": tool_name, "message": message}
+        if data:
+            log_data.update(data)
+        if tool_call_id:
+            log_data["tool_call_id"] = tool_call_id
+        
+        self._log_event(
+            LogEventType.TOOL_DEBUG,
+            LogLevel.DEBUG,
+            f"Tool {tool_name} debug: {message}",
+            log_data,
+            self.current_turn
+        )
+    
+    def log_tool_warning(self, tool_name: str, message: str, data: Optional[Dict[str, Any]] = None, tool_call_id: Optional[str] = None):
+        """Log tool warning."""
+        log_data = {"tool_name": tool_name, "message": message}
+        if data:
+            log_data.update(data)
+        if tool_call_id:
+            log_data["tool_call_id"] = tool_call_id
+        
+        self._log_event(
+            LogEventType.TOOL_WARNING,
+            LogLevel.WARNING,
+            f"Tool {tool_name} warning: {message}",
+            log_data,
+            self.current_turn
+        )
+    
+    def log_tool_error(self, tool_name: str, message: str, data: Optional[Dict[str, Any]] = None, tool_call_id: Optional[str] = None):
+        """Log tool error."""
+        log_data = {"tool_name": tool_name, "message": message}
+        if data:
+            log_data.update(data)
+        if tool_call_id:
+            log_data["tool_call_id"] = tool_call_id
+        
+        self._log_event(
+            LogEventType.TOOL_ERROR,
+            LogLevel.ERROR,
+            f"Tool {tool_name} error: {message}",
+            log_data,
+            self.current_turn
+        )
+    
+    def log_tool_internal(self, tool_name: str, message: str, data: Optional[Dict[str, Any]] = None, tool_call_id: Optional[str] = None):
+        """Log tool internal event."""
+        log_data = {"tool_name": tool_name, "message": message}
+        if data:
+            log_data.update(data)
+        if tool_call_id:
+            log_data["tool_call_id"] = tool_call_id
+        
+        self._log_event(
+            LogEventType.TOOL_INTERNAL,
+            LogLevel.INFO,
+            f"Tool {tool_name} internal: {message}",
+            log_data,
+            self.current_turn
+        )
+    
+    def log_tool_performance(self, tool_name: str, message: str, metrics: Dict[str, Any], tool_call_id: Optional[str] = None):
+        """Log tool performance metrics."""
+        log_data = {"tool_name": tool_name, "message": message, "metrics": metrics}
+        if tool_call_id:
+            log_data["tool_call_id"] = tool_call_id
+        
+        self._log_event(
+            LogEventType.TOOL_PERFORMANCE,
+            LogLevel.INFO,
+            f"Tool {tool_name} performance: {message}",
+            log_data,
+            self.current_turn
+        )
+    
+    def log_tool_event(self, event_type: LogEventType, level: LogLevel, tool_name: str, message: str, data: Optional[Dict[str, Any]] = None, tool_call_id: Optional[str] = None):
+        """Generic tool event logging."""
+        log_data = {"tool_name": tool_name, "message": message}
+        if data:
+            log_data.update(data)
+        if tool_call_id:
+            log_data["tool_call_id"] = tool_call_id
+        
+        self._log_event(
+            event_type,
+            level,
+            f"Tool {tool_name}: {message}",
+            log_data,
+            self.current_turn
+        )
+    
     def log_file_access(self, path: str, operation: str, allowed: bool, size_bytes: Optional[int] = None, additional_data: Optional[Dict[str, Any]] = None):
         """Log file access event."""
         data = {
@@ -675,8 +839,7 @@ class AgentLogger:
             data["exit_code"] = exit_code
         if output_preview is not None:
             # Truncate output preview
-            if len(output_preview) > 10000:
-                output_preview = output_preview[:10000] + "... [truncated]"
+            output_preview = self._truncate_string(output_preview, self.docker_output_truncate)
             data["output_preview"] = output_preview
         
         self._log_event(

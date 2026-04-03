@@ -3,6 +3,7 @@ from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QTextCursor
 
 from qt_gui.panels.event_models import EventDelegate
+from qt_gui.debug_log import debug_log
 
 
 class TurnContainerManager:
@@ -69,8 +70,8 @@ class TurnContainerManager:
                 # DEBUG: Print HTML
                 import os
                 if os.environ.get('THOUGHTMACHINE_DEBUG') == '1':
-                    print(f"[TurnContainer] Inserting HTML for {etype}, turn {turn_num}: {repr(html[:500])}")
-                    print(f"[TurnContainer] HTML length: {len(html)}")
+                    debug_log(f"[TurnContainer] Inserting HTML for {etype}, turn {turn_num}: {repr(html[:500])}")
+                    debug_log(f"[TurnContainer] HTML length: {len(html)}")
                 cursor = self.output_widget.textCursor()
                 cursor.movePosition(QTextCursor.MoveOperation.End)
                 # Close container for turn 0 events

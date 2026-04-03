@@ -11,6 +11,7 @@ from PyQt6.QtGui import QPainter, QPalette, QTextDocument
 from qt_gui.panels.markdown_renderer import MarkdownRenderer
 
 from qt_gui.utils.constants import MAX_RESULT_LENGTH, MAX_TOOL_RESULTS_PER_TURN, MAX_LINES_PER_RESULT, ENABLE_RESULT_TRUNCATION, INTERNAL_EVENT_TYPES
+from qt_gui.debug_log import debug_log
 
 
 class EventModel(QAbstractListModel):
@@ -40,45 +41,80 @@ class EventModel(QAbstractListModel):
 
     def add_event(self, event):
         """Add an event to the model."""
-        # Check for duplicate user_query events
-        # GUI creates synthetic events, agent sends real events - replace synthetic with real
+        # Remove processing indicators for this turn before adding user_query event
         etype = event.get('type', '')
         
         if etype == 'user_query':
-            # Find the most recent user_query event (usually the synthetic one)
-            last_user_query_idx = -1
-            for i, existing_event in enumerate(self.events):
-                if existing_event.get('type') == 'user_query':
-                    last_user_query_idx = i
-                    
-            
-            if last_user_query_idx >= 0:
-                # Debug: print replacement
-                import os
-                # Always log replacement for debugging
-                old_content = self.events[last_user_query_idx].get('content', '')[:50]
-                new_content = event.get('content', '')[:50]
-                
-                # Also check turn numbers
-                old_turn = self.events[last_user_query_idx].get('turn', '?')
-                new_turn = event.get('turn', '?')
-                
-                
-                # Replace existing event
-                self.beginRemoveRows(QModelIndex(), last_user_query_idx, last_user_query_idx)
-                self.events.pop(last_user_query_idx)
-                self.endRemoveRows()
-                # Insert new event at same position
-                self.beginInsertRows(QModelIndex(), last_user_query_idx, last_user_query_idx)
-                self.events.insert(last_user_query_idx, event)
-                self.endInsertRows()
-                return
+            # First, remove any processing indicators for this turn
+            turn = event.get('turn', None)
+            if turn is not None:
+                # Find processing events with matching turn
+                processing_indices = []
+                for i, existing_event in enumerate(self.events):
+                    if existing_event.get('type') == 'processing' and existing_event.get('turn') == turn:
+                        processing_indices.append(i)
+                # Remove in reverse order to maintain indices
+                for idx in reversed(processing_indices):
+                    self.beginRemoveRows(QModelIndex(), idx, idx)
+                    self.events.pop(idx)
+                    self.endRemoveRows()
         
-        # No duplicate found, append normally
-        position = len(self.events)
+        # Find correct insertion position based on chronological order
+        position = self._find_insertion_position(event)
+        
+        # Insert event at correct position
         self.beginInsertRows(QModelIndex(), position, position)
-        self.events.append(event)
+        self.events.insert(position, event)
         self.endInsertRows()
+    
+    def _find_insertion_position(self, event):
+        """Find the correct position to insert an event based on chronological order."""
+        # Get event ordering key
+        event_order = self._get_event_order_key(event)
+        
+        # Find first position where existing event has greater order key
+        for i, existing_event in enumerate(self.events):
+            existing_order = self._get_event_order_key(existing_event)
+            if existing_order > event_order:
+                return i
+        
+        # If no greater event found, append at end
+        return len(self.events)
+    
+    def _get_event_order_key(self, event):
+        """Get a sortable key for event ordering."""
+        # Priority: created_at timestamp > turn number > type-based fallback
+        
+        # 1. created_at timestamp (microsecond precision)
+        if "created_at" in event:
+            return (1, event["created_at"])
+        
+        # 2. turn number (events within same turn need sub-ordering)
+        if "turn" in event:
+            turn = event["turn"]
+            # Within same turn, order by event type to maintain logical flow
+            type_order = {
+                "user_query": 0,
+                "tool_call": 1,
+                "tool_result": 2,
+                "turn": 3,
+                "final": 4,
+                "paused": 5,
+                "stopped": 6,
+                "error": 7,
+                "token_update": 8,
+                "token_warning": 9,
+                "turn_warning": 10,
+                "rate_limit_warning": 11,
+                "user_interaction_requested": 12,
+                "session_state_change": 13,
+                "execution_state_change": 14
+            }
+            type_priority = type_order.get(event.get("type", ""), 999)
+            return (2, turn, type_priority)
+        
+        # 3. No turn or timestamp - place at end
+        return (3, 0)
 
     def clear(self):
         """Clear all events from the model."""
@@ -221,7 +257,7 @@ class EventDelegate(QStyledItemDelegate):
         # DEBUG
         import os
         if os.environ.get('THOUGHTMACHINE_DEBUG') == '1':
-            print(f"[EventDelegate] _event_to_html called for type={etype}, suppress_title_bar={suppress_title_bar}")
+            debug_log(f"[EventDelegate] _event_to_html called for type={etype}, suppress_title_bar={suppress_title_bar}")
 
         # Helper to add a content line
         lines = []
@@ -248,7 +284,7 @@ class EventDelegate(QStyledItemDelegate):
                         lines.append(f'<div>{escaped_text}</div>')
 
         # Title bar - suppress for events that have their own headers
-        skip_title_events = ["user_query", "user_interaction_requested", "final", "finalreport"]
+        skip_title_events = ["user_query", "user_interaction_requested", "final", "finalreport", "processing"]
         if not suppress_title_bar and etype not in skip_title_events:
             html_content = f'<div style="font-weight: bold; background-color: #e0e0e0; padding: 3px; display: block; clear: both;">{html.escape(etype.upper())}</div>'
         else:
@@ -457,6 +493,9 @@ class EventDelegate(QStyledItemDelegate):
                     
                     # Add result with green color and proper spacing
                     lines.append(f'<div style="color: #006400; margin-left: 10px; margin-top: 10px; font-size: 0.95em; display: block;"><b>Result:</b> {display_text}</div>')
+        elif etype == "processing":
+            # Processing indicator - gray italic with hourglass
+            add_line(f"⏳ {event.get('content', '')}", style="color: #808080; font-style: italic; background-color: #f8f8f8; padding: 4px; border-radius: 3px;", use_markdown=False)
         elif etype == "system":
             add_line(f"System: {event.get('content', '')}", style="color: #808080; font-style: italic;", use_markdown=True)
             # Show full summary if present (from SummarizeTool)

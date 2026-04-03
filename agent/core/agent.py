@@ -513,6 +513,8 @@ class Agent:
 
     def _add_conversation_data_to_event(self, event: Dict[str, Any]) -> None:
         """Add conversation version and history to event."""
+        # Add timestamp for chronological ordering
+        event["created_at"] = time.time()
         conv_data = self._get_conversation_data_for_event()
         event.update(conv_data)
 

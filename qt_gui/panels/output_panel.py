@@ -45,6 +45,9 @@ class OutputPanel(QWidget):
         self._batch_update_timer.setInterval(50)  # 50ms batch delay
         self._batch_update_timer.timeout.connect(self._process_batched_events)
         
+        # Processing indicator tracking
+        self._processing_indicators = {}  # turn_number -> event_index
+        
 
         self.init_ui()
         self.turn_container_manager = TurnContainerManager(self.output_textedit, self.filter_proxy_model)
@@ -68,7 +71,7 @@ class OutputPanel(QWidget):
         filter_layout.addWidget(QLabel("Type:"))
         self.filter_type_combo = QComboBox()
         self.filter_type_combo.addItems([
-            "all", "turn", "final", "user_query", "stopped",
+            "all", "turn", "final", "user_query", "processing", "stopped",
             "system", "user_interaction_requested", "token_warning",
             "turn_warning", "paused", "max_turns", "error",
             "thread_finished"
@@ -119,7 +122,8 @@ class OutputPanel(QWidget):
         self._last_filter_type = filter_type
         if debug_enabled:
             debug_log(f"[OutputPanel] _apply_filter: text='{filter_text}', type='{filter_type}'")
-            traceback.print_stack(limit=10)
+            stack_str = "".join(traceback.format_stack(limit=10))
+            debug_log(f"Stack trace:\n{stack_str}")
         self.filter_proxy_model.set_filter(filter_text, filter_type)
         # Rebuild the output document with filtered events
         self._rebuild_output_document()
@@ -222,6 +226,40 @@ class OutputPanel(QWidget):
         # Scroll to bottom if auto-scroll enabled
         self.smart_scroller.deferred_scroll_to_bottom()
     
+    def show_processing_indicator(self, query, turn_number):
+        """Show a temporary 'Processing...' indicator for a user query."""
+        import time
+        from datetime import datetime
+        
+        # Create a temporary processing event
+        event = {
+            "type": "processing",
+            "content": f"⏳ Processing your query: {query[:50]}{'...' if len(query) > 50 else ''}",
+            "turn": turn_number,
+            "timestamp": datetime.now().isoformat(),
+            "_detail_level": "normal",
+            "_is_processing_indicator": True  # Marker to identify processing events
+        }
+        
+        # Add to model
+        self.event_model.add_event(event)
+        
+        # Store the event index for later removal
+        # Since events are appended, the index is the last one
+        event_count = self.event_model.rowCount()
+        if event_count > 0:
+            self._processing_indicators[turn_number] = event_count - 1
+        
+        # Trigger display update
+        self._pending_events.append(event)
+        self._batch_update_timer.start()
+    
+    def remove_processing_indicator(self, turn_number):
+        """Remove the processing indicator for a given turn."""
+        if turn_number in self._processing_indicators:
+            # We could remove from model, but for now just clear the tracking
+            # Actual removal will happen when real user_query replaces it
+            del self._processing_indicators[turn_number]
     
     # Note: _render_pending_turns removed in favor of incremental per-event rendering
 
@@ -256,8 +294,23 @@ class OutputPanel(QWidget):
     def display_loaded_conversation(self, events):
         """Display a loaded conversation from history."""
         self.clear_output()
+        
+        # Sort events chronologically for correct display order
+        # Priority: created_at timestamp > turn number > original order
+        def get_event_order(event):
+            # First try created_at timestamp (microsecond precision)
+            if "created_at" in event:
+                return event["created_at"]
+            # Fall back to turn number (events within same turn)
+            if "turn" in event:
+                return event["turn"]
+            # Fall back to 0 for events without turn
+            return 0
+        
+        sorted_events = sorted(events, key=get_event_order)
+        
         # Add all events to the model first
-        for event in events:
+        for event in sorted_events:
             self.event_model.add_event(event)
         # Reset auto-scroll for loaded content
         self.smart_scroller.reset_auto_scroll()

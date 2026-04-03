@@ -26,15 +26,8 @@ class DirectoryTreeTool(ToolBase):
                          '.db', '.sqlite', '.sqlite3', '.mdb', '.accdb'}
     
     def _debug_log(self, message: str) -> None:
-        """Debug logging - writes to file and stderr."""
-        import sys
-        print(f"DEBUG: {message}", file=sys.stderr)
-        try:
-            with open('debug.log', 'a', encoding='utf-8') as f:
-                import time
-                f.write(f"{time.time():.3f}: {message}\n")
-        except Exception as e:
-            print(f"DEBUG LOG ERROR: {e}", file=sys.stderr)
+        """Debug logging - uses configured logger or falls back to stderr."""
+        self._log_debug(message)
     
 
     
@@ -51,8 +44,6 @@ class DirectoryTreeTool(ToolBase):
     
     def execute(self) -> str:
         self._debug_log(f"DirectoryTreeTool.execute called with directory={self.directory}, exclude_dirs={self.exclude_dirs}")
-        import sys
-        print(f"EXECUTE: directory={self.directory}, exclude_dirs={self.exclude_dirs}", file=sys.stderr)
         try:
             # Resolve directory path
             dir_path = pathlib.Path(self.directory)
@@ -165,13 +156,9 @@ class DirectoryTreeTool(ToolBase):
             pass
         # Debug: print patterns and matching
         self._debug_log(f"exclude_dirs: {self.exclude_dirs}, checking dir '{dir_name}'")
-        import sys
-        print(f"EXCLUDE_CHECK: '{dir_name}' against {self.exclude_dirs}", file=sys.stderr)
         for pattern in self.exclude_dirs:
             if fnmatch.fnmatch(dir_name, pattern):
                 self._debug_log(f"directory '{dir_name}' matches pattern '{pattern}'")
-                import sys
-                print(f"EXCLUDE_MATCH: '{dir_name}' matches pattern '{pattern}'", file=sys.stderr)
                 # Also write to file
                 try:
                     with open('temp/debug_exclude.txt', 'a', encoding='utf-8') as f:

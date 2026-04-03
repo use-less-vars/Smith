@@ -6,6 +6,7 @@ Extracted from agent.py to separate tool execution concerns.
 
 import json
 from typing import List, Dict, Any, Optional, Tuple
+import logging
 from pydantic import ValidationError
 
 from fast_json_repair import loads as repair_loads
@@ -279,6 +280,21 @@ class ToolExecutor:
                     raise
             
             tool_instance = tool_class(**tool_args)
+            # Set logger if available
+            if self.logger:
+                # Set traditional Python logger
+                if hasattr(self.logger, 'py_logger'):
+                    # logger is AgentLogger instance with py_logger attribute
+                    tool_instance._set_logger(self.logger.py_logger)
+                    # Also set agent logger for structured logging
+                    if hasattr(tool_instance, '_set_agent_logger'):
+                        tool_instance._set_agent_logger(self.logger)
+                elif isinstance(self.logger, logging.Logger):
+                    # logger is traditional Python logger
+                    tool_instance._set_logger(self.logger)
+                    # Try to set agent logger if it's also an AgentLogger (unlikely)
+                    if hasattr(self.logger, 'log_tool_debug') and hasattr(tool_instance, '_set_agent_logger'):
+                        tool_instance._set_agent_logger(self.logger)
             tool_result = tool_instance.execute()
             
             # Check for special tool types

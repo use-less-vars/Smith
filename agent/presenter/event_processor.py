@@ -67,6 +67,8 @@ class EventProcessor:
             self._process_token_update_event(event)
         elif event_type == "user_interaction_requested":
             self._process_user_interaction_event(event)
+        elif event_type == "user_query":
+            self._process_user_query_event(event)
         elif event_type == "paused":
             self._process_paused_event(event)
         elif event_type in ["final", "stopped", "max_turns", "thread_finished"]:
@@ -131,6 +133,13 @@ class EventProcessor:
         
         # Auto-save on user interaction
         self.session_lifecycle.auto_save_current_session()
+    
+    def _process_user_query_event(self, event: Dict[str, Any]) -> None:
+        """Process user query event."""
+        # Log the event for debugging
+        if os.environ.get('THOUGHTMACHINE_DEBUG') == '1':
+            print(f"[EventProcessor] Processing user_query event")
+        # No special processing needed - event is already emitted to GUI
     
     def _process_paused_event(self, event: Dict[str, Any]) -> None:
         """Process paused event."""

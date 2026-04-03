@@ -450,7 +450,8 @@ def create_agent_config_service(config_path: str = "agent_config.json") -> Confi
         "max_history_turns": {"type": "int", "min": 0, "max": 1000, "optional": True, "nullable": True},
         "keep_initial_query": {"type": "bool"},
         "keep_system_messages": {"type": "bool"},
-        "preset_name": {"type": "str", "optional": True, "nullable": True}
+        "preset_name": {"type": "str", "optional": True, "nullable": True},
+        "log_categories": {"type": "list", "optional": True}
     }
 
     return ConfigService(config_path, default_config, schema)
