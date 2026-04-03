@@ -25,14 +25,7 @@ from tools import TOOL_CLASSES, SIMPLIFIED_TOOL_CLASSES
 load_dotenv()
 
 # Debug logging
-import datetime
-from pathlib import Path
-DEBUG_LOG_PATH = Path("debug_close.log")
-def debug_log(msg: str):
-    timestamp = datetime.datetime.now().strftime("%H:%M:%S.%f")[:-3]
-    with open(DEBUG_LOG_PATH, "a", encoding="utf-8") as f:
-        f.write(f"[{timestamp}] {msg}\n")
-    # print(f"[DEBUG] {msg}")  # Also print for immediate visibility
+from qt_gui.debug_log import debug_log
 
 from qt_gui.utils.constants import MAX_RESULT_LENGTH
 
@@ -139,7 +132,7 @@ class SessionTab(QWidget):
         self.update_window_title()
         
         if os.environ.get('THOUGHTMACHINE_DEBUG') == '1':
-            print(f"[SessionTab] Created new session: {self.session.session_id}")
+            debug_log(f"Created new session: {self.session.session_id}")
     
     def load_session_by_id(self, session_id: str) -> bool:
         """Load a session by ID from the session store."""
@@ -147,7 +140,7 @@ class SessionTab(QWidget):
             # Load session via presenter
             success = self.presenter.load_session_by_id(session_id)
         except Exception as e:
-            print(f"[SessionTab] Error loading session {session_id}: {e}")
+            debug_log(f"Error loading session {session_id}: {e}")
             self.create_new_session()
             return False
         
@@ -161,17 +154,17 @@ class SessionTab(QWidget):
             try:
                 self.display_loaded_conversation()
             except Exception as e:
-                print(f"[SessionTab] Error displaying session {session_id}: {e}")
+                debug_log(f"Error displaying session {session_id}: {e}")
                 # Continue anyway - session is loaded
             
             self.update_window_title()
             
             if os.environ.get('THOUGHTMACHINE_DEBUG') == '1':
-                print(f"[SessionTab] Loaded session: {session_id}")
+                debug_log(f"Loaded session: {session_id}")
             return True
         else:
             # If loading fails, create new session
-            print(f"[SessionTab] Failed to load session {session_id}, creating new")
+            debug_log(f"Failed to load session {session_id}, creating new")
             self.create_new_session()
             return False
     
@@ -436,8 +429,8 @@ class SessionTab(QWidget):
         debug_enabled = os.environ.get('THOUGHTMACHINE_DEBUG') == '1'
         etype = event["type"]
         if debug_enabled:
-            print(f"[SessionTab] display_event: type={etype}, content preview={str(event.get('content', ''))[:50]}...")
-            print(f"[SessionTab] Event model has {self.event_model.rowCount()} events total")
+            debug_log(f"display_event: type={etype}, content preview={str(event.get('content', ''))[:50]}...")
+            debug_log(f"Event model has {self.event_model.rowCount()} events total")
         if etype == "token_update":
             # Token updates are handled by tokens_updated signal, skip display
             return
@@ -698,7 +691,7 @@ class SessionTab(QWidget):
     
     def display_user_query(self, query, turn=None):
         """Display a user query in the output area."""
-        # print(f"[GUI] display_user_query: '{query[:50]}...'")
+        debug_log(f"display_user_query: query='{query[:50]}...', _display_turn={self._display_turn}, turn={turn}")
         # Create a synthetic event for user query
         event = {
             "type": "user_query",
@@ -798,7 +791,7 @@ class SessionTab(QWidget):
             immediate: If True, save immediately; otherwise use debounced save
         """
         debug_log(f"save_config called: immediate={immediate}, _loading_config={self._loading_config}")
-        print(f"[SessionTab] save_config called, immediate={immediate}")
+        # print(f"[SessionTab] save_config called, immediate={immediate}")  # Removed to reduce console spam
         if self._loading_config:
             return
 
@@ -1142,7 +1135,7 @@ class SessionTab(QWidget):
             if self.presenter.controller and hasattr(self.presenter.controller, 'stop'):
                 self.presenter.controller.stop()
         except Exception as e:
-            print(f"[GUI] Warning: could not stop controller: {e}")
+            debug_log(f"Warning: could not stop controller: {e}")
 
         try:
             success = self.presenter.save_session()
@@ -1210,7 +1203,7 @@ class SessionTab(QWidget):
             is_in_sessions_dir = target_path.parent.samefile(sessions_dir)
         except Exception as e:
             # If path comparison fails, assume not in sessions directory
-            print(f"[SessionTab] Error checking sessions directory: {e}")
+            debug_log(f"Error checking sessions directory: {e}")
         
         if is_in_sessions_dir:
             # User is saving to the sessions directory (rename session)
@@ -1427,7 +1420,7 @@ class SessionTab(QWidget):
             # Try again after a short delay, but limit retries
             self._display_retry_count += 1
             if self._display_retry_count > 10:
-                print(f"[SessionTab] Warning: Too many display retries ({self._display_retry_count}), giving up")
+                debug_log(f"Warning: Too many display retries ({self._display_retry_count}), giving up")
                 return
             QTimer.singleShot(0, self.display_loaded_conversation)
             return
@@ -1526,10 +1519,10 @@ class SessionTab(QWidget):
         # Delegate batch display to output panel
         if events:
             # Debug: print event count and structure
-            print(f"[DEBUG] display_loaded_conversation: Created {len(events)} events from {len(conversation)} messages")
+            debug_log(f"display_loaded_conversation: Created {len(events)} events from {len(conversation)} messages")
             if events:
-                print(f"[DEBUG] First event type: {events[0].get('type')}, turn: {events[0].get('turn', 'N/A')}")
-                print(f"[DEBUG] Event types: {[e.get('type') for e in events[:5]]}")
+                debug_log(f"First event type: {events[0].get('type')}, turn: {events[0].get('turn', 'N/A')}")
+                debug_log(f"Event types: {[e.get('type') for e in events[:5]]}")
             self.output_panel.display_loaded_conversation(events)
 
 

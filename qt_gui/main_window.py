@@ -7,6 +7,7 @@ from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QKeySequence, QAction
 from session.store import FileSystemSessionStore
 from qt_gui.themes import apply_theme
+from qt_gui.debug_log import debug_log
 import json
 from pathlib import Path
 class AgentGUI(QMainWindow):
@@ -54,13 +55,13 @@ class AgentGUI(QMainWindow):
         """Restore previously open sessions from open_sessions.json."""
         open_sessions_path = self.session_store.sessions_dir / "open_sessions.json"
         if not open_sessions_path.exists():
-            print(f"[GUI] No open sessions file at {open_sessions_path}")
+            debug_log(f"No open sessions file at {open_sessions_path}")
             return
         try:
             with open(open_sessions_path, 'r') as f:
                 session_ids = json.load(f)
             if not isinstance(session_ids, list):
-                print(f"[GUI] Invalid open_sessions.json content: {session_ids}")
+                debug_log(f"Invalid open_sessions.json content: {session_ids}")
                 return
             # Filter out session IDs that no longer exist
             existing_ids = []
@@ -69,13 +70,13 @@ class AgentGUI(QMainWindow):
                 if self.session_store.get_session_path(sid).exists():
                     existing_ids.append(sid)
                 else:
-                    print(f"[GUI] Session {sid} no longer exists, skipping")
+                    debug_log(f"Session {sid} no longer exists, skipping")
             # Create tabs for each session ID
             for sid in existing_ids:
                 self.new_tab(session_id=sid)
-            print(f"[GUI] Restored {len(existing_ids)} open sessions")
+            debug_log(f"Restored {len(existing_ids)} open sessions")
         except Exception as e:
-            print(f"[GUI] Failed to restore open sessions: {e}")
+            debug_log(f"Failed to restore open sessions: {e}")
 
     def save_open_sessions(self):
         """Save list of open session IDs to open_sessions.json."""
@@ -88,9 +89,9 @@ class AgentGUI(QMainWindow):
         try:
             with open(open_sessions_path, 'w') as f:
                 json.dump(session_ids, f)
-            print(f"[GUI] Saved {len(session_ids)} open sessions to {open_sessions_path}")
+            debug_log(f"Saved {len(session_ids)} open sessions to {open_sessions_path}")
         except Exception as e:
-            print(f"[GUI] Failed to save open sessions: {e}")
+            debug_log(f"Failed to save open sessions: {e}")
 
     def open_session_in_new_tab(self, file_path):
         """Open a session file in a new tab."""
@@ -101,12 +102,12 @@ class AgentGUI(QMainWindow):
             if success:
                 tab.display_loaded_conversation()
             else:
-                print(f"[GUI] Failed to load session from file: {file_path}")
+                debug_log(f"Failed to load session from file: {file_path}")
                 # Close the tab?
                 tab.close()
                 return
         except Exception as e:
-            print(f"[GUI] Failed to load session {file_path}: {e}")
+            debug_log(f"Failed to load session {file_path}: {e}")
             tab.close()
             return
         index = self.tab_widget.addTab(tab, tab.presenter.session_name or "Untitled")
@@ -191,9 +192,9 @@ class AgentGUI(QMainWindow):
         """Set application theme."""
         if apply_theme(self, theme_name):
             self.current_theme = theme_name
-            print(f"[GUI] Theme set to: {theme_name}")
+            debug_log(f"Theme set to: {theme_name}")
         else:
-            print(f"[GUI] Unknown theme: {theme_name}")
+            debug_log(f"Unknown theme: {theme_name}")
 
     def closeEvent(self, event):
         # Close all tabs by calling close() on each; if any rejects, abort the application close.
@@ -203,38 +204,38 @@ class AgentGUI(QMainWindow):
             super().closeEvent(event)
             return
         self._closing = True
-        print("[AgentGUI] closeEvent called")
+        debug_log("closeEvent called")
         # Save open sessions before closing tabs
         self.save_open_sessions()
 
-        print(f"[AgentGUI] Starting tab close loop, count={self.tab_widget.count()}")
+        debug_log(f"Starting tab close loop, count={self.tab_widget.count()}")
         tabs_closed = 0
         while self.tab_widget.count() > 0:
             tab = self.tab_widget.widget(0)
             if tab:
-                print(f"[AgentGUI] Calling tab.close()")
+                debug_log(f"Calling tab.close()")
                 if not tab.close():
                     event.ignore()
                     self._closing = False
                     super().closeEvent(event)
                     return
-                print(f"[AgentGUI] Tab closed successfully, new count={self.tab_widget.count()}")
+                debug_log(f"Tab closed successfully, new count={self.tab_widget.count()}")
                 # Safety check: ensure tab count decreased after successful close
                 if self.tab_widget.count() > 0 and self.tab_widget.widget(0) is tab:
                     # Tab didn't close, manually remove it to avoid infinite loop
-                    print(f"[AgentGUI] WARNING: tab.close() returned True but tab not removed, manually removing")
+                    debug_log(f"WARNING: tab.close() returned True but tab not removed, manually removing")
                     self.tab_widget.removeTab(0)
                     tabs_closed += 1
                     continue  # Continue with next tab (now at index 0)
                 tabs_closed += 1
             else:
-                print(f"[AgentGUI] No tab at index 0, breaking")
+                debug_log(f"No tab at index 0, breaking")
                 break
-        print(f"[AgentGUI] Closed {tabs_closed} tabs, accepting window close")
+        debug_log(f"Closed {tabs_closed} tabs, accepting window close")
         event.accept()
         super().closeEvent(event)
         # Force hide the window to ensure it closes
         self.hide()
         # Quit the application since main window is closing
         QApplication.instance().quit()
-        print("[AgentGUI] closeEvent accepted, window hidden, app quitting")
+        debug_log("closeEvent accepted, window hidden, app quitting")

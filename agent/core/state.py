@@ -51,6 +51,7 @@ class AgentState:
     # Configuration and dependencies
     config: Any  # AgentConfig
     logger: Optional[Any] = None
+    security_config: Optional[Dict[str, Any]] = None
 
     # State fields
     token_state: TokenState = TokenState.LOW

@@ -40,29 +40,39 @@ class EventModel(QAbstractListModel):
 
     def add_event(self, event):
         """Add an event to the model."""
-        # Check for duplicate user_query events with same turn number
+        # Check for duplicate user_query events
         # GUI creates synthetic events, agent sends real events - replace synthetic with real
         etype = event.get('type', '')
+        
         if etype == 'user_query':
-            turn = event.get('turn', 0)
-            # Look for existing user_query with same turn
+            # Find the most recent user_query event (usually the synthetic one)
+            last_user_query_idx = -1
             for i, existing_event in enumerate(self.events):
-                if existing_event.get('type') == 'user_query' and existing_event.get('turn', 0) == turn:
-                    # Debug: print replacement
-                    import os
-                    if os.environ.get('THOUGHTMACHINE_DEBUG') == '1':
-                        old_content = existing_event.get('content', '')[:50]
-                        new_content = event.get('content', '')[:50]
-                        print(f"[EventModel] Replacing user_query turn={turn}: '{old_content}...' -> '{new_content}...'")
-                    # Replace existing event
-                    self.beginRemoveRows(QModelIndex(), i, i)
-                    self.events.pop(i)
-                    self.endRemoveRows()
-                    # Insert new event at same position
-                    self.beginInsertRows(QModelIndex(), i, i)
-                    self.events.insert(i, event)
-                    self.endInsertRows()
-                    return
+                if existing_event.get('type') == 'user_query':
+                    last_user_query_idx = i
+                    
+            
+            if last_user_query_idx >= 0:
+                # Debug: print replacement
+                import os
+                # Always log replacement for debugging
+                old_content = self.events[last_user_query_idx].get('content', '')[:50]
+                new_content = event.get('content', '')[:50]
+                
+                # Also check turn numbers
+                old_turn = self.events[last_user_query_idx].get('turn', '?')
+                new_turn = event.get('turn', '?')
+                
+                
+                # Replace existing event
+                self.beginRemoveRows(QModelIndex(), last_user_query_idx, last_user_query_idx)
+                self.events.pop(last_user_query_idx)
+                self.endRemoveRows()
+                # Insert new event at same position
+                self.beginInsertRows(QModelIndex(), last_user_query_idx, last_user_query_idx)
+                self.events.insert(last_user_query_idx, event)
+                self.endInsertRows()
+                return
         
         # No duplicate found, append normally
         position = len(self.events)
@@ -237,8 +247,9 @@ class EventDelegate(QStyledItemDelegate):
                     else:
                         lines.append(f'<div>{escaped_text}</div>')
 
-        # Title bar
-        if not suppress_title_bar:
+        # Title bar - suppress for events that have their own headers
+        skip_title_events = ["user_query", "user_interaction_requested", "final", "finalreport"]
+        if not suppress_title_bar and etype not in skip_title_events:
             html_content = f'<div style="font-weight: bold; background-color: #e0e0e0; padding: 3px; display: block; clear: both;">{html.escape(etype.upper())}</div>'
         else:
             html_content = ''
@@ -262,14 +273,14 @@ class EventDelegate(QStyledItemDelegate):
             # Show tool calls
             # Show tool calls
             tool_calls = event.get("tool_calls", [])
-            # Filter out Final/FinalReport tool calls since they get special final event
+            # Filter out Final/FinalReport/RequestUserInteraction tool calls since they get special events
             filtered_tool_calls = []
             for tc in tool_calls:
                 tool_name = tc.get('name')
                 if tool_name is None:
                     function = tc.get('function', {})
                     tool_name = function.get('name', 'Unknown')
-                if tool_name not in ["Final", "FinalReport"]:
+                if tool_name and tool_name.lower() not in ["final", "finalreport", "requestuserinteraction"]:
                     filtered_tool_calls.append(tc)
             # Limit number of displayed tool calls
             display_calls = filtered_tool_calls[:MAX_TOOL_RESULTS_PER_TURN] if ENABLE_RESULT_TRUNCATION else filtered_tool_calls
@@ -348,24 +359,31 @@ class EventDelegate(QStyledItemDelegate):
                 add_line(f"... and {remaining} more tool calls", style="color: #666666; font-style: italic;")
 
         elif etype == "final":
-            # Final answer with prominent header
-            # Add final header similar to turn header
-            lines.append('<div style="background-color: #e6f7ff; padding: 8px 10px; font-weight: bold; border-radius: 5px 5px 0 0; border: 1px solid #99ccff; border-bottom: none; margin-bottom: 0; display: block; width: 100%; clear: both;">FINAL ANSWER</div>')
+            # Skip specific GUI fix reports that are too verbose
+            if event.get('content', '').startswith('## ✅ **All GUI Display Issues Fixed**'):
+                return ''
+            # Final answer with prominent header - use wrapper to avoid border gaps
+            lines.append('<div style="border: 1px solid #99ccff; border-radius: 5px; margin-bottom: 8px; overflow: hidden;">')
+            lines.append('<div style="background-color: #e6f7ff; padding: 8px 10px; font-weight: bold; border-bottom: 1px solid #99ccff;">FINAL ANSWER</div>')
             # Content with blue background styling
-            add_line(f"{event['content']}", style="font-weight: bold; color: #000080; background-color: #f0f8ff; padding: 12px; border-radius: 0 0 5px 5px; border: 1px solid #99ccff; border-top: none; margin-top: 0;", use_markdown=True)
+            add_line(f"{event['content']}", style="font-weight: bold; color: #000080; background-color: #f0f8ff; padding: 12px;", use_markdown=True)
             if "reasoning" in event and event["reasoning"]:
                 add_line(f"{event['reasoning']}", style="color: #666666; font-style: italic; margin-top: 8px; margin-left: 10px;", use_markdown=True)
+            lines.append('</div>')
 
         elif etype == "user_query":
-            # User query with prominent header
-            lines.append('<div style="background-color: #f3e6ff; padding: 8px 10px; font-weight: bold; border-radius: 5px 5px 0 0; border: 1px solid #cc99ff; border-bottom: none; margin-bottom: 0; display: block; width: 100%; clear: both;">USER QUERY</div>')
-            add_line(f"{event.get('content', '')}", style="color: #8B008B; background-color: #f9f0ff; padding: 12px; border-radius: 0 0 5px 5px; border: 1px solid #cc99ff; border-top: none; margin-top: 0; font-weight: bold;", use_markdown=True)
+            # User query with prominent header - use wrapper to avoid border gaps
+            lines.append('<div style="border: 1px solid #cc99ff; border-radius: 5px; margin-bottom: 8px; overflow: hidden;">')
+            lines.append('<div style="background-color: #f3e6ff; padding: 8px 10px; font-weight: bold; border-bottom: 1px solid #cc99ff;">USER QUERY</div>')
+            add_line(f"{event.get('content', '')}", style="color: #8B008B; background-color: #f9f0ff; padding: 12px; font-weight: bold; margin: 0; border: none;", use_markdown=True)
+            lines.append('</div>')
 
         elif etype == "tool_call":
             # Handle separate tool call events
             tool_name = event.get('tool_name', event.get('name', 'unknown'))
-            # Skip Final/FinalReport tool calls since they get special final event
-            if tool_name in ["Final", "FinalReport"]:
+            # Skip Final/FinalReport/RequestUserInteraction tool calls since they get special events
+            if tool_name and tool_name.lower() in ["final", "finalreport", "requestuserinteraction"]:
+                
                 return ''
             tool_call_id = event.get('tool_call_id', 'unknown')
             arguments = event.get('arguments', {})
@@ -384,8 +402,9 @@ class EventDelegate(QStyledItemDelegate):
         elif etype == "tool_result":
             # Handle both legacy and new formats
             tool_name = event.get('tool_name', event.get('name', 'unknown'))
-            # Skip Final/FinalReport tool results since they get special final event
-            if tool_name in ["Final", "FinalReport"]:
+            # Skip Final/FinalReport/RequestUserInteraction tool results since they get special events
+            if tool_name and tool_name.lower() in ["final", "finalreport", "requestuserinteraction"]:
+                
                 return ''
             tool_call_id = event.get('tool_call_id', 'unknown')
             # Try content first (legacy), then result (new)
@@ -449,15 +468,16 @@ class EventDelegate(QStyledItemDelegate):
         elif etype == "stopped":
             add_line("Agent stopped by user.", style="color: #FF8C00;")
         elif etype == "user_interaction_requested":
-            # User interaction request with prominent header
-            # Add user interaction header with lighter blue
-            lines.append('<div style="background-color: #e6f3ff; padding: 8px 10px; font-weight: bold; border-radius: 5px 5px 0 0; border: 1px solid #99ccff; border-bottom: none; margin-bottom: 0; display: block; width: 100%; clear: both;">USER INTERACTION REQUESTED</div>')
+            # User interaction request with prominent header - use wrapper to avoid border gaps
+            lines.append('<div style="border: 1px solid #99ccff; border-radius: 5px; margin-bottom: 8px; overflow: hidden;">')
+            lines.append('<div style="background-color: #e6f3ff; padding: 8px 10px; font-weight: bold; border-bottom: 1px solid #99ccff;">USER INTERACTION REQUESTED</div>')
             # Message with light blue background styling
             message = event.get('message', '')
             if message:
-                add_line(f"{message}", style="color: #006699; background-color: #f0faff; padding: 12px; border-radius: 0 0 5px 5px; border: 1px solid #99ccff; border-top: none; margin-top: 0;", use_markdown=True)
+                add_line(f"{message}", style="color: #006699; background-color: #f0faff; padding: 12px; margin: 0; border: none;", use_markdown=True)
             else:
-                add_line("Agent requests interaction", style="color: #006699; background-color: #f0faff; padding: 12px; border-radius: 0 0 5px 5px; border: 1px solid #99ccff; border-top: none; margin-top: 0;", use_markdown=True)
+                add_line("Agent requests interaction", style="color: #006699; background-color: #f0faff; padding: 12px; margin: 0; border: none;", use_markdown=True)
+            lines.append('</div>')
         elif etype == "token_warning":
             add_line(event.get("message", ""), style="color: #FFA500; font-weight: bold;")
         elif etype == "turn_warning":
@@ -499,8 +519,10 @@ class EventDelegate(QStyledItemDelegate):
         if user_query:
             content = user_query.get('content', '')
             if content:
-                html_content += '<div style="background-color: #f3e6ff; padding: 8px 10px; font-weight: bold; border-radius: 5px 5px 0 0; border: 1px solid #cc99ff; border-bottom: none; margin-bottom: 0; display: block; width: 100%; clear: both;">USER QUERY</div>'
-                html_content += f'<div style="color: #8B008B; background-color: #f9f0ff; padding: 12px; border-radius: 0 0 5px 5px; border: 1px solid #cc99ff; border-top: none; margin-top: 0; font-weight: bold; margin-bottom: 8px;">{html.escape(content)}</div>'
+                html_content += '<div style="border: 1px solid #cc99ff; border-radius: 5px; margin-bottom: 8px; overflow: hidden;">'
+                html_content += '<div style="background-color: #f3e6ff; padding: 8px 10px; font-weight: bold; border-bottom: 1px solid #cc99ff;">USER QUERY</div>'
+                html_content += f'<div style="color: #8B008B; background-color: #f9f0ff; padding: 12px; font-weight: bold; margin: 0; border: none;">{html.escape(content)}</div>'
+                html_content += '</div>'
         
         # Assistant content (grey)
         assistant = turn_data.get('assistant')
@@ -517,12 +539,29 @@ class EventDelegate(QStyledItemDelegate):
         # Tool calls (blue) and results (green)
         tool_calls = turn_data.get('tool_calls', [])
         tool_results = turn_data.get('tool_results', [])
+        
+        # Filter out Final/FinalReport/RequestUserInteraction tool calls since they get special events
+        filtered_tool_calls = []
+        for tc in tool_calls:
+            tool_name = tc.get('tool_name')
+            if tool_name is None:
+                tool_name = tc.get('name', 'Unknown')
+            if tool_name and tool_name.lower() not in ["final", "finalreport", "requestuserinteraction"]:
+                filtered_tool_calls.append(tc)
+        
+        # Also filter tool_results for the same tools
+        filtered_tool_results = []
+        for tr in tool_results:
+            tool_name = tr.get('tool_name', tr.get('name', 'Unknown'))
+            if tool_name and tool_name.lower() not in ["final", "finalreport", "requestuserinteraction"]:
+                filtered_tool_results.append(tr)
+        
         # Add separator before tool calls if any
-        if tool_calls:
+        if filtered_tool_calls:
             html_content += '<div style="margin-top: 16px; border-top: 1px solid #e0e0e0; padding-top: 8px;"></div>'
         
         # Match tool calls with results
-        for i, tool_call in enumerate(tool_calls):
+        for i, tool_call in enumerate(filtered_tool_calls):
             # Add separator between tool calls (except before first)
             if i > 0:
                 html_content += '<div style="margin-top: 8px; border-top: 1px dotted #e0e0e0; padding-top: 8px;"></div>'
@@ -542,7 +581,7 @@ class EventDelegate(QStyledItemDelegate):
             
             # Find matching result
             result_text = ''
-            for result in tool_results:
+            for result in filtered_tool_results:
                 # Match by tool_name or name field
                 result_tool_name = result.get('tool_name', result.get('name'))
                 if result_tool_name == tool_name:
@@ -583,20 +622,26 @@ class EventDelegate(QStyledItemDelegate):
         
         # Final output (special user interaction message)
         final = turn_data.get('final')
+        # Skip specific GUI fix reports that are too verbose
+        if final and final.get('content', '').startswith('## ✅ **All GUI Display Issues Fixed**'):
+            final = None
         if final:
             content = final.get('content', '')
             if content:
-                # Add final header similar to event display
-                html_content += '<div style="background-color: #e6f7ff; padding: 8px 10px; font-weight: bold; border-radius: 5px 5px 0 0; border: 1px solid #99ccff; border-bottom: none; margin-bottom: 0; display: block; width: 100%; clear: both;">FINAL ANSWER</div>'
+                # Add final header with wrapper to avoid border gaps
+                html_content += '<div style="border: 1px solid #99ccff; border-radius: 5px; margin-bottom: 8px; overflow: hidden;">'
+                html_content += '<div style="background-color: #e6f7ff; padding: 8px 10px; font-weight: bold; border-bottom: 1px solid #99ccff;">FINAL ANSWER</div>'
                 # Use markdown rendering for final output with new styling
                 rendered_content = MarkdownRenderer.markdown_to_html(content)
-                html_content += f'<div style="color: #000080; font-weight: bold; background-color: #f0f8ff; padding: 12px; border-radius: 0 0 5px 5px; border: 1px solid #99ccff; border-top: none; margin-top: 0;">{rendered_content}</div>'
+                html_content += f'<div style="color: #000080; font-weight: bold; background-color: #f0f8ff; padding: 12px;">{rendered_content}</div>'
 
             # Include reasoning if present (always visible in compact display)
             reasoning = final.get('reasoning')
             if reasoning:
                 rendered_reasoning = MarkdownRenderer.markdown_to_html(reasoning)
-                html_content += f'<div style="color: #666666; font-style: italic; margin-top: 8px; margin-left: 10px;">{rendered_reasoning}</div>'        
+                html_content += f'<div style="color: #666666; font-style: italic; margin-top: 8px; margin-left: 10px;">{rendered_reasoning}</div>'
+            # Close wrapper div
+            html_content += '</div>'        
         # Other events (system messages, warnings, etc.)
         other_events = turn_data.get('other_events', [])
         for event in other_events:
@@ -611,9 +656,11 @@ class EventDelegate(QStyledItemDelegate):
                 html_content += f'<div style="color: #FF0000; font-weight: bold; margin-top: 8px;">❌ {html.escape(content)}</div>'
             elif etype == 'user_interaction_requested':
                 # Use markdown rendering for user interaction messages with header
-                html_content += '<div style="background-color: #e6f3ff; padding: 8px 10px; font-weight: bold; border-radius: 5px 5px 0 0; border: 1px solid #99ccff; border-bottom: none; margin-bottom: 0; display: block; width: 100%; clear: both;">USER INTERACTION REQUESTED</div>'
+                html_content += '<div style="border: 1px solid #99ccff; border-radius: 5px; margin-bottom: 8px; overflow: hidden;">'
+                html_content += '<div style="background-color: #e6f3ff; padding: 8px 10px; font-weight: bold; border-bottom: 1px solid #99ccff;">USER INTERACTION REQUESTED</div>'
                 rendered_content = MarkdownRenderer.markdown_to_html(content)
-                html_content += f'<div style="color: #006699; background-color: #f0faff; padding: 12px; border-radius: 0 0 5px 5px; border: 1px solid #99ccff; border-top: none; margin-top: 0;">👤 {rendered_content}</div>'
+                html_content += f'<div style="color: #006699; background-color: #f0faff; padding: 12px; margin: 0; border: none;">👤 {rendered_content}</div>'
+                html_content += '</div>'
         
         html_content += '</div>'  # Close content area
         html_content += '</div>'  # Close turn container
@@ -666,6 +713,9 @@ class EventDelegate(QStyledItemDelegate):
                     add_line(f"Result: {unescaped_result}")
 
         elif etype == "final":
+            # Skip specific GUI fix reports that are too verbose
+            if event.get('content', '').startswith('## ✅ **All GUI Display Issues Fixed**'):
+                return ''
             add_line(f"Final answer: {event['content']}")
             if detail_level != "minimal" and "reasoning" in event and event["reasoning"]:
                 add_line(f"Reasoning: {event['reasoning']}")

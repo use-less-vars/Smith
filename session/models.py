@@ -11,6 +11,7 @@ from dataclasses import dataclass, field, asdict
 from datetime import datetime
 from typing import List, Dict, Any, Optional
 import uuid, hashlib, json, os
+from thoughtmachine.security import merge_security_config, get_default_security_config
 
 
 class ObservableList(list):
@@ -177,6 +178,7 @@ class Session:
     agent_instance: Optional[Any] = field(default=None, compare=False, repr=False)
 
     metadata: Dict[str, Any] = field(default_factory=dict)  # name, tags, notes, etc.
+    security_config: Dict[str, Any] = field(default_factory=get_default_security_config)  # session security policy
     _conversation_changed_callbacks: List[Any] = field(default_factory=list, compare=False, repr=False)
     _conversation_version: int = field(default=0, compare=False, repr=False)  # Increments on each history change
     conversation_hash: str = field(default="", compare=False, repr=False)  # Hash of current conversation content
@@ -297,6 +299,7 @@ class Session:
             'containers': [c.to_dict() for c in self.containers],
             'preset_name': self.preset_name,
             'metadata': self.metadata,
+            'security_config': self.security_config,
             'version': self.version,
             'final_content': self.final_content,
             'final_reasoning': self.final_reasoning,
@@ -326,6 +329,8 @@ class Session:
         containers = [ContainerMetadata.from_dict(c) for c in containers_data]
 
         metadata = data.get('metadata', {})
+        security_config_data = data.get('security_config', {})
+        security_config = merge_security_config(security_config_data)
         version = data.get('version', 1)
         final_content = data.get('final_content')
         final_reasoning = data.get('final_reasoning')
@@ -340,6 +345,7 @@ class Session:
             containers=containers,
             preset_name=data.get('preset_name'),
             metadata=metadata,
+            security_config=security_config,
             version=version,
             final_content=final_content,
             final_reasoning=final_reasoning,

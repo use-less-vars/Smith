@@ -84,6 +84,8 @@ class EventType(enum.Enum):
     
     # Capability checks
     CAPABILITY_CHECK = "capability_check"
+    SECURITY_PROMPT = "security_prompt"
+    SECURITY_RESPONSE = "security_response"
     
     # GUI events (for presentation layer)
     TURN = "turn"
@@ -322,6 +324,32 @@ class TurnEvent(BaseEvent):
         return v
 
 
+class SecurityPromptEvent(BaseEvent):
+    """Security prompt for user approval."""
+    type: EventType = Field(default=EventType.SECURITY_PROMPT)
+    
+    @validator('data')
+    def validate_data(cls, v):
+        required = ["request_id", "agent_id", "tool_name", "capabilities", "arguments", "session_id"]
+        for field in required:
+            if field not in v:
+                raise ValueError(f"SecurityPromptEvent requires '{field}' in data")
+        return v
+
+
+class SecurityResponseEvent(BaseEvent):
+    """User response to security prompt."""
+    type: EventType = Field(default=EventType.SECURITY_RESPONSE)
+    
+    @validator('data')
+    def validate_data(cls, v):
+        required = ["request_id", "approved", "remember"]
+        for field in required:
+            if field not in v:
+                raise ValueError(f"SecurityResponseEvent requires '{field}' in data")
+        return v
+
+
 # -----------------------------------------------------------------------------
 # Event Factory Functions
 # -----------------------------------------------------------------------------
@@ -357,6 +385,9 @@ def create_event(
         EventType.TURN_WARNING: TurnWarningEvent,
         EventType.ERROR: ErrorEvent,
         EventType.TURN: TurnEvent,
+        EventType.CAPABILITY_CHECK: BaseEvent,
+        EventType.SECURITY_PROMPT: SecurityPromptEvent,
+        EventType.SECURITY_RESPONSE: SecurityResponseEvent,
         EventType.FINAL: BaseEvent,
         EventType.MAX_TURNS: BaseEvent,
         EventType.STOPPED: BaseEvent,

@@ -1,7 +1,7 @@
 # tools/base.py
 from pydantic import BaseModel, Field, ConfigDict
 
-from typing import Literal, Any, Optional, ClassVar
+from typing import Literal, Any, Optional, ClassVar, List
 
 import os
 
@@ -30,6 +30,9 @@ class ToolBase(BaseModel):
     token_limit: Optional[int] = Field(default=None, description="Maximum token limit for tool output (None = no limit)")
     is_docker: bool = Field(default=False, description="Whether the tool is executing in a Docker container")
     container_workspace_path: Optional[str] = Field(default=None, description="Workspace path as seen from inside the container (e.g., /workspace)")
+
+    # Security capabilities required by this tool
+    requires_capabilities: ClassVar[List[str]] = []
 
     def execute(self) -> str:
         raise NotImplementedError

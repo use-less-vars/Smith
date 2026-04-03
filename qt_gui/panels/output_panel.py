@@ -13,6 +13,7 @@ from qt_gui.panels.event_models import EventModel, EventFilterProxyModel, EventD
 from qt_gui.panels.turn_container_manager import TurnContainerManager
 from qt_gui.panels.markdown_renderer import MarkdownRenderer
 from qt_gui.utils.constants import MAX_RESULT_LENGTH, MAX_TOOL_RESULTS_PER_TURN, MAX_LINES_PER_RESULT, ENABLE_RESULT_TRUNCATION, INTERNAL_EVENT_TYPES
+from qt_gui.debug_log import debug_log
 from qt_gui.utils.smart_scrolling import SmartScroller
 
 
@@ -107,7 +108,7 @@ class OutputPanel(QWidget):
     def _apply_filter(self):
         """Apply current filter settings and rebuild output."""
         import traceback
-        import os
+        import os, traceback
         debug_enabled = os.environ.get('THOUGHTMACHINE_DEBUG') == '1'
         filter_text = self.filter_lineedit.text()
         filter_type = self.filter_type_combo.currentText()
@@ -117,7 +118,7 @@ class OutputPanel(QWidget):
         self._last_filter_text = filter_text
         self._last_filter_type = filter_type
         if debug_enabled:
-            print(f"[OutputPanel] _apply_filter: text='{filter_text}', type='{filter_type}'")
+            debug_log(f"[OutputPanel] _apply_filter: text='{filter_text}', type='{filter_type}'")
             traceback.print_stack(limit=10)
         self.filter_proxy_model.set_filter(filter_text, filter_type)
         # Rebuild the output document with filtered events

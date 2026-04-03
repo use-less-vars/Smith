@@ -1,6 +1,7 @@
 """Signal connection helpers for PyQt6."""
 from typing import Callable, Any
 from PyQt6.QtCore import QObject
+from qt_gui.debug_log import debug_log
 
 
 def connect_signal(signal: Any, slot: Callable) -> None:
@@ -13,7 +14,7 @@ def connect_signal(signal: Any, slot: Callable) -> None:
     try:
         signal.connect(slot)
     except Exception as e:
-        print(f"[signal_helpers] Error connecting signal: {e}")
+        debug_log(f"[signal_helpers] Error connecting signal: {e}")
 
 
 def disconnect_all(signal: Any, *slots) -> None:

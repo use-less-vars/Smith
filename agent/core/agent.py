@@ -225,6 +225,12 @@ class Agent:
     def session(self, value):
         """Set session property, updating context_builder if needed."""
         self._session = value
+        # Update security configuration from session
+        if hasattr(self, 'state') and self.state is not None:
+            if value is not None and hasattr(value, 'security_config'):
+                self.state.security_config = value.security_config
+            else:
+                self.state.security_config = None
         # Update llm_client session
         if hasattr(self, 'llm_client') and self.llm_client is not None:
             self.llm_client.session = value
@@ -681,6 +687,7 @@ class Agent:
         self._display_turn = getattr(self, '_display_turn', 0) + 1
         
         # Emit user query event for GUI display
+        print(f"[Agent.user_query] query='{query[:50]}...', _display_turn={self._display_turn}")
         event_dict = {
             "type": "user_query",
             "content": query,
@@ -1104,6 +1111,9 @@ class Agent:
             reasoning = response.reasoning
             tool_calls = response.tool_calls
             
+            # Initialize user interaction message variable
+            user_interaction_message = None
+            
             # Check for pause request before starting turn
             pause_debug(f"Checking pause request before turn: _pause_requested={self._pause_requested}")
             if self._pause_requested:
@@ -1140,6 +1150,8 @@ class Agent:
                         "context_tokens": self.state.current_conversation_tokens
                     })
                 return
+            
+
             
             # Create turn transaction for atomic buffering of the turn (assistant message + tool results)
             turn_transaction = TurnTransaction(self.session, self.context_builder)
@@ -1183,7 +1195,7 @@ class Agent:
             # Execute tool calls if present
             if tool_calls:
                 # Execute tool calls
-                executed_tools, final_detected, final_content, user_interaction_requested, summary_text, summary_keep_recent_turns = self.tool_executor.execute_tool_calls(
+                executed_tools, final_detected, final_content, user_interaction_message, summary_text, summary_keep_recent_turns = self.tool_executor.execute_tool_calls(
                     tool_calls,
                     add_to_conversation_func=self._add_to_conversation,
                     update_token_func=self._update_tokens_and_yield,
@@ -1280,16 +1292,16 @@ class Agent:
                     return
                 
                 # Handle user interaction request
-                if user_interaction_requested:
+                if user_interaction_message is not None:
                     # Update execution state to WAITING_FOR_USER (waiting for user input)
                     events = self.state.set_execution_state(ExecutionState.WAITING_FOR_USER)
                     for event in events:
                         for yielded_event in self._handle_state_event(event):
                             yield yielded_event
-                    # Yield user interaction requested event
+                    # Yield user interaction requested event with actual message from tool
                     event_dict = {
                         "type": "user_interaction_requested",
-                        "message": "Waiting for user input",
+                        "message": user_interaction_message if user_interaction_message else "Waiting for user input",
                         "turn": self._display_turn,
                         "context_length": self.state.current_conversation_tokens,
                     }

@@ -70,7 +70,7 @@ class ToolExecutor:
         update_token_func,
         agent_id: int,
         turn_transaction: Optional[TurnTransaction] = None
-    ) -> Tuple[List[Dict[str, Any]], bool, bool, Optional[str], Optional[int]]:
+    ) -> Tuple[List[Dict[str, Any]], bool, Optional[str], Optional[str], Optional[str], Optional[int]]:
         """
         Execute multiple tool calls from an assistant message.
         
@@ -222,7 +222,7 @@ class ToolExecutor:
             executed_tools,
             final_detected,
             final_content,
-            user_interaction_requested,
+            user_interaction_message if user_interaction_requested else None,
             summary_text if summary_requested else None,
             summary_keep_recent_turns if summary_requested else None
         )
@@ -262,8 +262,18 @@ class ToolExecutor:
             
             # Security capability check
             if self.security_available and self.CapabilityRegistry:
+                security_config = None
+                if self.state and hasattr(self.state, 'security_config'):
+                    security_config = self.state.security_config
                 try:
-                    self.CapabilityRegistry.check(agent_id, tool_name, **tool_args)
+                    allowed = self.CapabilityRegistry.check(
+                        agent_id, 
+                        tool_name, 
+                        security_config=security_config, 
+                        **tool_args
+                    )
+                    if not allowed:
+                        raise ValueError("Security check denied: insufficient capabilities")
                 except Exception as e:
                     tool_result = f"Security check failed: {e}"
                     raise

@@ -1,5 +1,6 @@
 """Config bridge for GUI configuration management."""
 from PyQt6.QtCore import QTimer
+from qt_gui.debug_log import debug_log
 from typing import Callable, List, Optional, Dict, Any
 
 
@@ -26,7 +27,7 @@ class GUIConfigBridge:
             immediate: If True, save immediately; otherwise debounced (1s).
         """
         import threading
-        print(f"[GUIConfigBridge DEBUG] save_config: immediate={immediate}, thread={threading.get_ident()}")
+        debug_log(f"[GUIConfigBridge DEBUG] save_config: immediate={immediate}, thread={threading.get_ident()}")
         # Update config in service immediately (but don't save)
         self.config_service.update(config_dict, notify=True, save=False)
         if immediate:
@@ -37,17 +38,17 @@ class GUIConfigBridge:
     def _perform_save(self) -> None:
         """Actually save to the config service."""
         import threading
-        print(f"[GUIConfigBridge DEBUG] _perform_save start, thread={threading.get_ident()}")
+        debug_log(f"[GUIConfigBridge DEBUG] _perform_save start, thread={threading.get_ident()}")
         self.config_service.save(immediate=True)
         self._pending_config = None
         # Notify listeners about save
         try:
             current = self.config_service.get_all()
-            print(f"[GUIConfigBridge DEBUG] _perform_save notifying listeners, thread={threading.get_ident()}")
+            debug_log(f"[GUIConfigBridge DEBUG] _perform_save notifying listeners, thread={threading.get_ident()}")
             self._notify_listeners(current)
         except Exception as e:
-            print(f"[GUIConfigBridge] Error getting config after save: {e}")
-        print(f"[GUIConfigBridge DEBUG] _perform_save done, thread={threading.get_ident()}")
+            debug_log(f"[GUIConfigBridge] Error getting config after save: {e}")
+        debug_log(f"[GUIConfigBridge DEBUG] _perform_save done, thread={threading.get_ident()}")
             
     def add_change_listener(self, callback: Callable[[Dict[str, Any]], None]) -> None:
         """Add a listener for configuration changes.
@@ -69,7 +70,7 @@ class GUIConfigBridge:
             try:
                 listener(config)
             except Exception as e:
-                print(f"[GUIConfigBridge] Error in listener: {e}")
+                debug_log(f"[GUIConfigBridge] Error in listener: {e}")
                 
     def get_config(self) -> Dict[str, Any]:
         """Get current configuration from service."""
