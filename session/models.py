@@ -191,6 +191,7 @@ class Session:
     next_seq: int = 0  # Next sequence number for messages
     final_content: Optional[str] = None  # Content of the Final tool's result, if any
     final_reasoning: Optional[str] = None  # Reasoning that preceded the final answer
+    final_timestamp: Optional[datetime] = None  # Timestamp when final answer was generated
     summary: Optional[Dict[str, Any]] = field(default=None, compare=False, repr=False)  # Summary system message (from pruning)
 
     # Runtime reference to the active Agent instance (not persisted)
@@ -341,6 +342,7 @@ class Session:
             'version': self.version,
             'final_content': self.final_content,
             'final_reasoning': self.final_reasoning,
+            'final_timestamp': self.final_timestamp.isoformat() if self.final_timestamp else None,
             'summary': self.summary,
             'total_input_tokens': self.total_input_tokens,
             'total_output_tokens': self.total_output_tokens,
@@ -391,6 +393,8 @@ class Session:
         version = data.get('version', 1)
         final_content = data.get('final_content')
         final_reasoning = data.get('final_reasoning')
+        final_timestamp_data = data.get('final_timestamp')
+        final_timestamp = datetime.fromisoformat(final_timestamp_data) if final_timestamp_data else None
 
         session = cls(
             session_id=str(data.get('session_id', str(uuid.uuid4()))),
@@ -406,6 +410,7 @@ class Session:
             version=version,
             final_content=final_content,
             final_reasoning=final_reasoning,
+            final_timestamp=final_timestamp,
             summary=data.get('summary'),
             total_input_tokens=data.get('total_input_tokens', 0),
             total_output_tokens=data.get('total_output_tokens', 0),

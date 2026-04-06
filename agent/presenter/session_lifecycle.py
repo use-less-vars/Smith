@@ -204,10 +204,11 @@ class SessionLifecycle:
         # Register callback for conversation changes
         self._register_session_callbacks(session)
         self.state_bridge.update_external_file_path(None)
-        # Clear final content
+        # Clear final content and timestamp
         if self.state_bridge.current_session:
             self.state_bridge.current_session.final_content = None
             self.state_bridge.current_session.final_reasoning = None
+            self.state_bridge.current_session.final_timestamp = None
         # Ensure state is IDLE
         self.state = ExecutionState.IDLE
         # Status message will be emitted through event processing

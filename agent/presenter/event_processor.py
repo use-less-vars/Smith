@@ -6,6 +6,7 @@ Designed to be used with GUI integration for signal emission.
 """
 
 import os
+from datetime import datetime
 from typing import Dict, Any, Optional
 from agent.logging.debug_log import debug_log
 
@@ -154,12 +155,24 @@ class EventProcessor:
             if self.gui_integration:
                 self.gui_integration.emit_status_message("Completed successfully")
             
-            # Capture final content
+            # Capture final content and timestamp
             content = event.get('content')
             reasoning = event.get('reasoning')
+            # Get timestamp from event (created_at or timestamp field)
+            timestamp_str = event.get('created_at') or event.get('timestamp')
+            timestamp = None
+            if timestamp_str:
+                try:
+                    timestamp = datetime.fromisoformat(timestamp_str)
+                except (ValueError, TypeError):
+                    timestamp = datetime.now()
+            else:
+                timestamp = datetime.now()
+            
             if content and self.state_bridge.current_session:
                 self.state_bridge.current_session.final_content = content
                 self.state_bridge.current_session.final_reasoning = reasoning
+                self.state_bridge.current_session.final_timestamp = timestamp
         elif event_type == "max_turns":
             self.session_lifecycle.state = ExecutionState.PAUSED
             if self.gui_integration:

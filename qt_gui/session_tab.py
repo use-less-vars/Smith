@@ -1423,12 +1423,12 @@ class SessionTab(QWidget):
     def display_loaded_conversation(self):
         """Display the currently loaded conversation (full user history)."""
         from .debug_log import debug_log
-        debug_log(f"display_loaded_conversation called, output_panel exists: {hasattr(self, "output_panel")}, status_panel exists: {hasattr(self, "status_panel")}", level="DEBUG")
+        debug_log(f"display_loaded_conversation called, output_panel exists: {hasattr(self, 'output_panel')}, status_panel exists: {hasattr(self, 'status_panel')}", level="DEBUG")
         # If UI panels are not initialized yet, defer until they are
         # Both output_panel and status_panel are needed for display
         if not hasattr(self, 'output_panel') or self.output_panel is None or \
            not hasattr(self, 'status_panel') or self.status_panel is None:
-            debug_log(f"UI panels not ready, output_panel: {hasattr(self, "output_panel")}, status_panel: {hasattr(self, "status_panel")}, retry count: {self._display_retry_count}", level="DEBUG")
+            debug_log(f"UI panels not ready, output_panel: {hasattr(self, 'output_panel')}, status_panel: {hasattr(self, 'status_panel')}, retry count: {self._display_retry_count}", level="DEBUG")
             # Try again after a short delay, but limit retries
             self._display_retry_count += 1
             if self._display_retry_count > 10:
@@ -1583,10 +1583,17 @@ class SessionTab(QWidget):
         # If the session has a final_content (from Final tool), add it as a final event
         session = self.presenter.current_session
         if session and getattr(session, 'final_content', None):
+            # Use stored final_timestamp if available, otherwise current time (backward compatibility)
+            final_timestamp = getattr(session, 'final_timestamp', None)
+            if final_timestamp:
+                ts = final_timestamp.isoformat()
+            else:
+                ts = datetime.datetime.now().isoformat()
+            
             final_event = {
                 'type': 'final',
-                'created_at': datetime.datetime.now().isoformat(),
-                'timestamp': datetime.datetime.now().isoformat(),
+                'created_at': ts,
+                'timestamp': ts,
                 'content': session.final_content,
                 'reasoning': getattr(session, 'final_reasoning', '') or '',
                 '_detail_level': self.presenter._config.get('detail', 'normal'),
