@@ -421,6 +421,7 @@ def create_agent_config_service(config_path: str = "agent_config.json") -> Confi
     ]
     for key in fields_to_remove:
         default_config.pop(key, None)
+    default_config["use_qml_ui"] = False
 
     # Schema for validation (simplified, using AgentConfig validation primarily)
     schema = {
@@ -452,7 +453,8 @@ def create_agent_config_service(config_path: str = "agent_config.json") -> Confi
         "keep_initial_query": {"type": "bool"},
         "keep_system_messages": {"type": "bool"},
         "preset_name": {"type": "str", "optional": True, "nullable": True},
-        "log_categories": {"type": "list", "optional": True}
+        "log_categories": {"type": "list", "optional": True},
+        "use_qml_ui": {"type": "bool", "optional": True}
     }
 
     return ConfigService(config_path, default_config, schema)

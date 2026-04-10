@@ -185,7 +185,9 @@ class Agent:
         
         # Initialize context builder
         max_context_tokens = self._get_max_context_tokens()
+        debug_log('context_builder', f"Agent init: session is None={session is None}, max_context_tokens={max_context_tokens}")
         self.context_builder = self.llm_client.create_context_builder(token_limit=max_context_tokens)
+        debug_log('context_builder', f"Agent init: context_builder created, is None={self.context_builder is None}")
         if self.context_builder:
             self.conversation_manager.context_builder = self.context_builder
         
@@ -225,6 +227,7 @@ class Agent:
     @session.setter
     def session(self, value):
         """Set session property, updating context_builder if needed."""
+        debug_log('context_builder', f"session setter called: value is None={value is None}")
         self._session = value
         # Update security configuration from session
         if hasattr(self, 'state') and self.state is not None:
@@ -238,10 +241,13 @@ class Agent:
         # If context_builder exists and has session attribute, update it
         if hasattr(self, 'context_builder') and self.context_builder is not None and hasattr(self.context_builder, 'session'):
             self.context_builder.session = value
+            debug_log('context_builder', f"Updated existing context_builder.session")
         # Create context_builder if it doesn't exist and we have a session
         elif value is not None and hasattr(self, 'llm_client') and self.llm_client is not None:
-            # Create a new context_builder with the session
-            self.context_builder = self.llm_client.create_context_builder()
+            # Create a new context_builder with the session and proper token limit
+            max_context_tokens = self._get_max_context_tokens()
+            self.context_builder = self.llm_client.create_context_builder(token_limit=max_context_tokens)
+            debug_log('context_builder', f"Created new context_builder with token_limit={max_context_tokens}: is None={self.context_builder is None}")
             # Update conversation_manager.context_builder
             if hasattr(self, 'conversation_manager') and self.conversation_manager is not None:
                 self.conversation_manager.context_builder = self.context_builder
@@ -362,13 +368,47 @@ class Agent:
     
     def _update_conversation_token_estimate(self):
         """Update current_conversation_tokens by estimating tokens for runtime context."""
+        # Debug logging for token estimation path
+        debug_log('context_builder', f"_update_conversation_token_estimate: has context_builder={hasattr(self, 'context_builder')}, context_builder is None={self.context_builder if hasattr(self, 'context_builder') else 'no attr'}")
+        debug_log('context_builder', f"conversation length: {len(self.conversation)}")
+        
+        # Ensure context_builder exists and has correct token limit if we have a session
+        if self.session is not None:
+            # Calculate correct token limit
+            correct_token_limit = self._get_max_context_tokens()
+            
+            # Check if we need to create or update context_builder
+            needs_update = False
+            if not hasattr(self, 'context_builder') or self.context_builder is None:
+                debug_log('context_builder', "Creating missing context_builder for token estimation")
+                needs_update = True
+            elif hasattr(self.context_builder, 'token_limit'):
+                # Check if token_limit matches expected value
+                current_limit = self.context_builder.token_limit
+                if current_limit != correct_token_limit:
+                    debug_log('context_builder', f"Context builder token_limit mismatch: {current_limit} != {correct_token_limit}, recreating")
+                    needs_update = True
+            
+            if needs_update:
+                # Ensure llm_client.session is set
+                if hasattr(self, 'llm_client') and self.llm_client is not None:
+                    self.llm_client.session = self.session
+                    self.context_builder = self.llm_client.create_context_builder(token_limit=correct_token_limit)
+                    debug_log('context_builder', f"Created/updated context_builder with token_limit={correct_token_limit}")
+                    if self.context_builder and hasattr(self, 'conversation_manager') and self.conversation_manager is not None:
+                        self.conversation_manager.context_builder = self.context_builder
+        
         # Get runtime context from HistoryProvider (main prompt + latest summary + recent turns)
         if not hasattr(self, 'context_builder') or self.context_builder is None:
             runtime_context = self.conversation
+            debug_log('context_builder', f"Token estimation path: context_builder is None, using full conversation, length={len(runtime_context)}")
         elif hasattr(self.context_builder, 'get_context_for_llm'):
             runtime_context = self.context_builder.get_context_for_llm()
+            debug_log('context_builder', f"Token estimation path: used context_builder.get_context_for_llm, length={len(runtime_context)}")
         else:
             runtime_context = self.context_builder.build(self.conversation)
+            debug_log('context_builder', f"Token estimation path: used context_builder.build, length={len(runtime_context)}")
+
         
         # Clean orphaned tool messages for accurate token estimation
         original_len = len(runtime_context)
@@ -381,6 +421,11 @@ class Agent:
             estimated_tokens += self.token_counter.estimate_tokens(msg)
         
         self.state.current_conversation_tokens = estimated_tokens
+        
+        # DEBUG PRINT
+        print(f"[DEBUG_TOKEN_ESTIMATE] Estimated tokens: {estimated_tokens}, runtime_context length: {len(runtime_context)}, conversation length: {len(self.conversation)}")
+        if hasattr(self, 'context_builder') and self.context_builder is not None and hasattr(self.context_builder, 'token_limit'):
+            print(f"[DEBUG_TOKEN_ESTIMATE] context_builder.token_limit: {self.context_builder.token_limit}")
 
         if DEBUG_PRUNING_AVAILABLE:
             log_token_count("Runtime context token estimate", estimated_tokens, f"from {len(runtime_context)}/{len(self.conversation)} messages")
@@ -438,7 +483,6 @@ class Agent:
     def total_input_tokens(self, value):
         if self.session is not None:
             self.session.total_input_tokens = value
-            self.session.context_length = self.session.total_input_tokens + self.session.total_output_tokens
         self._token_counts['input'] = value
     
     @property
@@ -451,7 +495,6 @@ class Agent:
     def total_output_tokens(self, value):
         if self.session is not None:
             self.session.total_output_tokens = value
-            self.session.context_length = self.session.total_input_tokens + self.session.total_output_tokens
         self._token_counts['output'] = value
     
     def _get_max_context_tokens(self) -> int:
@@ -1494,8 +1537,10 @@ class Agent:
             self.conversation = user_history
         
         # Clear HistoryProvider cache since we modified user_history directly
+        debug_log('context_builder', f"_apply_summary_pruning: clearing context_builder cache, exists={hasattr(self, 'context_builder')}, is None={self.context_builder if hasattr(self, 'context_builder') else 'no attr'}, has _cached_context={hasattr(self.context_builder, '_cached_context') if hasattr(self, 'context_builder') and self.context_builder is not None else False}")
         if hasattr(self, 'context_builder') and self.context_builder is not None and hasattr(self.context_builder, '_cached_context'):
             self.context_builder._cached_context = None
+            debug_log('context_builder', f"_apply_summary_pruning: cleared _cached_context")
         
         # Log the pruning action
         if self.logger:

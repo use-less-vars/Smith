@@ -10,6 +10,16 @@ from typing import List, Dict, Any, Optional, Tuple
 import tiktoken
 import os
 import logging
+import sys
+import os
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)) + "/../")
+
+try:
+    from debug_pruning import debug_log
+    DEBUG_PRUNING_AVAILABLE = True
+except ImportError:
+    DEBUG_PRUNING_AVAILABLE = False
+    debug_log = lambda *args, **kwargs: None
 
 logger = logging.getLogger(__name__)
 
@@ -295,6 +305,7 @@ class SummaryBuilder(ContextBuilder):
         
         # Find main system prompt and latest summary
         main_prompt, summary_idx, summary_msg = self._find_main_prompt_and_summary(user_history)
+        debug_log('summary_builder', f"SummaryBuilder.build: found summary_idx={summary_idx}, summary_msg exists={summary_msg is not None}")
         
         # Debug: log what we found
         if os.environ.get('DEBUG_CONTEXT'):
@@ -307,6 +318,7 @@ class SummaryBuilder(ContextBuilder):
         keep_turns = self.default_keep_turns
         if summary_msg is not None:
             keep_turns = summary_msg.get('pruning_keep_recent_turns', self.default_keep_turns)
+        debug_log('summary_builder', f"SummaryBuilder.build: keep_turns={keep_turns}")
         
         # Get messages after summary (or all messages if no summary)
         if summary_idx >= 0:
@@ -320,6 +332,7 @@ class SummaryBuilder(ContextBuilder):
 
         # Group into turns
         turns = self._group_messages_into_turns(non_system)
+        debug_log('summary_builder', f"SummaryBuilder.build: grouped {len(non_system)} non-system messages into {len(turns)} turns")
 
         # Determine which turns to keep
         if summary_msg is not None and keep_turns > 0:
@@ -345,6 +358,7 @@ class SummaryBuilder(ContextBuilder):
             # No summary or keep_turns == 0: keep only most recent keep_turns turns
             if keep_turns < len(turns):
                 turns = turns[-keep_turns:]        
+        debug_log('summary_builder', f"SummaryBuilder.build: after selection, keeping {len(turns)} turns")
         # Assemble context
         context = []
         if main_prompt:
@@ -356,6 +370,7 @@ class SummaryBuilder(ContextBuilder):
         for turn in turns:
             context.extend(turn)
         
+        debug_log('summary_builder', f"SummaryBuilder.build: assembled {len(context)} messages before truncation")
         # If max_tokens is provided, further truncate
         # When there's a summary, remove newest turns first (after summary) to preserve originally-kept turns
         # When no summary, remove oldest turns first
@@ -366,6 +381,7 @@ class SummaryBuilder(ContextBuilder):
         
         # Clean up any orphaned tool messages that may have been created by truncation
         context = self._cleanup_orphaned_tool_messages(context)
+        debug_log('summary_builder', f"SummaryBuilder.build: final context length {len(context)} messages")
         
         # Debug output
         if os.environ.get('DEBUG_CONTEXT'):

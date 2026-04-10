@@ -93,9 +93,23 @@ class HistoryProvider:
         self._session = value
         # Clear cache when session changes
         self._cached_context = None
+    @staticmethod
+    def _parse_timestamp(timestamp):
+        """Parse timestamp that could be ISO string, Unix timestamp (float/int), or datetime."""
+        if isinstance(timestamp, datetime):
+            return timestamp
+        elif isinstance(timestamp, (int, float)):
+            # Unix timestamp
+            return datetime.fromtimestamp(timestamp)
+        elif isinstance(timestamp, str):
+            # ISO format string
+            return datetime.fromisoformat(timestamp)
+        else:
+            raise TypeError(f"Cannot parse timestamp of type {type(timestamp)}: {timestamp}")
         
     def get_context_for_llm(self) -> List[Dict[str, Any]]:
         """Return messages suitable for LLM context (pruned view)."""
+        debug_log('history_provider', f"get_context_for_llm called: cached_context is None={self._cached_context is None}")
         if self._cached_context is not None:
             return self._cached_context
             
@@ -151,6 +165,7 @@ class HistoryProvider:
                 f'[DEBUG_HISTORY_PROVIDER] Removed {original_len - len(context)} orphaned tool messages from context'
             )
         
+        debug_log('history_provider', f"get_context_for_llm returning {len(context)} messages (full history: {len(self.session.user_history)})")
         self._cached_context = context
         return context
     
@@ -178,9 +193,14 @@ class HistoryProvider:
             current_timestamp = message.get('created_at')
             print(f"[TIMESTAMP_DEBUG] Adding message created_at: {current_timestamp}")
             if prev_timestamp and current_timestamp:
-                # Compare timestamps (assuming ISO format strings)
-                if prev_timestamp > current_timestamp:
-                    print(f"[TIMESTAMP_WARNING] Timestamp ordering violation! Previous {prev_timestamp} > current {current_timestamp}")
+                # Compare timestamps (handling both ISO strings and Unix timestamps)
+                try:
+                    prev_dt = self._parse_timestamp(prev_timestamp)
+                    current_dt = self._parse_timestamp(current_timestamp)
+                    if prev_dt > current_dt:
+                        print(f"[TIMESTAMP_WARNING] Timestamp ordering violation! Previous {prev_timestamp} > current {current_timestamp}")
+                except (TypeError, ValueError) as e:
+                    print(f"[TIMESTAMP_ERROR] Failed to parse timestamps: {e}. Previous: {prev_timestamp}, Current: {current_timestamp}")
         # Ensure message has a sequence number for ordering
         if 'seq' not in message:
             message['seq'] = self.session._get_next_seq()

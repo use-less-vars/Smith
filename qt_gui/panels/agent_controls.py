@@ -190,7 +190,22 @@ class AgentControlsPanel(QGroupBox):
         # Add turn monitor row to left column
         self.left_column.addWidget(turn_monitor_row)
 
-        # Row 4: Temperature control
+        # Row 4: QML UI toggle
+        qml_ui_row = QWidget()
+        qml_ui_layout = QHBoxLayout()
+        qml_ui_row.setLayout(qml_ui_layout)
+        qml_ui_layout.setSpacing(5)
+
+        self.qml_ui_checkbox = QCheckBox("Use QML UI")
+        self.qml_ui_checkbox.setToolTip("Use modern QML conversation view instead of classic output panel")
+        self.qml_ui_checkbox.setChecked(False)
+        qml_ui_layout.addWidget(self.qml_ui_checkbox)
+        qml_ui_layout.addStretch()
+
+        # Add QML UI row to left column
+        self.left_column.addWidget(qml_ui_row)
+
+        # Row 5: Temperature control
         temperature_row = QWidget()
         temperature_layout = QHBoxLayout()
         temperature_row.setLayout(temperature_layout)
@@ -721,6 +736,8 @@ class AgentControlsPanel(QGroupBox):
         config["turn_monitor_enabled"] = self.turn_monitor_checkbox.isChecked()
         config["turn_monitor_warning_threshold"] = self.turn_warning_threshold_spinbox.value()
         config["turn_monitor_critical_threshold"] = self.turn_critical_threshold_spinbox.value()
+        # QML UI mode
+        config["use_qml_ui"] = self.qml_ui_checkbox.isChecked()
         # Conversation pruning (default values)
         config["max_history_turns"] = self.max_history_turns
         config["keep_initial_query"] = self.keep_initial_query
@@ -787,6 +804,10 @@ class AgentControlsPanel(QGroupBox):
             self.turn_warning_threshold_spinbox.setValue(config["turn_monitor_warning_threshold"])
         if "turn_monitor_critical_threshold" in config:
             self.turn_critical_threshold_spinbox.setValue(config["turn_monitor_critical_threshold"])
+
+        # QML UI mode
+        if "use_qml_ui" in config:
+            self.qml_ui_checkbox.setChecked(config["use_qml_ui"])
 
         # Tool output limit
         if "tool_output_limit" in config:

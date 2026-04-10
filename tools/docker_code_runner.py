@@ -242,12 +242,12 @@ chmod +x "{script_path}"
 
         if not DOCKER_AVAILABLE:
             duration = time.time() - start_time
-            return self._build_json_response(
+            return self._truncate_output(self._build_json_response(
                 success=False,
                 exit_code=-1,
                 error="Docker Python SDK not installed. Install with 'pip install docker'.",
                 duration=duration
-            )
+            ))
 
         # Validate workspace path
         if self.workspace_path is None:
@@ -262,12 +262,12 @@ chmod +x "{script_path}"
             rel_path = os.path.normpath(self.working_dir)
             if rel_path.startswith("..") or os.path.isabs(rel_path):
                 duration = time.time() - start_time
-                return self._build_json_response(
+                return self._truncate_output(self._build_json_response(
                     success=False,
                     exit_code=-1,
                     error=f"working_dir '{self.working_dir}' must be relative to workspace and not traverse upwards.",
                     duration=duration
-                )
+                ))
             workdir = os.path.join("/workspace", rel_path)
 
         try:
@@ -278,12 +278,12 @@ chmod +x "{script_path}"
             from docker_executor import DockerExecutor
         except ImportError as e:
             duration = time.time() - start_time
-            return self._build_json_response(
+            return self._truncate_output(self._build_json_response(
                 success=False,
                 exit_code=-1,
                 error=f"Could not import DockerExecutor: {e}. Make sure docker package is installed and docker_executor.py exists.",
                 duration=duration
-            )
+            ))
 
         # Determine actual command to execute (script takes precedence)
         actual_command = None
@@ -298,12 +298,12 @@ chmod +x "{script_path}"
                 actual_command = self._substitute_variables(self.command)
         except Exception as e:
             duration = time.time() - start_time
-            return self._build_json_response(
+            return self._truncate_output(self._build_json_response(
                 success=False,
                 exit_code=-1,
                 error=f"Failed to prepare command/script: {e}",
                 duration=duration
-            )
+            ))
 
         try:
             if SECURITY_AVAILABLE:
@@ -344,7 +344,7 @@ chmod +x "{script_path}"
             if not timed_out and "timed out" in stderr.lower():
                 timed_out = True
 
-            return self._build_json_response(
+            return self._truncate_output(self._build_json_response(
                 success=exit_code == 0,
                 exit_code=exit_code,
                 stdout=stdout,
@@ -352,35 +352,35 @@ chmod +x "{script_path}"
                 command=actual_command,
                 duration=duration,
                 timed_out=timed_out
-            )
+            ))
 
         except Exception as e:
             import traceback
 
             duration = time.time() - start_time
-            return self._build_json_response(
+            return self._truncate_output(self._build_json_response(
                 success=False,
                 exit_code=-1,
                 error=f"Unexpected error: {e}\n{traceback.format_exc()}",
                 duration=duration
-            )
+            ))
         except TimeoutError as e:
             duration = time.time() - start_time
-            return self._build_json_response(
+            return self._truncate_output(self._build_json_response(
                 success=False,
                 exit_code=-2,
                 error=f"Command timed out after {self.timeout} seconds",
                 duration=duration,
                 timed_out=True
-            )
+            ))
         except Exception as e:
             duration = time.time() - start_time
-            return self._build_json_response(
+            return self._truncate_output(self._build_json_response(
                 success=False,
                 exit_code=-1,
                 error=f"Unexpected error: {e}",
                 duration=duration
-            )
+            ))
 
     def _build_image(self, client, image_name):
         """Build Docker image from docker/executor.Dockerfile"""

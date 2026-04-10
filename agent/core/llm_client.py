@@ -73,6 +73,7 @@ class LLMClient:
                 self.logger.log_warning("Creating HistoryProvider without session")
             else:
                 logging.warning("Creating HistoryProvider without session")
+            debug_log('context_builder', f"LLMClient.create_context_builder: session is None, returning None")
             return None
         
         if token_limit is None:

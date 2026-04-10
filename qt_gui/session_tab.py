@@ -10,9 +10,11 @@ from PyQt6.QtWidgets import (
     QGroupBox, QCheckBox, QMenuBar, QMenu, QFileDialog, QStyleOptionViewItem, 
     QMessageBox, QScrollArea, QFrame, QComboBox, QSpinBox, QDoubleSpinBox, QSplitter, QTabWidget, QDialog, QSizePolicy, QStyle, QInputDialog
 )
-from PyQt6.QtCore import Qt, QTimer, pyqtSlot, QAbstractListModel, QModelIndex, QVariant, QRect, QPoint, QSize, QSortFilterProxyModel, QMetaObject, QThread
+from PyQt6.QtCore import Qt, QTimer, pyqtSlot, QAbstractListModel, QModelIndex, QVariant, QRect, QPoint, QSize, QSortFilterProxyModel, QMetaObject, QThread, QUrl
 from PyQt6.QtGui import QAction, QKeySequence, QFont, QTextDocument, QTextCursor, QColor, QPainter, QPalette, QAbstractTextDocumentLayout, QPageLayout, QPageSize, QShortcut
 from PyQt6.QtPrintSupport import QPrinter
+from PyQt6.QtQuickWidgets import QQuickWidget
+from qt_gui.models.conversation_model import ConversationModel
 from dotenv import load_dotenv
 
 from agent.presenter.agent_presenter import RefactoredAgentPresenter
@@ -116,10 +118,26 @@ class SessionTab(QWidget):
 
     @session.setter
     def session(self, value):
+        from .debug_log import debug_log
+        debug_log(f"[SessionTab] session setter called, value type: {type(value)}", level="DEBUG")
         if hasattr(self, '_session') and self._session is value:
+            debug_log(f"[SessionTab] session unchanged, returning", level="DEBUG")
             return
-
-
+        
+        # Update internal session reference
+        old_session = self._session
+        self._session = value
+        debug_log(f"[SessionTab] _session updated, old: {old_session}, new: {value}", level="DEBUG")
+        
+        # Update conversation model if it exists
+        if hasattr(self, 'conversation_model') and self.conversation_model:
+            debug_log(f"[SessionTab] Updating conversation model session", level="DEBUG")
+            self.conversation_model.set_session(value)
+        
+        # If we have a new session, update window title
+        if value and value != old_session:
+            debug_log(f"[SessionTab] New session, updating window title", level="DEBUG")
+            self.update_window_title()
     def create_new_session(self):
         """Create fresh session with auto-generated name."""
         from session.models import Session, SessionConfig
@@ -144,6 +162,7 @@ class SessionTab(QWidget):
         # Session.ensure_name() is called in __post_init__
         
         # Bind session to presenter
+        debug_log(f"[SessionTab] Binding session to presenter, session: {self.session}", level="DEBUG")
         self.presenter.bind_session(self.session)
         
         
@@ -157,7 +176,25 @@ class SessionTab(QWidget):
     def load_session_by_id(self, session_id: str) -> bool:
         """Load a session by ID from the session store."""
         from .debug_log import debug_log
+        from session.models import Session
         debug_log(f"load_session_by_id called with session_id: {session_id}", level="DEBUG")
+        
+        # Ensure we have a session object to update in place
+        if self.session is None:
+            debug_log(f"Creating placeholder session for loading", level="DEBUG")
+            # Create default session config
+            agent_config = self.presenter.create_agent_config()
+            session_config = self.presenter._build_session_config(agent_config)
+            # Create placeholder session that will be updated by load
+            self.session = Session(
+                session_id=session_id,  # temporary ID, will be overwritten
+                config=session_config,
+                user_history=[],
+                metadata={}
+            )
+            # Bind placeholder session to presenter to ensure callbacks are registered
+            self.presenter.bind_session(self.session)
+        
         try:
             # Load session via presenter, passing current session to update in place
             debug_log(f"Calling presenter.load_session_by_id({session_id}, target_session=self.session)", level="DEBUG")
@@ -308,6 +345,7 @@ class SessionTab(QWidget):
         right_container = QWidget()
         right_layout = QVBoxLayout()
         right_container.setLayout(right_layout)
+        self.right_layout = right_layout
 
         # Agent Controls Panel
         self.agent_controls_panel = AgentControlsPanel(SIMPLIFIED_TOOL_CLASSES)
@@ -341,6 +379,24 @@ class SessionTab(QWidget):
         # Connect tool checkboxes
         for checkbox in self.agent_controls_panel.tool_checkboxes.values():
             checkbox.stateChanged.connect(self._handle_config_change)
+        
+        # Connect QML UI checkbox
+        self.agent_controls_panel.qml_ui_checkbox.stateChanged.connect(self._handle_config_change)
+
+        # QML Conversation View
+        # Create conversation model
+        self.conversation_model = ConversationModel(presenter=self.presenter)
+        
+        # Create QML widget
+        self.qml_conversation_widget = QQuickWidget()
+        self.qml_conversation_widget.setSource(QUrl.fromLocalFile("qt_gui/qml/ConversationView.qml"))
+        self.qml_conversation_widget.setResizeMode(QQuickWidget.ResizeMode.SizeRootObjectToView)
+        
+        # Expose model to QML via root context
+        root_context = self.qml_conversation_widget.rootContext()
+        root_context.setContextProperty("conversationModel", self.conversation_model)
+        
+        right_layout.addWidget(self.qml_conversation_widget, 1)  # Smaller stretch factor
 
         # Add output panel (contains filter controls and output textedit)
         right_layout.addWidget(self.output_panel, 4)  # Larger stretch factor
@@ -929,14 +985,41 @@ class SessionTab(QWidget):
             # Update presenter configuration
             self.presenter.update_config(config)
             
-            # print("[GUI] Configuration loaded")
-            
+            # Update UI mode (QML vs classic)
+            self._update_ui_mode()
+
+            # print("[GUI] Configuration loaded")            
         except Exception as e:
             # print(f"[GUI] Error loading config: {e}")
             pass
         finally:
             self._loading_config = False
     
+    def _update_ui_mode(self):
+        """Update UI mode based on use_qml_ui config flag."""
+        try:
+            config = self.config_bridge.get_config()
+            use_qml = config.get("use_qml_ui", False)
+            
+            if not hasattr(self, 'right_layout'):
+                return
+                
+            # Show/hide output panel
+            self.output_panel.setVisible(not use_qml)
+            
+            # Adjust stretch factors
+            if use_qml:
+                # QML gets all space, output panel none
+                self.right_layout.setStretchFactor(self.qml_conversation_widget, 5)
+                self.right_layout.setStretchFactor(self.output_panel, 0)
+            else:
+                # Restore original stretch factors
+                self.right_layout.setStretchFactor(self.qml_conversation_widget, 1)
+                self.right_layout.setStretchFactor(self.output_panel, 4)
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+
     def _on_config_changed(self, config):
         """Handle configuration changes from bridge (e.g., file changed)."""
         # Update UI with new config
