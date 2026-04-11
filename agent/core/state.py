@@ -136,7 +136,7 @@ class AgentState:
             if new_state == TokenState.WARNING:
                 formatted = self._format_tokens(total_tokens)
                 warning = (
-                    f"[SYSTEM] **Token usage warning: Conversation is nearing context window limits** ({formatted} tokens). "
+                    f"[SYSTEM NOTIFICATION] **Token usage warning: Conversation is nearing context window limits** ({formatted} tokens). "
                     f"Consider pruning soon. If tokens reach CRITICAL threshold, you will have {self.CRITICAL_COUNTDOWN_TURNS} turns before tool restrictions apply."
                 )
             else:  # CRITICAL
@@ -146,7 +146,7 @@ class AgentState:
                 # Use gentler message
                 formatted = self._format_tokens(total_tokens)
                 warning = (
-                    f"[SYSTEM] Token usage is at the critical threshold ({formatted} tokens). "
+                    f"[SYSTEM NOTIFICATION] Token usage is at the critical threshold ({formatted} tokens). "
                     f"You have {self.CRITICAL_COUNTDOWN_TURNS} turns to work normally before tool restrictions apply. "
                     f"Please consider summarizing to reduce context size. After summarizing, you may continue working. "
                     f"After the countdown ends, only SummarizeTool, Final, and FinalReport will be available."
@@ -214,14 +214,14 @@ class AgentState:
 
             # Create warning message
             if new_state == TurnState.WARNING:
-                warning = f"[SYSTEM] **Turn limit warning**: Agent is nearing maximum turn limit ({current_turn}/{max_turns} turns). Please consider wrapping up soon. If turns reach CRITICAL threshold, you will have {self.CRITICAL_COUNTDOWN_TURNS} turns before tool restrictions apply."
+                warning = f"[SYSTEM NOTIFICATION] **Turn limit warning**: Agent is nearing maximum turn limit ({current_turn}/{max_turns} turns). Please consider wrapping up soon. If turns reach CRITICAL threshold, you will have {self.CRITICAL_COUNTDOWN_TURNS} turns before tool restrictions apply."
             else:  # CRITICAL
                 # Start the countdown for gradual restrictions
                 countdown_events = self.start_critical_countdown("turn")
                 events.extend(countdown_events)
                 # Use gentler message
                 warning = (
-                    f"[SYSTEM] Turn usage is at the critical threshold ({current_turn}/{max_turns} turns). "
+                    f"[SYSTEM NOTIFICATION] Turn usage is at the critical threshold ({current_turn}/{max_turns} turns). "
                     f"You have {self.CRITICAL_COUNTDOWN_TURNS} turns to work normally before tool restrictions apply. "
                     f"Please consider completing your work or summarizing. After summarizing, you may continue working. "
                     f"After the countdown ends, only SummarizeTool, Final, and FinalReport will be available."

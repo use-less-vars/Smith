@@ -1531,8 +1531,8 @@ class Agent:
         # Add context cleared notification AFTER summary in the history
         # This will be included in context for the LLM to know restrictions are lifted
         context_cleared_msg = {
-            "role": "system",
-            "content": "[SYSTEM] Context has been summarized. You now have a fresh context window and full access to tools."
+            "role": "user",
+            "content": "[SYSTEM NOTIFICATION] Context has been summarized. You now have a fresh context window and full access to tools."
         }
         # Insert right after the summary
         summary_position = insertion_idx if insertion_idx < len(user_history) else len(user_history) - 1
@@ -1644,6 +1644,16 @@ class Agent:
 
         # Build pruned conversation
         new_conversation = cleaned_system_messages + [summary_msg] + pruned_other
+        
+        # Add context cleared notification after summary
+        context_cleared_msg = {
+            "role": "user",
+            "content": "[SYSTEM NOTIFICATION] Context has been summarized. You now have a fresh context window and full access to tools."
+        }
+        # Insert after summary message
+        summary_idx = len(cleaned_system_messages)
+        new_conversation.insert(summary_idx + 1, context_cleared_msg)
+        
         self.conversation = new_conversation
 
         logger.debug(f"[DEBUG_PRUNING] Fallback pruning: new conversation length {len(self.conversation)}")
