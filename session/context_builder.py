@@ -271,6 +271,13 @@ class SummaryBuilder(ContextBuilder):
             else:
                 non_system.append(msg)
 
+        # DEBUG: Log system warnings collected
+        if os.environ.get('DEBUG_CONTEXT'):
+            logger.debug(f'[DEBUG_CONTEXT] Collected {len(system_warnings)} system warnings:')
+            for i, warn in enumerate(system_warnings):
+                content_preview = warn.get('content', '')[:100].replace('\n', ' ')
+                logger.debug(f'  [{i}] {content_preview}')
+
         # Group into turns
         turns = self._group_messages_into_turns(non_system)
         debug_log('summary_builder', f"SummaryBuilder.build: grouped {len(non_system)} non-system messages into {len(turns)} turns")
@@ -303,6 +310,13 @@ class SummaryBuilder(ContextBuilder):
             context.extend(turn)
         
         debug_log('summary_builder', f"SummaryBuilder.build: assembled {len(context)} messages before truncation")
+        # DEBUG: Log context before truncation
+        if os.environ.get('DEBUG_CONTEXT'):
+            logger.debug(f'[DEBUG_CONTEXT] Context before truncation ({len(context)} messages):')
+            for i, msg in enumerate(context):
+                role = msg.get('role')
+                content_preview = str(msg.get('content', ''))[:80].replace('\\n', ' ')
+                logger.debug(f'  [{i}] role={role}: {content_preview}')
         # If max_tokens is provided, further truncate
         # When there's a summary, remove newest turns first (after summary) to preserve originally-kept turns
         # When no summary, remove oldest turns first
@@ -310,6 +324,15 @@ class SummaryBuilder(ContextBuilder):
             context = self._truncate_to_max_tokens(context, max_tokens, 
                                                   preserve_system=True, 
                                                   remove_from_end=(summary_msg is not None))
+        
+        # DEBUG: Log context after truncation
+        if os.environ.get('DEBUG_CONTEXT'):
+            logger.debug(f'[DEBUG_CONTEXT] Context after truncation ({len(context)} messages):')
+            for i, msg in enumerate(context):
+                role = msg.get('role')
+                content_preview = str(msg.get('content', ''))[:80].replace('\\n', ' ')
+                logger.debug(f'  [{i}] role={role}: {content_preview}')
+        
         
         # Clean up any orphaned tool messages that may have been created by truncation
         context = self._cleanup_orphaned_tool_messages(context)
@@ -325,6 +348,14 @@ class SummaryBuilder(ContextBuilder):
                 logger.debug(f'[DEBUG_CONTEXT] Estimated token count for context: {total_tokens}')
             except Exception:
                 pass
+        
+        # Log all system messages for debugging
+        for msg in context:
+            if msg.get('role') == 'system':
+                content = msg.get('content', '')
+                if '[SYSTEM]' in content:
+                    logger.info(f"[WARNING_IN_CONTEXT] {content[:100]}")
+        
         
         return context
     
@@ -508,6 +539,10 @@ class SummaryBuilder(ContextBuilder):
                         if not (preserve_system and messages[-i].get('role') == 'system'):
                             removed_msg = messages.pop(-i)
                             total -= self._estimate_tokens(removed_msg, encoder)
+                            if os.environ.get('DEBUG_CONTEXT'):
+                                role = removed_msg.get('role', 'unknown')
+                                content_preview = str(removed_msg.get('content', ''))[:100].replace('\\n', ' ')
+                                logger.debug(f'[DEBUG_CONTEXT] Truncation removed message [-i]: role={role}, content: {content_preview}')
                             break
                     else:
                         # All remaining messages are system
@@ -515,6 +550,10 @@ class SummaryBuilder(ContextBuilder):
                 else:
                     removed_msg = messages.pop()
                     total -= self._estimate_tokens(removed_msg, encoder)
+                    if os.environ.get('DEBUG_CONTEXT'):
+                        role = removed_msg.get('role', 'unknown')
+                        content_preview = str(removed_msg.get('content', ''))[:100].replace('\\n', ' ')
+                        logger.debug(f'[DEBUG_CONTEXT] Truncation removed message [end]: role={role}, content: {content_preview}')
         else:
             # Remove from beginning (oldest) first
             idx_to_remove = 0

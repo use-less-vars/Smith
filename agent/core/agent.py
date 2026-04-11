@@ -798,7 +798,7 @@ class Agent:
             for event in turn_events:
                 if event["type"] == "turn_warning":
                     # Add warning message to conversation as system message
-                    warning_msg = {"role": "system", "content": event.get("message", event.get("warning", ""))}
+                    warning_msg = {"role": "user", "content": "[SYSTEM NOTIFICATION] " + event.get("message", event.get("warning", ""))}
                     self._add_to_conversation(warning_msg)
                     # Update token count for warning message
                     warning_tokens = self._estimate_tokens(warning_msg)
@@ -831,7 +831,7 @@ class Agent:
             for event in token_events:
                 if event["type"] == "token_warning":
                     # Add warning message to conversation as system message
-                    warning_msg = {"role": "system", "content": event.get("message", event.get("warning", ""))}
+                    warning_msg = {"role": "user", "content": "[SYSTEM NOTIFICATION] " + event.get("message", event.get("warning", ""))}
                     self._add_to_conversation(warning_msg)
                     # Update token count for warning message
                     warning_tokens = self._estimate_tokens(warning_msg)
@@ -936,7 +936,7 @@ class Agent:
             if request_tokens > model_context_window:
                 # Cannot proceed - request exceeds model context window
                 error = f"[SYSTEM] Request token count ({request_tokens}) exceeds model context window ({model_context_window}). Cannot make API call. Please use SummarizeTool to reduce context size."
-                error_msg = {"role": "system", "content": error}
+                error_msg = {"role": "user", "content": "[SYSTEM NOTIFICATION] " + error}
                 self._add_to_conversation(error_msg)
                 error_tokens = self._estimate_tokens(error_msg)
                 self.state.current_conversation_tokens += error_tokens
@@ -964,7 +964,7 @@ class Agent:
             elif request_tokens > critical_threshold:
                 # Critical warning - near context limit
                 warning = f"[SYSTEM] Request token count ({request_tokens}) is near model context window limit ({model_context_window}). Please use SummarizeTool immediately to reduce context size."
-                warning_msg = {"role": "system", "content": warning}
+                warning_msg = {"role": "user", "content": "[SYSTEM NOTIFICATION] " + warning}
                 self._add_to_conversation(warning_msg)
                 warning_tokens = self._estimate_tokens(warning_msg)
                 self.state.current_conversation_tokens += warning_tokens
@@ -991,7 +991,7 @@ class Agent:
             elif request_tokens > warning_threshold:
                 # Warning - approaching context limit
                 warning = f"[SYSTEM] Request token count ({request_tokens}) is approaching model context window ({model_context_window}). Consider using SummarizeTool soon."
-                warning_msg = {"role": "system", "content": warning}
+                warning_msg = {"role": "user", "content": "[SYSTEM NOTIFICATION] " + warning}
                 self._add_to_conversation(warning_msg)
                 warning_tokens = self._estimate_tokens(warning_msg)
                 self.state.current_conversation_tokens += warning_tokens
