@@ -10,11 +10,9 @@ from PyQt6.QtWidgets import (
     QGroupBox, QCheckBox, QMenuBar, QMenu, QFileDialog, QStyleOptionViewItem, 
     QMessageBox, QScrollArea, QFrame, QComboBox, QSpinBox, QDoubleSpinBox, QSplitter, QTabWidget, QDialog, QSizePolicy, QStyle, QInputDialog
 )
-from PyQt6.QtCore import Qt, QTimer, pyqtSlot, QAbstractListModel, QModelIndex, QVariant, QRect, QPoint, QSize, QSortFilterProxyModel, QMetaObject, QThread, QUrl
+from PyQt6.QtCore import Qt, QTimer, pyqtSlot, QAbstractListModel, QModelIndex, QVariant, QRect, QPoint, QSize, QSortFilterProxyModel, QMetaObject, QThread
 from PyQt6.QtGui import QAction, QKeySequence, QFont, QTextDocument, QTextCursor, QColor, QPainter, QPalette, QAbstractTextDocumentLayout, QPageLayout, QPageSize, QShortcut
 from PyQt6.QtPrintSupport import QPrinter
-from PyQt6.QtQuickWidgets import QQuickWidget
-from qt_gui.models.conversation_model import ConversationModel
 from dotenv import load_dotenv
 
 from agent.presenter.agent_presenter import RefactoredAgentPresenter
@@ -129,10 +127,6 @@ class SessionTab(QWidget):
         self._session = value
         debug_log(f"[SessionTab] _session updated, old: {old_session}, new: {value}", level="DEBUG")
         
-        # Update conversation model if it exists
-        if hasattr(self, 'conversation_model') and self.conversation_model:
-            debug_log(f"[SessionTab] Updating conversation model session", level="DEBUG")
-            self.conversation_model.set_session(value)
         
         # If we have a new session, update window title
         if value and value != old_session:
@@ -380,23 +374,6 @@ class SessionTab(QWidget):
         for checkbox in self.agent_controls_panel.tool_checkboxes.values():
             checkbox.stateChanged.connect(self._handle_config_change)
         
-        # Connect QML UI checkbox
-        self.agent_controls_panel.qml_ui_checkbox.stateChanged.connect(self._handle_config_change)
-
-        # QML Conversation View
-        # Create conversation model
-        self.conversation_model = ConversationModel(presenter=self.presenter)
-        
-        # Create QML widget
-        self.qml_conversation_widget = QQuickWidget()
-        self.qml_conversation_widget.setSource(QUrl.fromLocalFile("qt_gui/qml/ConversationView.qml"))
-        self.qml_conversation_widget.setResizeMode(QQuickWidget.ResizeMode.SizeRootObjectToView)
-        
-        # Expose model to QML via root context
-        root_context = self.qml_conversation_widget.rootContext()
-        root_context.setContextProperty("conversationModel", self.conversation_model)
-        
-        right_layout.addWidget(self.qml_conversation_widget, 1)  # Smaller stretch factor
 
         # Add output panel (contains filter controls and output textedit)
         right_layout.addWidget(self.output_panel, 4)  # Larger stretch factor
@@ -985,8 +962,6 @@ class SessionTab(QWidget):
             # Update presenter configuration
             self.presenter.update_config(config)
             
-            # Update UI mode (QML vs classic)
-            self._update_ui_mode()
 
             # print("[GUI] Configuration loaded")            
         except Exception as e:
@@ -995,31 +970,6 @@ class SessionTab(QWidget):
         finally:
             self._loading_config = False
     
-    def _update_ui_mode(self):
-        """Update UI mode based on use_qml_ui config flag."""
-        try:
-            config = self.config_bridge.get_config()
-            use_qml = config.get("use_qml_ui", False)
-            
-            if not hasattr(self, 'right_layout'):
-                return
-                
-            # Show/hide output panel
-            self.output_panel.setVisible(not use_qml)
-            
-            # Adjust stretch factors
-            if use_qml:
-                # QML gets all space, output panel none
-                self.right_layout.setStretchFactor(self.qml_conversation_widget, 5)
-                self.right_layout.setStretchFactor(self.output_panel, 0)
-            else:
-                # Restore original stretch factors
-                self.right_layout.setStretchFactor(self.qml_conversation_widget, 1)
-                self.right_layout.setStretchFactor(self.output_panel, 4)
-        except Exception as e:
-            import traceback
-            traceback.print_exc()
-
     def _on_config_changed(self, config):
         """Handle configuration changes from bridge (e.g., file changed)."""
         # Update UI with new config

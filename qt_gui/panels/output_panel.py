@@ -315,14 +315,17 @@ class OutputPanel(QWidget):
             self.display_system_message(message)
         else:
             debug_log(f"Unknown message role: {role}", level="WARNING")
-    
+
     def display_user_message(self, message: dict):
         """Display a user message."""
         content = message.get('content', '')
         created_at = message.get('created_at', '')
-        
+
+        # DIAGNOSTICS
+        print(f"[DEBUG display_user_message] content start: {repr(content[:200])}")
         # Detect system messages (token warnings, etc.)
         is_system = content.startswith('[SYSTEM]')
+        print(f"[DEBUG display_user_message] is_system: {is_system}")
         if is_system:
             # Strip the prefix for cleaner display
             content = content[8:].lstrip()
@@ -331,17 +334,17 @@ class OutputPanel(QWidget):
             bg_color = '#ffe6e6'
         else:
             header = 'User'
-            border_color = '#cc99ff'
-            bg_color = '#f0e6ff'
-            
-        self._append_html(
-            f'<div style="border: 1px solid {border_color}; border-radius: 5px; margin-bottom: 8px; overflow: hidden;">'
-            f'<div style="background-color: {bg_color}; padding: 8px 10px; font-weight: bold; border-bottom: 1px solid {border_color};">{header}</div>'
-            f'<div style="padding: 10px;">'
-            f'{self._render_content(content)}'
-            f'</div>'
-            f'</div>'
-        )
+            border_color = '#FF69B4'
+            bg_color = '#FFF0F5'
+        
+        html = (f'<div style="border: 1px solid {border_color}; border-radius: 5px; margin-bottom: 12px; overflow: hidden;">'
+                f'<div style="background-color: {bg_color}; padding: 8px 10px; font-weight: bold; border-bottom: 1px solid {border_color};">{header}</div>'
+                f'<div style="padding: 10px;">'
+                f'{self._render_content(content)}'
+                f'</div>'
+                f'</div>')
+        print(f"[DEBUG display_user_message] Generated HTML: {html}")
+        self._append_html(html)
     
     def display_assistant_message(self, message: dict):
         """Display an assistant message with optional tool calls."""
@@ -352,7 +355,7 @@ class OutputPanel(QWidget):
         debug_log(f"display_assistant_message: content length={len(content)}, tool_calls count={len(tool_calls)}", level="DEBUG")
         
         self._append_html(
-            f'<div style="border: 1px solid #99ccff; border-radius: 5px; margin-bottom: 8px; overflow: hidden;">'
+            f'<div style="border: 1px solid #99ccff; border-radius: 5px; margin-bottom: 12px; overflow: hidden;">'
             f'<div style="background-color: #e6f3ff; padding: 8px 10px; font-weight: bold; border-bottom: 1px solid #99ccff;">Assistant</div>'
             f'<div style="padding: 10px;">'
         )
@@ -360,7 +363,8 @@ class OutputPanel(QWidget):
         # Display reasoning content if present
         if reasoning_content:
             self._append_html(
-                f'<div style="background-color: #f5f5f5; border-left: 4px solid #ccc; padding: 8px; margin-bottom: 12px; font-style: italic;">'
+                f'<div style="background-color: #f8f8f8; border-left: 4px solid #888; padding: 8px; margin-bottom: 12px;">'
+                f'<div style="color: #333; font-weight: bold;">Reasoning:</div>'
                 f'{self._render_content(reasoning_content)}'
                 f'</div>'
             )
@@ -396,8 +400,9 @@ class OutputPanel(QWidget):
         
         # Special tools that should have blue styling, no truncation, full markdown
         SPECIAL_TOOLS = self.SPECIAL_TOOLS
+        self._append_html('<div style="height: 4px;"></div>')
         debug_log(f"display_tool_call: SPECIAL_TOOLS={SPECIAL_TOOLS}, tool_name in SPECIAL_TOOLS={tool_name in SPECIAL_TOOLS}", level="DEBUG")
-        
+
         if tool_name in SPECIAL_TOOLS:
             self._append_html(
                 f'<div style="margin-left: 20px; margin-top: 8px; margin-bottom: 8px; border-left: 4px solid #3498db; background-color: #eef4ff; padding: 8px; border-radius: 4px;">'
@@ -430,6 +435,7 @@ class OutputPanel(QWidget):
         debug_log(f"display_tool_result: found tool_name='{tool_name}' from _tool_call_map (size={len(self._tool_call_map)})", level="DEBUG")
         SPECIAL_TOOLS = self.SPECIAL_TOOLS
         debug_log(f"display_tool_result: SPECIAL_TOOLS={SPECIAL_TOOLS}, tool_name in SPECIAL_TOOLS={tool_name in SPECIAL_TOOLS}", level="DEBUG")
+        self._append_html('<div style="height: 4px;"></div>')
         
         if tool_name in SPECIAL_TOOLS:
             self._append_html(
@@ -451,7 +457,9 @@ class OutputPanel(QWidget):
     
     def display_system_message(self, message: dict):
         """Display a system message."""
+        # DIAGNOSTICS
         content = message.get('content', '')
+        print(f"[DEBUG display_system_message] content start: {repr(content[:200])}")
         
         # Detect system messages that already have [SYSTEM] prefix (from token warnings)
         is_system_prefixed = content.startswith('[SYSTEM]')
