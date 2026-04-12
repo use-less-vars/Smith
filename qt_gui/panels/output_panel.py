@@ -324,7 +324,7 @@ class OutputPanel(QWidget):
         # DIAGNOSTICS
         print(f"[DEBUG display_user_message] content start: {repr(content[:200])}")
         # Detect system messages (token warnings, etc.)
-        is_system = content.startswith('[SYSTEM]')
+        is_system = content.startswith(('[SYSTEM]','[SYSTEM NOTIFICATION]'))
         print(f"[DEBUG display_user_message] is_system: {is_system}")
         if is_system:
             # Strip the prefix for cleaner display
