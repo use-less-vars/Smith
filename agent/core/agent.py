@@ -423,9 +423,9 @@ class Agent:
         self.state.current_conversation_tokens = estimated_tokens
         
         # DEBUG PRINT
-        print(f"[DEBUG_TOKEN_ESTIMATE] Estimated tokens: {estimated_tokens}, runtime_context length: {len(runtime_context)}, conversation length: {len(self.conversation)}")
+        debug_log(f"Estimated tokens: {estimated_tokens}, runtime_context length: {len(runtime_context)}, conversation length: {len(self.conversation)}", level="DEBUG", component="TokenEstimate")
         if hasattr(self, 'context_builder') and self.context_builder is not None and hasattr(self.context_builder, 'token_limit'):
-            print(f"[DEBUG_TOKEN_ESTIMATE] context_builder.token_limit: {self.context_builder.token_limit}")
+            debug_log(f"context_builder.token_limit: {self.context_builder.token_limit}", level="DEBUG", component="TokenEstimate")
 
         if DEBUG_PRUNING_AVAILABLE:
             log_token_count(f"Runtime context token estimate (from {len(runtime_context)}/{len(self.conversation)} messages)", estimated_tokens)

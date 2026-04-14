@@ -322,10 +322,10 @@ class OutputPanel(QWidget):
         created_at = message.get('created_at', '')
 
         # DIAGNOSTICS
-        print(f"[DEBUG display_user_message] content start: {repr(content[:200])}")
+        debug_log(f"content start: {repr(content[:200])}", level="DEBUG", component="OutputPanel")
         # Detect system messages (token warnings, etc.)
         is_system = content.startswith(('[SYSTEM]','[SYSTEM NOTIFICATION]'))
-        print(f"[DEBUG display_user_message] is_system: {is_system}")
+        debug_log(f"is_system: {is_system}", level="DEBUG", component="OutputPanel")
         if is_system:
             # Strip the prefix for cleaner display
             content = content[8:].lstrip()
@@ -343,7 +343,7 @@ class OutputPanel(QWidget):
                 f'{self._render_content(content)}'
                 f'</div>'
                 f'</div>')
-        print(f"[DEBUG display_user_message] Generated HTML: {html}")
+        debug_log(f"Generated HTML: {html}", level="DEBUG", component="OutputPanel")
         self._append_html(html)
     
     def display_assistant_message(self, message: dict):
@@ -459,7 +459,7 @@ class OutputPanel(QWidget):
         """Display a system message."""
         # DIAGNOSTICS
         content = message.get('content', '')
-        print(f"[DEBUG display_system_message] content start: {repr(content[:200])}")
+        debug_log(f"content start: {repr(content[:200])}", level="DEBUG", component="OutputPanel")
         
         # Detect system messages that already have [SYSTEM] prefix (from token warnings)
         is_system_prefixed = content.startswith('[SYSTEM]')

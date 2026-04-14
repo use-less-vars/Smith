@@ -106,7 +106,7 @@ class AgentState:
         Returns list of events (e.g., warnings) that should be yielded.
         """
         self.current_conversation_tokens = total_tokens
-        print(f"[DEBUG_TOKEN_STATE] total_tokens={total_tokens}, warning_threshold={self.config.token_monitor_warning_threshold}, critical_threshold={self.config.token_monitor_critical_threshold}")
+        debug_log(f"total_tokens={total_tokens}, warning_threshold={self.config.token_monitor_warning_threshold}, critical_threshold={self.config.token_monitor_critical_threshold}", level="DEBUG", component="TokenState")
         
         if not self.config.token_monitor_enabled:
             self.token_state = TokenState.LOW
