@@ -182,30 +182,30 @@ class HistoryProvider:
     def add_message(self, message: Dict[str, Any]) -> None:
         """Append message to session.user_history."""
         session_id = self.session.session_id if self.session and hasattr(self.session, 'session_id') else 'no-id'
-        print(f"[HISTORY_DEBUG] HistoryProvider.add_message called: role={message.get('role')}, session_id={session_id}, history_len={len(self.session.user_history) if self.session else 'no session'}")
+        debug_log(f"HistoryProvider.add_message called: role={message.get('role')}, session_id={session_id}, history_len={len(self.session.user_history) if self.session else 'no session'}", level="DEBUG", component="HistoryProvider")
         # Debug timestamp ordering
         if DEBUG_CONTEXT:
             prev_timestamp = None
             if self.session.user_history:
                 prev_msg = self.session.user_history[-1]
                 prev_timestamp = prev_msg.get('created_at')
-                print(f"[TIMESTAMP_DEBUG] Previous message created_at: {prev_timestamp}")
+                debug_log(f"Previous message created_at: {prev_timestamp}", level="DEBUG", component="HistoryProvider")
             current_timestamp = message.get('created_at')
-            print(f"[TIMESTAMP_DEBUG] Adding message created_at: {current_timestamp}")
+            debug_log(f"Adding message created_at: {current_timestamp}", level="DEBUG", component="HistoryProvider")
             if prev_timestamp and current_timestamp:
                 # Compare timestamps (handling both ISO strings and Unix timestamps)
                 try:
                     prev_dt = self._parse_timestamp(prev_timestamp)
                     current_dt = self._parse_timestamp(current_timestamp)
                     if prev_dt > current_dt:
-                        print(f"[TIMESTAMP_WARNING] Timestamp ordering violation! Previous {prev_timestamp} > current {current_timestamp}")
+                        debug_log(f"Timestamp ordering violation! Previous {prev_timestamp} > current {current_timestamp}", level="WARNING", component="HistoryProvider")
                 except (TypeError, ValueError) as e:
-                    print(f"[TIMESTAMP_ERROR] Failed to parse timestamps: {e}. Previous: {prev_timestamp}, Current: {current_timestamp}")
+                    debug_log(f"Failed to parse timestamps: {e}. Previous: {prev_timestamp}, Current: {current_timestamp}", level="ERROR", component="HistoryProvider")
         # Ensure message has a sequence number for ordering
         if 'seq' not in message:
             message['seq'] = self.session._get_next_seq()
             if DEBUG_CONTEXT:
-                print(f"[SEQ_DEBUG] Assigned seq={message['seq']} to message")
+                debug_log(f"Assigned seq={message['seq']} to message", level="DEBUG", component="HistoryProvider")
         
         self.session.user_history.append(message)
         self.session.updated_at = datetime.now()

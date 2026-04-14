@@ -104,7 +104,7 @@ class RefactoredAgentPresenter(QObject):
 
     def _on_conversation_change(self, *args):
         """Callback when conversation changes."""
-        print(f"DEBUG _on_conversation_change: emitting conversation_changed signal")
+        debug_log("_on_conversation_change: emitting conversation_changed signal", level="DEBUG", component="AgentPresenter")
         self.gui_integration.emit_conversation_changed()
 
     def _handle_controller_event(self, event: Dict[str, Any]):
@@ -163,17 +163,80 @@ class RefactoredAgentPresenter(QObject):
     # Session management
     def start_session(self, query: str, config: Optional[dict] = None, preset_name: str = None):
         """Start a new agent session."""
-        print(f"DEBUG start_session: query={query}, config={config is not None}, preset={preset_name}")
-        self.session_lifecycle.start_session(query, config, preset_name)
+        debug_log(f"start_session: query={query}, config={config is not None}, preset={preset_name}", level="DEBUG", component="AgentPresenter")
+        try:
+            self.session_lifecycle.start_session(query, config, preset_name)
+        except Exception as e:
+            error_msg = f"Failed to start session: {str(e)}"
+            debug_log(error_msg, level="ERROR", component="AgentPresenter")
+            # Add system message to conversation history
+            system_message = {
+                'role': 'system',
+                'content': error_msg,
+                'created_at': datetime.now().isoformat(),
+                'seq': len(self.user_history)
+            }
+            if self.state_bridge.current_session:
+                self.state_bridge.current_session.user_history.append(system_message)
+            else:
+                self.state_bridge._pending_user_history.append(system_message)
+            # Emit conversation changed to update UI
+            self.gui_integration.emit_conversation_changed()
+            if hasattr(self.gui_integration, 'emit_status_message'):
+                self.gui_integration.emit_status_message(error_msg)
+            if hasattr(self.gui_integration, 'emit_error_occurred'):
+                self.gui_integration.emit_error_occurred("Session Error", error_msg)
     
     def new_session(self, name: str = None):
         """Start a brand new session."""
-        self.session_lifecycle.new_session(name)
+        try:
+            self.session_lifecycle.new_session(name)
+        except Exception as e:
+            error_msg = f"Failed to create new session: {str(e)}"
+            debug_log(error_msg, level="ERROR", component="AgentPresenter")
+            # Add system message to conversation history
+            system_message = {
+                'role': 'system',
+                'content': error_msg,
+                'created_at': datetime.now().isoformat(),
+                'seq': len(self.user_history)
+            }
+            if self.state_bridge.current_session:
+                self.state_bridge.current_session.user_history.append(system_message)
+            else:
+                self.state_bridge._pending_user_history.append(system_message)
+            # Emit conversation changed to update UI
+            self.gui_integration.emit_conversation_changed()
+            if hasattr(self.gui_integration, 'emit_status_message'):
+                self.gui_integration.emit_status_message(error_msg)
+            if hasattr(self.gui_integration, 'emit_error_occurred'):
+                self.gui_integration.emit_error_occurred("Session Error", error_msg)
     
     def continue_session(self, query: str):
         """Continue an existing session with a new query."""
-        print(f"DEBUG continue_session: query={query}")
-        self.session_lifecycle.continue_session(query)
+        debug_log(f"continue_session: query={query}", level="DEBUG", component="AgentPresenter")
+        try:
+            self.session_lifecycle.continue_session(query)
+        except Exception as e:
+            error_msg = f"Failed to continue session: {str(e)}"
+            debug_log(error_msg, level="ERROR", component="AgentPresenter")
+            # Add system message to conversation history
+            system_message = {
+                'role': 'system',
+                'content': error_msg,
+                'created_at': datetime.now().isoformat(),
+                'seq': len(self.user_history)
+            }
+            if self.state_bridge.current_session:
+                self.state_bridge.current_session.user_history.append(system_message)
+            else:
+                self.state_bridge._pending_user_history.append(system_message)
+            # Emit conversation changed to update UI
+            self.gui_integration.emit_conversation_changed()
+            if hasattr(self.gui_integration, 'emit_status_message'):
+                self.gui_integration.emit_status_message(error_msg)
+            if hasattr(self.gui_integration, 'emit_error_occurred'):
+                self.gui_integration.emit_error_occurred("Session Error", error_msg)
 
     @pyqtSlot(str)
     def on_user_input(self, text: str):
@@ -184,8 +247,8 @@ class RefactoredAgentPresenter(QObject):
         """
         from agent.core.state import ExecutionState
         from datetime import datetime
-        print(f"DEBUG on_user_input called: {text}")
-        print(f"DEBUG current_state: {self.state}")
+        debug_log(f"on_user_input called: {text}", level="DEBUG", component="AgentPresenter")
+        debug_log(f"current_state: {self.state}", level="DEBUG", component="AgentPresenter")
 
         current_state = self.state
 
@@ -204,21 +267,33 @@ class RefactoredAgentPresenter(QObject):
             self.state_bridge._pending_user_history.append(user_message)
         
         # Emit conversation changed signal to update UI
-        print(f"DEBUG on_user_input: emitting conversation_changed after adding user message")
+        debug_log("on_user_input: emitting conversation_changed after adding user message", level="DEBUG", component="AgentPresenter")
         self.gui_integration.emit_conversation_changed()
 
         if current_state == ExecutionState.IDLE:
             # Start new session with current configuration
             config = self.config
-            print(f"DEBUG on_user_input: config keys: {list(config.keys()) if config else 'None'}")
+            debug_log(f"on_user_input: config keys: {list(config.keys()) if config else 'None'}", level="DEBUG", component="AgentPresenter")
             debug_log(f"on_user_input: Starting new session with query: {text}", 
                      level="DEBUG", component="AgentPresenter")
             try:
                 self.start_session(text, config=config)
             except Exception as e:
                 error_msg = f"Failed to start session: {str(e)}"
-                print(f"ERROR: {error_msg}")
                 debug_log(error_msg, level="ERROR", component="AgentPresenter")
+                # Add system message to conversation history
+                system_message = {
+                    'role': 'system',
+                    'content': error_msg,
+                    'created_at': datetime.now().isoformat(),
+                    'seq': len(self.user_history)
+                }
+                if self.state_bridge.current_session:
+                    self.state_bridge.current_session.user_history.append(system_message)
+                else:
+                    self.state_bridge._pending_user_history.append(system_message)
+                # Emit conversation changed to update UI
+                self.gui_integration.emit_conversation_changed()
                 if hasattr(self.gui_integration, 'emit_status_message'):
                     self.gui_integration.emit_status_message(error_msg)
                 if hasattr(self.gui_integration, 'emit_error_occurred'):
@@ -227,10 +302,30 @@ class RefactoredAgentPresenter(QObject):
         elif current_state in (ExecutionState.PAUSED, ExecutionState.WAITING_FOR_USER,
                                ExecutionState.FINALIZED, ExecutionState.MAX_TURNS_REACHED):
             # Continue existing session
-            debug_log(f"on_user_input: Continuing session with query: {text}", 
+            debug_log(f"on_user_input: Continuing session with query: {text}",
                      level="DEBUG", component="AgentPresenter")
-            self.continue_session(text)
-
+            try:
+                self.continue_session(text)
+            except Exception as e:
+                error_msg = f"Failed to continue session: {str(e)}"
+                debug_log(error_msg, level="ERROR", component="AgentPresenter")
+                # Add system message to conversation history
+                system_message = {
+                    'role': 'system',
+                    'content': error_msg,
+                    'created_at': datetime.now().isoformat(),
+                    'seq': len(self.user_history)
+                }
+                if self.state_bridge.current_session:
+                    self.state_bridge.current_session.user_history.append(system_message)
+                else:
+                    self.state_bridge._pending_user_history.append(system_message)
+                # Emit conversation changed to update UI
+                self.gui_integration.emit_conversation_changed()
+                if hasattr(self.gui_integration, 'emit_status_message'):
+                    self.gui_integration.emit_status_message(error_msg)
+                if hasattr(self.gui_integration, 'emit_error_occurred'):
+                    self.gui_integration.emit_error_occurred("Session Error", error_msg)
         elif current_state == ExecutionState.RUNNING:
             # Agent is busy, ignore input
             debug_log(f"on_user_input: Ignoring input, agent is RUNNING", 
@@ -250,7 +345,28 @@ class RefactoredAgentPresenter(QObject):
     
     def restart_session(self, query: str = None):
         """Restart a fresh session with current configuration."""
-        self.session_lifecycle.restart_session(query)
+        try:
+            self.session_lifecycle.restart_session(query)
+        except Exception as e:
+            error_msg = f"Failed to restart session: {str(e)}"
+            debug_log(error_msg, level="ERROR", component="AgentPresenter")
+            # Add system message to conversation history
+            system_message = {
+                'role': 'system',
+                'content': error_msg,
+                'created_at': datetime.now().isoformat(),
+                'seq': len(self.user_history)
+            }
+            if self.state_bridge.current_session:
+                self.state_bridge.current_session.user_history.append(system_message)
+            else:
+                self.state_bridge._pending_user_history.append(system_message)
+            # Emit conversation changed to update UI
+            self.gui_integration.emit_conversation_changed()
+            if hasattr(self.gui_integration, 'emit_status_message'):
+                self.gui_integration.emit_status_message(error_msg)
+            if hasattr(self.gui_integration, 'emit_error_occurred'):
+                self.gui_integration.emit_error_occurred("Session Error", error_msg)
     
     def save_session(self) -> bool:
         """Save current session to the session store."""

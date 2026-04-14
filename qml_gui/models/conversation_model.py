@@ -9,6 +9,7 @@ from enum import IntEnum
 from PyQt6.QtCore import QAbstractListModel, QModelIndex, Qt, pyqtSlot, pyqtSignal
 from PyQt6.QtGui import QGuiApplication
 
+from agent.logging.debug_log import debug_log
 # Try to import markdown renderer from Qt GUI, fallback to simple renderer
 try:
     from qt_gui.panels.markdown_renderer import MarkdownRenderer
@@ -58,19 +59,19 @@ class ConversationModel(QAbstractListModel):
     
     def _connect_presenter(self):
         """Connect to presenter signals."""
-        print(f"DEBUG _connect_presenter: presenter={self.presenter}")
+        debug_log(f"_connect_presenter: presenter={self.presenter}", level="DEBUG", component="ConversationModel")
         if hasattr(self.presenter, 'conversation_changed'):
-            print(f"DEBUG _connect_presenter: connecting to conversation_changed")
+            debug_log(f"_connect_presenter: connecting to conversation_changed", level="DEBUG", component="ConversationModel")
             self.presenter.conversation_changed.connect(self._on_conversation_changed)
-            print(f"DEBUG _connect_presenter: connected to conversation_changed")
+            debug_log(f"_connect_presenter: connected to conversation_changed", level="DEBUG", component="ConversationModel")
         else:
-            print(f"DEBUG _connect_presenter: presenter has no conversation_changed attribute")
+            debug_log(f"_connect_presenter: presenter has no conversation_changed attribute", level="DEBUG", component="ConversationModel")
         # TODO: maybe also connect to session lifecycle signals
     
     @pyqtSlot()
     def _on_conversation_changed(self):
         """Called when conversation changes; trigger model reset."""
-        print(f"DEBUG: _on_conversation_changed, history length: {len(self._user_history) if self._user_history else 0}")
+        debug_log(f"_on_conversation_changed, history length: {len(self._user_history) if self._user_history else 0}", level="DEBUG", component="ConversationModel")
         self.beginResetModel()
         self._refresh_history()
         self.endResetModel()
@@ -78,28 +79,28 @@ class ConversationModel(QAbstractListModel):
     
     def _refresh_history(self):
         """Refresh internal copy of user_history from presenter."""
-        print("DEBUG: _refresh_history called")
+        debug_log("_refresh_history called", level="DEBUG", component="ConversationModel")
         if not self.presenter:
             self._user_history = []
-            print(f"DEBUG _refresh_history: no presenter, history cleared")
+            debug_log(f"_refresh_history: no presenter, history cleared", level="DEBUG", component="ConversationModel")
             return
 
         # Access user_history via presenter.state_bridge.user_history
         try:
             if hasattr(self.presenter, 'state_bridge') and self.presenter.state_bridge:
                 history = self.presenter.state_bridge.user_history
-                print(f"DEBUG _refresh_history: raw history from state_bridge: {history}")
+                debug_log(f"_refresh_history: raw history from state_bridge: {history}", level="DEBUG", component="ConversationModel")
                 if history is not None:
                     self._user_history = list(history)  # copy
-                    print(f"DEBUG _refresh_history: copied history, length: {len(self._user_history)}")
+                    debug_log(f"_refresh_history: copied history, length: {len(self._user_history)}", level="DEBUG", component="ConversationModel")
                 else:
                     self._user_history = []
-                    print(f"DEBUG _refresh_history: history is None")
+                    debug_log(f"_refresh_history: history is None", level="DEBUG", component="ConversationModel")
             else:
                 self._user_history = []
-                print(f"DEBUG _refresh_history: no state_bridge attribute")
+                debug_log(f"_refresh_history: no state_bridge attribute", level="DEBUG", component="ConversationModel")
         except Exception as e:
-            print(f"Error refreshing history: {e}")
+            debug_log(f"Error refreshing history: {e}", level="ERROR", component="ConversationModel")
             self._user_history = []    
     def rowCount(self, parent=QModelIndex()):
         return len(self._user_history)

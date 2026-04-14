@@ -141,8 +141,13 @@ class SessionTab(QWidget):
         
         
         # Create default session config
-        agent_config = self.presenter.create_agent_config()
-        session_config = self.presenter._build_session_config(agent_config)
+        try:
+            agent_config = self.presenter.create_agent_config()
+            session_config = self.presenter._build_session_config(agent_config)
+        except Exception as e:
+            from PyQt6.QtWidgets import QMessageBox
+            QMessageBox.critical(self, "Session Error", f"Failed to create session configuration: {e}")
+            return
         
         # Create session with auto-generated name (ensure_name will set it)
         old_session_id = self.session.session_id if self.session else None
@@ -764,7 +769,10 @@ class SessionTab(QWidget):
             # Increment turn counter for new user query
             self._display_turn += 1
             self.output_panel.show_processing_indicator(query, self._display_turn)
-            self.presenter.start_session(query, config_dict, preset_name=preset_name)
+            try:
+                self.presenter.start_session(query, config_dict, preset_name=preset_name)
+            except Exception as e:
+                QMessageBox.critical(self, "Session Error", f"Failed to start session: {e}")
             self.query_entry.clear()
             self.update_window_title()
 
@@ -783,7 +791,10 @@ class SessionTab(QWidget):
                     "timestamp": datetime.datetime.now().isoformat(),
                     "_detail_level": self.agent_controls_panel.detail_combo.currentText()
                 })
-            self.presenter.continue_session(query)
+            try:
+                self.presenter.continue_session(query)
+            except Exception as e:
+                QMessageBox.critical(self, "Session Error", f"Failed to continue session: {e}")
             self.query_entry.clear()
 
         else:
@@ -813,7 +824,10 @@ class SessionTab(QWidget):
         # Clear the query entry
         self.query_entry.clear()
         # In presenter, this will stop agent if running and clear session data
-        self.presenter.new_session(name=name if name else None)
+        try:
+            self.presenter.new_session(name=name if name else None)
+        except Exception as e:
+            QMessageBox.critical(self, "Session Error", f"Failed to create new session: {e}")
         # Clear UI components
         self.output_panel.clear_output()
         # Reset token counters and turn counter
@@ -850,7 +864,10 @@ class SessionTab(QWidget):
         self.presenter.update_config(config)
         
         # Restart the agent (preserves session and conversation)
-        self.presenter.restart_session(query)
+        try:
+            self.presenter.restart_session(query)
+        except Exception as e:
+            QMessageBox.critical(self, "Session Error", f"Failed to restart session: {e}")
 
         # Update UI status (token counters remain as they represent cumulative session totals)
         self.status_panel.update_status("Ready for new session")

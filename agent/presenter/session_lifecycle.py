@@ -167,6 +167,7 @@ class SessionLifecycle:
             self.state = ExecutionState.PAUSED
             # Error will be emitted through event processing
             debug_log(f"Error starting session: {e}", level="DEBUG", component="SessionLifecycle")
+            raise
 
     def new_session(self, name: str = None):
         """Start a brand new session.
@@ -271,7 +272,8 @@ class SessionLifecycle:
             self._cached_config = self.state_bridge.create_agent_config()
         except Exception as e:
             # Error will be emitted through event processing
-            return
+            debug_log(f"Error creating agent config for restart: {e}", level="DEBUG", component="SessionLifecycle")
+            raise
 
         # Auto-save current session if exists (silent)
         if self.state_bridge.current_session_id:
