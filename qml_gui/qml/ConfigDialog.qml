@@ -211,7 +211,7 @@ Dialog {
                                 id: apiKeyField
                                 Layout.fillWidth: true
                                 echoMode: TextInput.Password
-                                placeholderText: "Enter your API key"
+                                placeholderText: "Leave empty to use environment variable"
                             }
                             Label { text: "Model:" }
                             TextField {

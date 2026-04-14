@@ -110,6 +110,9 @@ def load_config() -> dict:
                 project_config_data = json.load(f)
             # Merge project config (lower priority than user config)
             for key, value in project_config_data.items():
+                # Skip empty strings for api_key, model, base_url
+                if isinstance(value, str) and value == '' and key in ['api_key', 'model', 'base_url']:
+                    continue
                 if key not in config:
                     config[key] = value
         except Exception as e:
