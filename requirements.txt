@@ -14,3 +14,7 @@ pytest
 sseclient
 beautifulsoup4
 lxml
+sentence-transformers 
+chromadb 
+langchain 
+langchain-community 

@@ -24,7 +24,8 @@ Rectangle {
     border.color: getBorderColor()
     border.width: 2
     radius: 8
-    
+    clip: true
+
     // Helper functions for colors
     function getBackgroundColor() {
         if (role === "user") return "#FFF0F5"
