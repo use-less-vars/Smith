@@ -10,6 +10,7 @@ from PyQt6.QtGui import QPainter, QPalette, QTextDocument
 
 # Import from other extracted modules
 from .markdown_renderer import MarkdownRenderer
+from .message_renderer import MessageRenderer
 
 from ..utils.constants import MAX_RESULT_LENGTH, MAX_TOOL_RESULTS_PER_TURN, MAX_LINES_PER_RESULT, ENABLE_RESULT_TRUNCATION, INTERNAL_EVENT_TYPES
 from ..debug_log import debug_log
@@ -236,10 +237,14 @@ class EventDelegate(QStyledItemDelegate):
     """Delegate for rendering events in the list view."""
     
     # Special tools that should have blue styling, no truncation, full markdown
-    SPECIAL_TOOLS = ["Final", "FinalReport", "RequestUserInteraction"]
+    # Note: Also defined in message_renderer.py - keep in sync
+    SPECIAL_TOOLS = MessageRenderer.SPECIAL_TOOLS
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self.message_renderer = MessageRenderer()
+        # Keep SPECIAL_TOOLS for compatibility with existing code
+        self.SPECIAL_TOOLS = self.message_renderer.SPECIAL_TOOLS
 
     def paint(self, painter, option, index):
         """Paint the event using HTML rendering."""
@@ -342,88 +347,46 @@ class EventDelegate(QStyledItemDelegate):
 
             assistant_content = event.get("assistant_content", "")
             if assistant_content:
-                add_line(f"{assistant_content}", style="color: #000000; margin-bottom: 8px;", use_markdown=True)
+                lines.append('<div style="display: block; clear: both; margin-bottom: 8px;">')
+                add_line(f"{assistant_content}", style="color: #000000;", use_markdown=True)
+                lines.append('</div>')
+
+
+
+
+
+
 
             # Show reasoning
             if "reasoning" in event and event["reasoning"]:
-                add_line(f"Reasoning: {event['reasoning']}", style="color: #666666; margin-bottom: 8px;", use_markdown=True)
+                reasoning_text = event["reasoning"]
+                add_line(f"Reasoning: {reasoning_text}")
 
-            # Show tool calls
-            # Show tool calls
+
+            # Show tool calls using centralized renderer (with limit)
             tool_calls = event.get("tool_calls", [])
-            # Tool calls (no filtering)
-            filtered_tool_calls = tool_calls
-            # Limit number of displayed tool calls
-            display_calls = filtered_tool_calls[:MAX_TOOL_RESULTS_PER_TURN] if ENABLE_RESULT_TRUNCATION else filtered_tool_calls
-            # Add separator before tool calls if any
+            display_calls = tool_calls[:MAX_TOOL_RESULTS_PER_TURN] if ENABLE_RESULT_TRUNCATION else tool_calls
             if display_calls:
                 lines.append('<div style="margin-top: 16px; border-top: 1px solid #e0e0e0; padding-top: 8px;"></div>')
-            for i, tc in enumerate(display_calls):
-                # Add separator between tool calls (except before first)
-                if i > 0:
-                    lines.append('<div style="margin-top: 8px; border-top: 1px dotted #e0e0e0; padding-top: 8px;"></div>')
-                
-                # Normalize tool call format (support both flattened and OpenAI format)
-                tool_name = tc.get('name')
-                if tool_name is None:
-                    function = tc.get('function', {})
-                    tool_name = function.get('name', 'Unknown')
-                tool_arguments = tc.get('arguments')
-                if tool_arguments is None:
-                    function = tc.get('function', {})
-                    tool_arguments = function.get('arguments', {})
-
-                # Always show tool name in bold as visual anchor
-                add_line(f"🛠️ {tool_name}", style="color: #0000FF; font-weight: bold; margin-top: 10px; margin-bottom: 4px; display: block;")
-                if detail_level == "verbose":
-                    add_line(f"  Arguments: {tool_arguments}", style="color: #0000AA; font-size: 0.9em; margin-bottom: 2px;")
-                elif detail_level == "normal" and tool_arguments:
-                    # Show brief arguments in normal mode
-                    args_str = str(tool_arguments)
-                    if len(args_str) > 100:
-                        args_str = args_str[:100] + "..."
-                    add_line(f"  Arguments: {args_str}", style="color: #0000AA; font-size: 0.9em; margin-bottom: 2px;")
-
-                # Result
-                result_text = tc.get('result', '')
-                if result_text:
-                    # Truncate if needed
-                    unescaped_result = html.unescape(result_text)
-                    # Replace any HTML line breaks with newlines for consistent splitting
-                    unescaped_result = unescaped_result.replace('<br>', '\n').replace('<br/>', '\n').replace('<br />', '\n')
-                    
-                    # Process line breaks: replace newlines with <br> for HTML display
-                    lines_result = unescaped_result.split('\n')
-                    
-                    # Apply truncation
-                    if ENABLE_RESULT_TRUNCATION:
-                        # Limit lines
-                        if len(lines_result) > MAX_LINES_PER_RESULT:
-                            lines_result = lines_result[:MAX_LINES_PER_RESULT]
-                            lines_result.append("...")
-                        
-                        # Limit characters per line and overall
-                        truncated_lines = []
-                        total_chars = 0
-                        for line in lines_result:
-                            if total_chars + len(line) > MAX_RESULT_LENGTH:
-                                # Already approaching total limit, add ellipsis and stop
-                                truncated_lines.append("...")
-                                break
-                            if len(line) > 100:  # Limit per line
-                                line = line[:100] + "..."
-                            truncated_lines.append(line)
-                            total_chars += len(line)
-                        
-                        # Join with <br> for HTML display
-                        display_text = '<br>'.join([html.escape(line) for line in truncated_lines])
-                    else:
-                        # Join with <br> for HTML display
-                        display_text = '<br>'.join([html.escape(line) for line in lines_result])
-                    
-                    # Add result with green color and proper spacing
-                    lines.append(f'<div style="color: #006400; margin-left: 10px; margin-top: 10px; font-size: 0.95em; display: block;"><b>Result:</b> {display_text}</div>')
-            
+                for i, tc in enumerate(display_calls):
+                    if i > 0:
+                        lines.append('<div style="margin-top: 8px; border-top: 1px dotted #e0e0e0; padding-top: 8px;"></div>')
+                    # Normalize as before
+                    tool_name = tc.get('name')
+                    if tool_name is None:
+                        function = tc.get('function', {})
+                        tool_name = function.get('name', 'Unknown')
+                    arguments = tc.get('arguments')
+                    if arguments is None:
+                        function = tc.get('function', {})
+                        arguments = function.get('arguments', {})
+                    tool_call_id = tc.get('id', '')
+                    tool_call_dict = {
+                        'function': {'name': tool_name, 'arguments': arguments},
+                        'id': tool_call_id
+                    }
+                    rendered = self.message_renderer.render_tool_call(tool_call_dict)
+                    lines.append(rendered)
             # Show truncation message if we limited tool calls
             if ENABLE_RESULT_TRUNCATION and len(tool_calls) > MAX_TOOL_RESULTS_PER_TURN:
                 remaining = len(tool_calls) - MAX_TOOL_RESULTS_PER_TURN
@@ -446,110 +409,37 @@ class EventDelegate(QStyledItemDelegate):
             # User query with prominent header - use wrapper to avoid border gaps
             lines.append('<div style="border: 1px solid #FF69B4; border-radius: 5px; margin-bottom: 8px; overflow: hidden;">')
             lines.append('<div style="background-color: #FFE6F2; padding: 8px 10px; font-weight: bold; border-bottom: 1px solid #FF69B4;">USER QUERY</div>')
-            add_line(f"{event.get('content', '')}", style="color: #FF1493; background-color: #FFF0F5; padding: 12px; font-weight: bold; margin: 0; border: none;", use_markdown=True)
+            content = event.get('content', '')
+            add_line(f"User: {content}")
             lines.append('</div>')
-
         elif etype == "tool_call":
-            # Handle separate tool call events
             tool_name = event.get('tool_name', event.get('name', 'unknown'))
+            arguments = event.get('arguments', '')
+            tool_call_id = event.get('tool_call_id', '')
+            tool_call_dict = {
+                'function': {'name': tool_name, 'arguments': arguments},
+                'id': tool_call_id
+            }
+            rendered_html = self.message_renderer.render_tool_call(tool_call_dict)
+            lines.append(rendered_html)
             
-            tool_call_id = event.get('tool_call_id', 'unknown')
-            arguments = event.get('arguments', {})
-            
-            display_name = tool_name if tool_name != 'unknown' else f"call {tool_call_id}"
-            
-            # Special styling for Final, FinalReport, RequestUserInteraction
-            debug_log(f"[EventDelegate] tool_call: tool_name={tool_name}, special={tool_name in self.SPECIAL_TOOLS}", level="DEBUG")
-            if tool_name in self.SPECIAL_TOOLS:
-                lines.append('<div style="border-left: 4px solid #3498db; background-color: #eef4ff; padding: 8px; margin: 8px 0; border-radius: 4px;">')
-                add_line(f"🛠️ {display_name}", style="color: #0000FF; font-weight: bold; margin-bottom: 2px; display: block;")
-                if arguments:
-                    args_str = str(arguments)
-                    if len(args_str) > 100:
-                        args_str = args_str[:100] + "..."
-                    add_line(f"  Arguments: {args_str}", style="color: #0000AA; font-size: 0.9em; margin-bottom: 2px;")
-                lines.append('</div>')
-            else:
-                # Show tool name as bold visual anchor
-                add_line(f"🛠️ {display_name}", style="color: #0000FF; font-weight: bold; margin-top: 8px; margin-bottom: 2px; display: block; clear: both;")
-                
-                # Show arguments if available
-                if arguments:
-                    args_str = str(arguments)
-                    if len(args_str) > 100:
-                        args_str = args_str[:100] + "..."
-                    add_line(f"  Arguments: {args_str}", style="color: #0000AA; font-size: 0.9em; margin-bottom: 2px;")
         elif etype == "tool_result":
-            # Handle both legacy and new formats
-            tool_name = event.get('tool_name', event.get('name', 'unknown'))
-
-            tool_call_id = event.get('tool_call_id', 'unknown')
-            # Try content first (legacy), then result (new)
-            result_text = event.get('content', event.get('result', ''))
+            tool_name = event.get('tool_name', '')
+            content = event.get('content', event.get('result', ''))
+            tool_call_id = event.get('tool_call_id', '')
             success = event.get('success', True)
-            error = event.get('error')
+            error = event.get('error', '')
+            enable_truncation = detail_level != "verbose"
+            rendered_html = self.message_renderer.render_tool_result(
+                content=content,
+                tool_call_id=tool_call_id,
+                tool_name=tool_name,
+                success=success,
+                error=error,
+                enable_truncation=enable_truncation
+            )
+            lines.append(rendered_html)
             
-            display_name = tool_name if tool_name != 'unknown' else f"call {tool_call_id}"
-            
-            # Special styling for Final, FinalReport, RequestUserInteraction
-            debug_log(f"[EventDelegate] tool_result: tool_name={tool_name}, special={tool_name in self.SPECIAL_TOOLS}", level="DEBUG")
-            if tool_name in self.SPECIAL_TOOLS:
-                lines.append('<div style="border-left: 4px solid #3498db; background-color: #eef4ff; padding: 8px; margin: 8px 0; border-radius: 4px;">')
-                if error:
-                    add_line(f"❌ Tool {display_name} failed: {error}", style="color: #FF0000; margin-top: 2px;", use_markdown=True)
-                elif not success:
-                    add_line(f"⚠️ Tool {display_name} returned warning: {result_text}", style="color: #FFA500; margin-top: 2px;", use_markdown=True)
-                else:
-                    # Success - display result with full markdown, no truncation
-                    if result_text:
-                        add_line(f"🛠️ {display_name} completed:", style="color: #0000FF; font-weight: bold; margin-bottom: 2px; display: block;")
-                        add_line(result_text, style="color: #000000;", use_markdown=True)
-                lines.append('</div>')
-            else:
-                # Regular tool result styling
-                if error:
-                    add_line(f"❌ Tool {display_name} failed: {error}", style="color: #FF0000; margin-top: 8px;", use_markdown=True)
-                elif not success:
-                    add_line(f"⚠️ Tool {display_name} returned warning: {result_text}", style="color: #FFA500; margin-top: 8px;", use_markdown=True)
-                else:
-                    # Success - display result with proper formatting
-                    if result_text:
-                        # Truncate if needed
-                        unescaped_result = html.unescape(result_text)
-                        # Replace any HTML line breaks with newlines for consistent splitting
-                        unescaped_result = unescaped_result.replace('<br>', '\n').replace('<br/>', '\n').replace('<br />', '\n')
-                        
-                        # Process line breaks: replace newlines with <br> for HTML display
-                        lines_result = unescaped_result.split('\n')
-                        
-                        # Apply truncation
-                        if ENABLE_RESULT_TRUNCATION:
-                            # Limit lines
-                            if len(lines_result) > MAX_LINES_PER_RESULT:
-                                lines_result = lines_result[:MAX_LINES_PER_RESULT]
-                                lines_result.append("…")
-                            
-                            # Limit characters per line and overall
-                            truncated_lines = []
-                            total_chars = 0
-                            for line in lines_result:
-                                if total_chars + len(line) > MAX_RESULT_LENGTH:
-                                    # Already approaching total limit, add ellipsis and stop
-                                    truncated_lines.append("…")
-                                    break
-                                if len(line) > 100:  # Limit per line
-                                    line = line[:100] + "…"
-                                truncated_lines.append(line)
-                                total_chars += len(line)
-                            
-                            # Join with <br> for HTML display
-                            display_text = '<br>'.join([html.escape(line) for line in truncated_lines])
-                        else:
-                            # Join with <br> for HTML display
-                            display_text = '<br>'.join([html.escape(line) for line in lines_result])
-                        
-                        # Add result with green color and proper spacing
-                        lines.append(f'<div style="color: #006400; margin-left: 10px; margin-top: 10px; font-size: 0.95em; display: block;"><b>Result:</b> {display_text}</div>')
         elif etype == "processing":
             # Processing indicator - gray italic with hourglass
             add_line(f"⏳ {event.get('content', '')}", style="color: #808080; font-style: italic; background-color: #f8f8f8; padding: 4px; border-radius: 3px;", use_markdown=False)
@@ -619,117 +509,70 @@ class EventDelegate(QStyledItemDelegate):
         if user_query:
             content = user_query.get('content', '')
             if content:
-                html_content += '<div style="border: 1px solid #cc99ff; border-radius: 5px; margin-bottom: 8px; overflow: hidden;">'
-                html_content += '<div style="background-color: #f3e6ff; padding: 8px 10px; font-weight: bold; border-bottom: 1px solid #cc99ff;">USER QUERY</div>'
-                html_content += f'<div style="color: #8B008B; background-color: #f9f0ff; padding: 12px; font-weight: bold; margin: 0; border: none;">{html.escape(content)}</div>'
-                html_content += '</div>'
+                html_content += self.message_renderer.render_user_message(content=content, is_system_notification=False)
         
-        # Assistant content (grey)
+        # Assistant content
         assistant = turn_data.get('assistant')
         if assistant:
             content = assistant.get('assistant_content', '')
-            if content:
-                html_content += f'<div style="color: #000000; margin-bottom: 8px;">Assistant: {html.escape(content)}</div>'
-            
-            # Reasoning (grey)
             reasoning = assistant.get('reasoning', '')
-            if reasoning:
-                html_content += f'<div style="color: #666666; font-style: italic; margin-bottom: 8px; padding-left: 10px; border-left: 2px solid #ccc;">Reasoning: {html.escape(reasoning)}</div>'
-        
-        # Tool calls (blue) and results (green)
+            if content or reasoning:
+                html_content += self.message_renderer.render_assistant_message(
+                    content=content,
+                    reasoning_content=reasoning,
+                    tool_calls=None
+                )
+
+        # Tool calls and results using MessageRenderer
         tool_calls = turn_data.get('tool_calls', [])
         tool_results = turn_data.get('tool_results', [])
         
-        # Tool calls (no filtering)
-        filtered_tool_calls = tool_calls
+        # Build a dict for quick result lookup
+        result_by_id = {}
+        for res in tool_results:
+            tool_call_id = res.get('tool_call_id', '')
+            if tool_call_id:
+                result_by_id[tool_call_id] = res
         
-        # Tool results (no filtering)
-        filtered_tool_results = tool_results
-        
-        # Add separator before tool calls if any
-        if filtered_tool_calls:
+        if tool_calls:
             html_content += '<div style="margin-top: 16px; border-top: 1px solid #e0e0e0; padding-top: 8px;"></div>'
-        
-        # Match tool calls with results
-        for i, tool_call in enumerate(filtered_tool_calls):
-            # Add separator between tool calls (except before first)
-            if i > 0:
-                html_content += '<div style="margin-top: 8px; border-top: 1px dotted #e0e0e0; padding-top: 8px;"></div>'
-            
-            tool_name = tool_call.get('tool_name')
-            if tool_name is None:
-                tool_name = tool_call.get('name', 'Unknown')
-            # Ensure tool_name is string
-            tool_name = str(tool_name) if tool_name is not None else 'Unknown'
-            arguments = tool_call.get('arguments', {})
-            
-            # Find matching result
-            result_text = ''
-            for result in filtered_tool_results:
-                # Match by tool_name or name field
-                result_tool_name = result.get('tool_name', result.get('name'))
-                if result_tool_name == tool_name:
-                    # Try result field first, then content field for backward compatibility
-                    result_text = result.get('result', result.get('content', ''))
-                    break
-            # If no result found in tool_results, check if tool_call has result
-            if not result_text:
-                result_text = tool_call.get('result', '')
-            
-            # Ensure result_text is string
-            result_text = str(result_text) if result_text is not None else ''
-            
-            # Special styling for Final, FinalReport, RequestUserInteraction
-            if tool_name in self.SPECIAL_TOOLS:
-                # Blue border container for special tools
-                html_content += '<div style="border-left: 4px solid #3498db; background-color: #eef4ff; padding: 8px; margin: 8px 0; border-radius: 4px;">'
-                html_content += f'<div style="color: #0000FF; font-weight: bold; margin: 0 0 4px 0; display: block;">🛠️ {html.escape(tool_name)}</div>'
+            for i, tc in enumerate(tool_calls):
+                if i > 0:
+                    html_content += '<div style="margin-top: 8px; border-top: 1px dotted #e0e0e0; padding-top: 8px;"></div>'
                 
-                # Show arguments if available
-                if arguments:
-                    html_content += f'<div style="color: #0000AA; font-size: 0.9em; margin-left: 10px; margin-bottom: 4px;">Arguments: {html.escape(str(arguments))}</div>'
+                # Normalise tool call format
+                tool_name = tc.get('name')
+                if tool_name is None:
+                    function = tc.get('function', {})
+                    tool_name = function.get('name', 'Unknown')
+                arguments = tc.get('arguments')
+                if arguments is None:
+                    function = tc.get('function', {})
+                    arguments = function.get('arguments', {})
+                tool_call_id = tc.get('id', '')
                 
-                if result_text:
-                    # Use markdown rendering for special tools, no truncation
-                    unescaped_result = html.unescape(result_text)
-                    rendered_result = MarkdownRenderer.markdown_to_html(unescaped_result, '')
-                    html_content += f'<div style="color: #000000; margin-left: 10px; margin-top: 4px; font-size: 0.95em;">{rendered_result}</div>'
+                # Render tool call
+                tool_call_dict = {
+                    'function': {'name': tool_name, 'arguments': arguments},
+                    'id': tool_call_id
+                }
+                html_content += self.message_renderer.render_tool_call(tool_call_dict)
                 
-                html_content += '</div>'
-            else:
-                # Regular tool styling
-                html_content += f'<div style="color: #0000FF; font-weight: bold; margin: 8px 0 4px 0; display: block; clear: both;">🛠️ {html.escape(tool_name)}</div>'
-                
-                # Show arguments if available
-                if arguments:
-                    html_content += f'<div style="color: #0000AA; font-size: 0.9em; margin-left: 10px; margin-bottom: 4px;">Arguments: {html.escape(str(arguments))}</div>'
-                
-                if result_text:
-                    # Truncate result if needed
-                    
-                    unescaped_result = html.unescape(result_text)
-                    # Replace any HTML line breaks with newlines for consistent splitting
-                    unescaped_result = unescaped_result.replace('<br>', '\n').replace('<br/>', '\n').replace('<br />', '\n')
-                    
-                    if ENABLE_RESULT_TRUNCATION:
-                        # Limit lines
-                        lines_result = unescaped_result.split('\n')
-                        if len(lines_result) > MAX_LINES_PER_RESULT:
-                            lines_result = lines_result[:MAX_LINES_PER_RESULT]
-                            lines_result.append("...")
-                            unescaped_result = '\n'.join(lines_result)
-                        
-                        # Limit characters
-                        if len(unescaped_result) > MAX_RESULT_LENGTH:
-                            truncated = unescaped_result[:MAX_RESULT_LENGTH] + "..."
-                            html_content += f'<div style="color: #006400; margin-left: 10px; font-size: 0.9em;" title="{html.escape(unescaped_result)}">Result: {html.escape(truncated)}</div>'
-                        else:
-                            html_content += f'<div style="color: #006400; margin-left: 10px; font-size: 0.9em;">Result: {html.escape(unescaped_result)}</div>'
-                    else:
-                        html_content += f'<div style="color: #006400; margin-left: 10px; font-size: 0.9em;">Result: {html.escape(unescaped_result)}</div>'
-                
-                html_content += '<div style="margin-bottom: 8px;"></div>'  # Spacer
-        
+                # Render matching result if exists
+                result_data = result_by_id.get(tool_call_id)
+                if result_data:
+                    result_content = result_data.get('result', result_data.get('content', ''))
+                    success = result_data.get('success', True)
+                    error = result_data.get('error', '')
+                    enable_truncation = True  # or based on detail_level if available
+                    html_content += self.message_renderer.render_tool_result(
+                        content=result_content,
+                        tool_call_id=tool_call_id,
+                        tool_name=tool_name,
+                        success=success,
+                        error=error,
+                        enable_truncation=enable_truncation
+                    )
         # Final output (special user interaction message)
         final = turn_data.get('final')
         # Skip specific GUI fix reports that are too verbose
@@ -803,7 +646,8 @@ class EventDelegate(QStyledItemDelegate):
 
             # Show reasoning
             if "reasoning" in event and event["reasoning"]:
-                add_line(f"Reasoning: {event['reasoning']}")
+                reasoning_text = event["reasoning"]
+                add_line(f"Reasoning: {reasoning_text}")
 
             # Show tool calls
             for tc in event.get("tool_calls", []):
@@ -818,15 +662,8 @@ class EventDelegate(QStyledItemDelegate):
                 result_text = tc.get('result', '')
                 unescaped_result = html.unescape(result_text)
                 tool_name = tc.get('name', '')
-                if tool_name in self.SPECIAL_TOOLS:
-                    # No truncation for special tools
-                    add_line(f"Result: {unescaped_result}")
-                else:
-                    if len(unescaped_result) > MAX_RESULT_LENGTH:
-                        truncated = unescaped_result[:MAX_RESULT_LENGTH] + "..."
-                        add_line(f"Result: {truncated}")
-                    else:
-                        add_line(f"Result: {unescaped_result}")
+                formatted = self.message_renderer.format_result_plain(unescaped_result, tool_name=tool_name)
+                add_line(f"Result: {formatted}")
 
         elif etype == "final":
             # Skip specific GUI fix reports that are too verbose
@@ -837,8 +674,8 @@ class EventDelegate(QStyledItemDelegate):
                 add_line(f"Reasoning: {event['reasoning']}")
 
         elif etype == "user_query":
-            add_line(f"User query: {event.get('content', '')}")
-
+            content = event.get('content', '')
+            add_line(f"User: {content}")
         elif etype == "tool_call":
             # Handle separate tool call events
             tool_name = event.get('tool_name', event.get('name', 'unknown'))
@@ -870,16 +707,8 @@ class EventDelegate(QStyledItemDelegate):
                 add_line(f"Tool {display_name} returned warning: {result_text}")
             else:
                 unescaped_result = html.unescape(result_text)
-                if tool_name in self.SPECIAL_TOOLS:
-                    # No truncation for special tools
-                    add_line(f"Tool {display_name} result: {unescaped_result}")
-                else:
-                    # Truncate if needed for regular tools
-                    if len(unescaped_result) > MAX_RESULT_LENGTH:
-                        truncated = unescaped_result[:MAX_RESULT_LENGTH] + "..."
-                        add_line(f"Tool {display_name} result: {truncated}")
-                    else:
-                        add_line(f"Tool {display_name} result: {unescaped_result}")
+                formatted = self.message_renderer.format_result_plain(unescaped_result, tool_name=tool_name)
+                add_line(f"Tool {display_name} result: {formatted}")
 
         elif etype == "system":
             add_line(f"System: {event.get('content', '')}")

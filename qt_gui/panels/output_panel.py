@@ -5,13 +5,14 @@ from PyQt6.QtWidgets import (
     QTextEdit, QFrame, QScrollArea
 )
 from PyQt6.QtCore import Qt, QTimer
-from PyQt6.QtGui import QTextCursor
+from PyQt6.QtGui import QTextCursor, QTextOption
 
 
 # Import from other extracted modules
 from .event_models import EventModel, EventFilterProxyModel, EventDelegate
 from .turn_container_manager import TurnContainerManager
 from .markdown_renderer import MarkdownRenderer
+from .message_renderer import MessageRenderer
 from ..utils.constants import MAX_RESULT_LENGTH, MAX_TOOL_RESULTS_PER_TURN, MAX_LINES_PER_RESULT, ENABLE_RESULT_TRUNCATION, INTERNAL_EVENT_TYPES
 from ..debug_log import debug_log
 from ..utils.smart_scrolling import SmartScroller
@@ -21,7 +22,8 @@ from ..utils.smart_scrolling import SmartScroller
 class OutputPanel(QWidget):
     """Panel containing event display, filtering, and query controls."""
     # Special tools that should have blue styling, no truncation, full markdown
-    SPECIAL_TOOLS = ["Final", "FinalReport", "RequestUserInteraction"]
+    # Note: Also defined in message_renderer.py - keep in sync
+    SPECIAL_TOOLS = ["Final", "FinalReport", "RequestUserInteraction", "ProgressReport"]
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -57,6 +59,7 @@ class OutputPanel(QWidget):
         self.init_ui()
         self.turn_container_manager = TurnContainerManager(self.output_textedit, self.filter_proxy_model)
         self.markdown_renderer = MarkdownRenderer()
+        self.message_renderer = MessageRenderer(markdown_renderer=self.markdown_renderer)
         self.setup_signal_connections()
 
     def _normalize_turn(self, turn_val):
@@ -113,6 +116,7 @@ class OutputPanel(QWidget):
         self.output_textedit.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.output_textedit.setAcceptRichText(True)
         self.output_textedit.setLineWrapMode(QTextEdit.LineWrapMode.WidgetWidth)
+        self.output_textedit.setWordWrapMode(QTextOption.WrapMode.WrapAtWordBoundaryOrAnywhere)
         self.output_textedit.setStyleSheet("""
             QTextEdit:focus {
                 border: none;
@@ -127,6 +131,19 @@ class OutputPanel(QWidget):
 
         # Initialize smart scrolling
         self.smart_scroller = SmartScroller(self.output_textedit)
+        
+        # Set default CSS for HTML paragraphs to remove margins
+        self.output_textedit.document().setDefaultStyleSheet("""
+            p, li { 
+                white-space: pre-wrap;
+                margin: 0;
+                padding: 0;
+            }
+            div {
+                margin: 0;
+                padding: 0;
+            }
+        """)
 
     def setup_signal_connections(self):
         """Connect filter signals."""
@@ -320,63 +337,37 @@ class OutputPanel(QWidget):
         """Display a user message."""
         content = message.get('content', '')
         created_at = message.get('created_at', '')
-
+        
         # DIAGNOSTICS
         debug_log(f"content start: {repr(content[:200])}", level="DEBUG", component="OutputPanel")
         # Detect system messages (token warnings, etc.)
         is_system = content.startswith(('[SYSTEM]','[SYSTEM NOTIFICATION]'))
         debug_log(f"is_system: {is_system}", level="DEBUG", component="OutputPanel")
-        if is_system:
-            # Strip the prefix for cleaner display
-            content = content[8:].lstrip()
-            header = 'System'
-            border_color = '#ff9999'
-            bg_color = '#ffe6e6'
-        else:
-            header = 'User'
-            border_color = '#FF69B4'
-            bg_color = '#FFF0F5'
         
-        html = (f'<div style="border: 1px solid {border_color}; border-radius: 5px; margin-bottom: 12px; overflow: hidden;">'
-                f'<div style="background-color: {bg_color}; padding: 8px 10px; font-weight: bold; border-bottom: 1px solid {border_color};">{header}</div>'
-                f'<div style="padding: 10px;">'
-                f'{self._render_content(content)}'
-                f'</div>'
-                f'</div>')
+        html = self.message_renderer.render_user_message(
+            content=content,
+            created_at=created_at,
+            is_system_notification=is_system
+        )
         debug_log(f"Generated HTML: {html}", level="DEBUG", component="OutputPanel")
-        self._append_html(html)
-    
+        self._append_html(html)    
     def display_assistant_message(self, message: dict):
         """Display an assistant message with optional tool calls."""
         content = message.get('content', '')
         tool_calls = message.get('tool_calls', [])
         reasoning_content = message.get('reasoning_content', '')
-        
-        debug_log(f"display_assistant_message: content length={len(content)}, tool_calls count={len(tool_calls)}", level="DEBUG")
-        
-        self._append_html(
-            f'<div style="border: 1px solid #99ccff; border-radius: 5px; margin-bottom: 12px; overflow: hidden;">'
-            f'<div style="background-color: #e6f3ff; padding: 8px 10px; font-weight: bold; border-bottom: 1px solid #99ccff;">Assistant</div>'
-            f'<div style="padding: 10px;">'
-        )
-        
-        # Display reasoning content if present
-        if reasoning_content:
-            self._append_html(
-                f'<div style="background-color: #f8f8f8; border-left: 4px solid #888; padding: 8px; margin-bottom: 12px;">'
-                f'<div style="color: #333; font-weight: bold;">Reasoning:</div>'
-                f'{self._render_content(reasoning_content)}'
-                f'</div>'
-            )
-            # Add separation between reasoning and main content
-            self._append_html('<div style="height: 4px;"></div>')
-        
-        # Display main content
-        if content:
-            self._append_html(f'{self._render_content(content)}')
-        
-        self._append_html(f'</div></div>')
+        created_at = message.get('created_at', '')
 
+        debug_log(f"display_assistant_message: content length={len(content)}, tool_calls count={len(tool_calls)}", level="DEBUG")
+
+        # Render assistant message without tool calls (tool calls added separately)
+        html = self.message_renderer.render_assistant_message(
+            content=content,
+            tool_calls=[],  # Tool calls added separately to maintain mapping
+            reasoning_content=reasoning_content,
+            created_at=created_at
+        )
+        self._append_html(html)
         # Display tool calls if present
         if tool_calls:
             # Add visual separator before tool calls
@@ -391,141 +382,63 @@ class OutputPanel(QWidget):
         tool_name = tool_call.get('function', {}).get('name', 'unknown')
         arguments = tool_call.get('function', {}).get('arguments', '{}')
         tool_call_id = tool_call.get('id', '')
-        
+
         debug_log(f"display_tool_call: tool_name={tool_name}, arguments length={len(str(arguments))}", level="DEBUG")
-        
+
         # Store mapping for tool result styling
         if tool_call_id:
             self._tool_call_map[tool_call_id] = tool_name
-        
-        # Special tools that should have blue styling, no truncation, full markdown
-        SPECIAL_TOOLS = self.SPECIAL_TOOLS
-        self._append_html('<div style="height: 4px;"></div>')
-        debug_log(f"display_tool_call: SPECIAL_TOOLS={SPECIAL_TOOLS}, tool_name in SPECIAL_TOOLS={tool_name in SPECIAL_TOOLS}", level="DEBUG")
 
-        if tool_name in SPECIAL_TOOLS:
-            self._append_html(
-                f'<div style="margin-left: 20px; margin-top: 8px; margin-bottom: 8px; border-left: 4px solid #3498db; background-color: #eef4ff; padding: 8px; border-radius: 4px;">'
-                f'<div style="color: #0000FF; font-weight: bold;">Tool: {tool_name}</div>'
-                f'<div style="color: #666666; font-size: 0.9em;">Arguments: {html.escape(arguments)}</div>'
-                f'</div>'
-            )
-        else:
-            # Regular tool: truncate arguments, monospace font
-            args_str = str(arguments)
-            if len(args_str) > 200:
-                args_str = args_str[:200] + '...'
-            escaped_args = html.escape(args_str)
-            self._append_html(
-                f'<div style="margin-left: 20px; margin-top: 5px; margin-bottom: 5px;">'
-                f'<div style="color: #006400; font-weight: bold;">Tool: {tool_name}</div>'
-                f'<div style="color: #666666; font-size: 0.9em; font-family: monospace, monospace;">Arguments: {escaped_args}</div>'
-                f'</div>'
-            )
-    
+        # Use renderer to generate HTML
+        html = self.message_renderer.render_tool_call(tool_call)
+        self._append_html(html)    
     def display_tool_result(self, message: dict):
         """Display a tool result message."""
         content = message.get('content', '')
         tool_call_id = message.get('tool_call_id', '')
-        
+        success = message.get('success', True)
+        error = message.get('error', '')
+
         debug_log(f"display_tool_result: tool_call_id={tool_call_id}, content length={len(content)}", level="DEBUG")
-        
+
         # Look up tool name for special styling
         tool_name = self._tool_call_map.get(tool_call_id, '')
         debug_log(f"display_tool_result: found tool_name='{tool_name}' from _tool_call_map (size={len(self._tool_call_map)})", level="DEBUG")
-        SPECIAL_TOOLS = self.SPECIAL_TOOLS
-        debug_log(f"display_tool_result: SPECIAL_TOOLS={SPECIAL_TOOLS}, tool_name in SPECIAL_TOOLS={tool_name in SPECIAL_TOOLS}", level="DEBUG")
-        self._append_html('<div style="height: 4px;"></div>')
         
-        if tool_name in SPECIAL_TOOLS:
-            self._append_html(
-                f'<div style="margin-left: 20px; margin-top: 8px; margin-bottom: 10px; border-left: 4px solid #3498db; background-color: #eef4ff; padding: 8px; border-radius: 4px;">'
-                f'<div style="color: #0000FF; font-weight: bold;">Tool Result ({tool_name})</div>'
-                f'<div style="color: #0000FF;">{self._render_content(content)}</div>'
-                f'</div>'
-            )
-        else:
-            # Regular tool: truncate plain text, HTML escape, monospace font
-            truncated_content = self._truncate_plain_text(content, tool_name)
-            escaped_content = html.escape(truncated_content)
-            self._append_html(
-                f'<div style="margin-left: 20px; margin-top: 5px; margin-bottom: 10px;">'
-                f'<div style="color: #006400; font-weight: bold;">Tool Result</div>'
-                f'<div style="color: #006400; font-family: monospace, monospace; white-space: pre-wrap;">{escaped_content}</div>'
-                f'</div>'
-            )
-    
+        # Use renderer to generate HTML
+        html = self.message_renderer.render_tool_result(
+            content=content,
+            tool_call_id=tool_call_id,
+            tool_name=tool_name,
+            success=success,
+            error=error,
+            enable_truncation=True
+        )
+        self._append_html(html)    
     def display_system_message(self, message: dict):
         """Display a system message."""
         # DIAGNOSTICS
         content = message.get('content', '')
+        created_at = message.get('created_at', '')
         debug_log(f"content start: {repr(content[:200])}", level="DEBUG", component="OutputPanel")
-        
-        # Detect system messages that already have [SYSTEM] prefix (from token warnings)
-        is_system_prefixed = content.startswith('[SYSTEM]')
-        if is_system_prefixed:
-            # Strip the prefix for cleaner display
-            content = content[8:].lstrip()
-        
-        self._append_html(
-            f'<div style="border: 1px solid #ff9999; border-radius: 5px; margin-bottom: 8px; overflow: hidden;">'
-            f'<div style="background-color: #ffe6e6; padding: 8px 10px; font-weight: bold; border-bottom: 1px solid #ff9999;">System</div>'
-            f'<div style="padding: 10px;">'
-            f'{self._render_content(content)}'
-            f'</div>'
-            f'</div>'
+
+        # Use renderer to generate HTML
+        html = self.message_renderer.render_system_message(
+            content=content,
+            created_at=created_at
         )
-    
-    def _render_content(self, content: str) -> str:
-        """Render message content to HTML (handles markdown)."""
-        if not content:
-            return ''
-        # Use the existing markdown renderer
-        return self.markdown_renderer.markdown_to_html(content)
-    
-    def _truncate_plain_text(self, content: str, tool_name: str = '') -> str:
-        """Truncate plain text content for regular tool results."""
-        if not content:
-            return ''
-        
-        # Don't truncate special tools
-        if tool_name in self.SPECIAL_TOOLS:
-            return content
-        
-        # Check if truncation is enabled
-        if not ENABLE_RESULT_TRUNCATION:
-            return content
-        
-        lines = content.split('\n')
-        
-        # Limit number of lines
-        if len(lines) > MAX_LINES_PER_RESULT:
-            lines = lines[:MAX_LINES_PER_RESULT]
-            lines.append('...')
-        
-        # Process each line
-        truncated_lines = []
-        total_chars = 0
-        for line in lines:
-            # Check total character limit
-            if total_chars + len(line) > MAX_RESULT_LENGTH:
-                truncated_lines.append('...')
-                break
-            
-            # Limit line length
-            if len(line) > 100:
-                line = line[:100] + '...'
-            
-            truncated_lines.append(line)
-            total_chars += len(line)
-        
-        return '\n'.join(truncated_lines)
+        self._append_html(html)    
     
     def _append_html(self, html: str):
         """Append HTML to the output text edit."""
         cursor = self.output_textedit.textCursor()
         cursor.movePosition(cursor.MoveOperation.End)
+        # Insert HTML without extra paragraph wrapper
         cursor.insertHtml(html)
+        # Add a block separator so next message doesn't merge
+        cursor.insertBlock()
+        self.output_textedit.setTextCursor(cursor)
+        self.output_textedit.ensureCursorVisible()
         # Scroll to bottom
         self.smart_scroller.deferred_scroll_to_bottom()
     

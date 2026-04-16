@@ -36,6 +36,7 @@ from qt_gui.panels.query_panel import QueryPanel
 from qt_gui.panels.status_panel import StatusPanel
 from qt_gui.panels.agent_controls import AgentControlsPanel
 from qt_gui.panels.event_models import EventDelegate, EventModel, EventFilterProxyModel
+from qt_gui.panels.message_renderer import MessageRenderer
 
 # Import the extracted panels that were previously in qt_gui_refactored.py
 # (ToolLoaderPanel and StatusPanel are already in qt_gui.panels)
@@ -54,6 +55,7 @@ class SessionTab(QWidget):
             self.presenter.session_store = session_store
         self.config_bridge = GUIConfigBridge(create_agent_config_service())
         self.config_bridge.add_change_listener(self._on_config_changed)
+        self.message_renderer = MessageRenderer()
 
         # Token tracking (now managed by presenter but also cached locally for UI)
         self.total_input = 0
@@ -912,8 +914,8 @@ class SessionTab(QWidget):
     
     def _create_result_widget(self, result_text, full_text):
         """
-        Create a widget to display a tool result.
-        If result_text is longer than MAX_RESULT_LENGTH, show a truncated version
+        Create a widget to display a tool result using the message renderer.
+        If the full text exceeds MAX_RESULT_LENGTH, show a truncated version
         with a "Show full" button. Otherwise just show a label.
         """
         widget = QWidget()
@@ -921,16 +923,17 @@ class SessionTab(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         widget.setLayout(layout)
         
-        # Unescape HTML entities in the text
-        unescaped_full_text = html.unescape(full_text)
+        # Use message renderer to format both texts (unescapes and optionally truncates)
+        plain_result = self.message_renderer.format_result_plain(result_text, truncate=True)
+        unescaped_full_text = self.message_renderer.format_result_plain(full_text, truncate=False)
         
-        # Determine if truncation is needed
+        label = QLabel(plain_result)
+        label.setWordWrap(True)
+        label.setTextFormat(Qt.TextFormat.PlainText)
+        label.setStyleSheet("color: #006400;")
+        
+        # Determine if truncation is needed (based on full text length)
         if len(unescaped_full_text) > MAX_RESULT_LENGTH:
-            truncated = unescaped_full_text[:MAX_RESULT_LENGTH] + "..."
-            label = QLabel(f"Result: {truncated}")
-            label.setWordWrap(True)
-            label.setTextFormat(Qt.TextFormat.PlainText)
-            label.setStyleSheet("color: #006400;")
             layout.addWidget(label, 1)  # stretch factor 1
             
             button = QPushButton("Show full")
@@ -939,12 +942,7 @@ class SessionTab(QWidget):
             button.clicked.connect(lambda checked, text=unescaped_full_text: self._show_full_text_dialog(text))
             layout.addWidget(button)
         else:
-            label = QLabel(f"Result: {unescaped_full_text}")
-            label.setWordWrap(True)
-            label.setTextFormat(Qt.TextFormat.PlainText)
-            label.setStyleSheet("color: #006400;")
-            layout.addWidget(label)
-        
+            layout.addWidget(label)        
         return widget
     
     def _show_full_text_dialog(self, text):
