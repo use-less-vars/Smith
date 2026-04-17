@@ -122,6 +122,50 @@ class LocalCodebaseKB(BaseKnowledgeBase):
         self._collection = collection
         return collection
     
+    def _get_collection_dimension(self) -> int:
+        """
+        Get the embedding dimension of the collection.
+        
+        Returns:
+            Embedding dimension (default 256 if cannot determine)
+        """
+        if hasattr(self, '_collection_dimension') and self._collection_dimension is not None:
+            return self._collection_dimension
+        
+        try:
+            collection = self._get_collection()
+            # Try to get the count and peek at first embedding if possible
+            count = collection.count()
+            if count > 0:
+                # Get first embedding by querying with a minimal query
+                # Use the model to generate a test embedding
+                try:
+                    model = self._get_embedding_model()
+                    test_embedding = model.encode("test", truncate_dim=384).tolist()
+                    # Try query with this embedding to get stored embeddings
+                    results = collection.query(
+                        query_embeddings=[test_embedding],
+                        n_results=1,
+                        include=['embeddings']
+                    )
+                    embeddings = results.get('embeddings')
+                    if embeddings and len(embeddings) > 0:
+                        first_embedding = embeddings[0]
+                        if first_embedding and len(first_embedding) > 0:
+                            dimension = len(first_embedding[0]) if isinstance(first_embedding[0], list) else len(first_embedding)
+                            self._collection_dimension = dimension
+                            logger.debug(f"Detected collection dimension: {dimension}")
+                            return dimension
+                except Exception:
+                    pass
+        except Exception as e:
+            logger.debug(f"Failed to get collection dimension: {e}")
+        
+        # Default to 256 (original truncation default from indexing)
+        logger.debug("Using default collection dimension: 256")
+        self._collection_dimension = 256
+        return 256
+    
     def _get_embedding_model(self):
         """
         Lazy-load the sentence-transformers model.
@@ -184,13 +228,13 @@ class LocalCodebaseKB(BaseKnowledgeBase):
         Args:
             query: Natural language query
             top_k: Maximum number of results to return
-            
+        
         Returns:
             List of result dictionaries with keys:
                 - content: str - The code snippet text
                 - metadata: Dict[str, Any] - File path, line numbers, language
                 - score: float - Similarity score (0-1, higher is more relevant)
-                
+        
         Returns empty list if:
             - RAG dependencies are missing
             - Collection does not exist (index not created)
@@ -214,15 +258,36 @@ class LocalCodebaseKB(BaseKnowledgeBase):
             logger.warning(f"Cannot search codebase: {e}")
             return []
         
-        # Embed query
-        query_embedding = model.encode(query).tolist()
+        # Get collection dimension and truncate query embedding accordingly
+        try:
+            dimension = self._get_collection_dimension()
+            logger.debug(f"Using embedding dimension: {dimension}")
+            
+            # Embed query with truncation to match collection dimension
+            query_embedding = model.encode(query, truncate_dim=dimension).tolist()
+        except Exception as e:
+            logger.warning(f"Failed to get dimension or embed query: {e}")
+            # Fallback: try without truncation
+            query_embedding = model.encode(query).tolist()
         
         # Perform search
-        results = collection.query(
-            query_embeddings=[query_embedding],
-            n_results=top_k,
-            include=["metadatas", "documents", "distances"]
-        )
+        try:
+            import chromadb
+            results = collection.query(
+                query_embeddings=[query_embedding],
+                n_results=top_k,
+                include=["metadatas", "documents", "distances"]
+            )
+        except chromadb.errors.InvalidArgumentError as e:
+            # Dimension mismatch - suggest re-indexing
+            logger.error(
+                f"Embedding dimension mismatch. The collection expects a different dimension. "
+                f"Please re-index the codebase with: python -m agent.knowledge.codebase_indexer index {self.workspace_path} --force"
+            )
+            return []
+        except Exception as e:
+            logger.warning(f"Search failed: {e}")
+            return []
         
         # Format results
         formatted_results = []
@@ -255,8 +320,7 @@ class LocalCodebaseKB(BaseKnowledgeBase):
             })
         
         logger.debug(f"Codebase search returned {len(formatted_results)} results")
-        return formatted_results
-    
+        return formatted_results    
     def add(self, content: str, metadata: Optional[Dict[str, Any]] = None) -> None:
         """
         Add a document to the knowledge base.
