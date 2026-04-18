@@ -28,7 +28,6 @@ load_dotenv()
 # Debug logging
 from qt_gui.debug_log import debug_log
 
-from qt_gui.utils.constants import MAX_RESULT_LENGTH
 
 from qt_gui.themes import apply_theme
 from qt_gui.panels.output_panel import OutputPanel
@@ -863,59 +862,6 @@ class SessionTab(QWidget):
     
 
     
-    def _create_result_widget(self, result_text, full_text):
-        """
-        Create a widget to display a tool result.
-        If result_text is longer than MAX_RESULT_LENGTH, show a truncated version
-        with a "Show full" button. Otherwise just show a label.
-        """
-        widget = QWidget()
-        layout = QHBoxLayout()
-        layout.setContentsMargins(0, 0, 0, 0)
-        widget.setLayout(layout)
-        
-        # Unescape HTML entities in the text
-        unescaped_full_text = html.unescape(full_text)
-        
-        # Determine if truncation is needed
-        if len(unescaped_full_text) > MAX_RESULT_LENGTH:
-            truncated = unescaped_full_text[:MAX_RESULT_LENGTH] + "..."
-            label = QLabel(f"Result: {truncated}")
-            label.setWordWrap(True)
-            label.setTextFormat(Qt.TextFormat.PlainText)
-            label.setStyleSheet("color: #006400;")
-            layout.addWidget(label, 1)  # stretch factor 1
-            
-            button = QPushButton("Show full")
-            button.setMaximumWidth(80)
-            # Connect button to open a dialog with full text
-            button.clicked.connect(lambda checked, text=unescaped_full_text: self._show_full_text_dialog(text))
-            layout.addWidget(button)
-        else:
-            label = QLabel(f"Result: {unescaped_full_text}")
-            label.setWordWrap(True)
-            label.setTextFormat(Qt.TextFormat.PlainText)
-            label.setStyleSheet("color: #006400;")
-            layout.addWidget(label)
-        
-        return widget
-    
-    def _show_full_text_dialog(self, text):
-        """Open a modal dialog displaying the full text."""
-        dialog = QDialog(self)
-        dialog.setWindowTitle("Full Tool Result")
-        dialog.resize(600, 400)
-        layout = QVBoxLayout(dialog)
-        text_edit = QTextEdit()
-        # Unescape any HTML entities in the text
-        unescaped_text = html.unescape(text)
-        text_edit.setPlainText(unescaped_text)
-        text_edit.setReadOnly(True)
-        layout.addWidget(text_edit)
-        close_btn = QPushButton("Close")
-        close_btn.clicked.connect(dialog.accept)
-        layout.addWidget(close_btn)
-        dialog.exec()
     
     
     def load_config(self):
