@@ -147,7 +147,7 @@ class Agent:
         self.debug_context = DebugContext(self.logger)
         
         # Tool setup
-        self.tool_classes = config.tool_classes if config.tool_classes is not None else SIMPLIFIED_TOOL_CLASSES
+        self.tool_classes = config.tool_classes if config.tool_classes is not None else config.get_filtered_tool_classes()
         self.tool_definitions = [model_to_openai_tool(cls) for cls in self.tool_classes]
         
         # Initialize tool executor with security availability
@@ -325,7 +325,7 @@ class Agent:
             # Handle countdown events - inject as system message
             message = event.get("message", "")
             sender = event.get("sender", "system")
-            warning_msg = {"role": sender, "content": message}
+            warning_msg = {"role": sender, "content": "[SYSTEM NOTIFICATION] " + message}
             self._add_to_conversation(warning_msg)
             warning_tokens = self._estimate_tokens(warning_msg)
             self.state.current_conversation_tokens += warning_tokens
@@ -423,9 +423,9 @@ class Agent:
         self.state.current_conversation_tokens = estimated_tokens
         
         # DEBUG PRINT
-        print(f"[DEBUG_TOKEN_ESTIMATE] Estimated tokens: {estimated_tokens}, runtime_context length: {len(runtime_context)}, conversation length: {len(self.conversation)}")
+        debug_log(f"Estimated tokens: {estimated_tokens}, runtime_context length: {len(runtime_context)}, conversation length: {len(self.conversation)}", level="DEBUG", component="TokenEstimate")
         if hasattr(self, 'context_builder') and self.context_builder is not None and hasattr(self.context_builder, 'token_limit'):
-            print(f"[DEBUG_TOKEN_ESTIMATE] context_builder.token_limit: {self.context_builder.token_limit}")
+            debug_log(f"context_builder.token_limit: {self.context_builder.token_limit}", level="DEBUG", component="TokenEstimate")
 
         if DEBUG_PRUNING_AVAILABLE:
             log_token_count(f"Runtime context token estimate (from {len(runtime_context)}/{len(self.conversation)} messages)", estimated_tokens)
@@ -629,7 +629,7 @@ class Agent:
         )
         
         # Update tool classes
-        self.tool_classes = new_config.tool_classes if new_config.tool_classes is not None else SIMPLIFIED_TOOL_CLASSES
+        self.tool_classes = new_config.tool_classes if new_config.tool_classes is not None else new_config.get_filtered_tool_classes()
         self.tool_definitions = [model_to_openai_tool(cls) for cls in self.tool_classes]
         
         # Recreate tool executor
@@ -935,7 +935,7 @@ class Agent:
             
             if request_tokens > model_context_window:
                 # Cannot proceed - request exceeds model context window
-                error = f"[SYSTEM] Request token count ({request_tokens}) exceeds model context window ({model_context_window}). Cannot make API call. Please use SummarizeTool to reduce context size."
+                error = f"Request token count ({request_tokens}) exceeds model context window ({model_context_window}). Cannot make API call. Please use SummarizeTool to reduce context size."
                 error_msg = {"role": "user", "content": "[SYSTEM NOTIFICATION] " + error}
                 self._add_to_conversation(error_msg)
                 error_tokens = self._estimate_tokens(error_msg)
@@ -963,7 +963,7 @@ class Agent:
                     )
             elif request_tokens > critical_threshold:
                 # Critical warning - near context limit
-                warning = f"[SYSTEM] Request token count ({request_tokens}) is near model context window limit ({model_context_window}). Please use SummarizeTool immediately to reduce context size."
+                warning = f"Request token count ({request_tokens}) is near model context window limit ({model_context_window}). Please use SummarizeTool immediately to reduce context size."
                 warning_msg = {"role": "user", "content": "[SYSTEM NOTIFICATION] " + warning}
                 self._add_to_conversation(warning_msg)
                 warning_tokens = self._estimate_tokens(warning_msg)
@@ -990,7 +990,7 @@ class Agent:
                     )
             elif request_tokens > warning_threshold:
                 # Warning - approaching context limit
-                warning = f"[SYSTEM] Request token count ({request_tokens}) is approaching model context window ({model_context_window}). Consider using SummarizeTool soon."
+                warning = f"Request token count ({request_tokens}) is approaching model context window ({model_context_window}). Consider using SummarizeTool soon."
                 warning_msg = {"role": "user", "content": "[SYSTEM NOTIFICATION] " + warning}
                 self._add_to_conversation(warning_msg)
                 warning_tokens = self._estimate_tokens(warning_msg)
@@ -1531,8 +1531,8 @@ class Agent:
         # Add context cleared notification AFTER summary in the history
         # This will be included in context for the LLM to know restrictions are lifted
         context_cleared_msg = {
-            "role": "system",
-            "content": "[SYSTEM] Context has been summarized. You now have a fresh context window and full access to tools."
+            "role": "user",
+            "content": "[SYSTEM NOTIFICATION] Context has been summarized. You now have a fresh context window and full access to tools."
         }
         # Insert right after the summary
         summary_position = insertion_idx if insertion_idx < len(user_history) else len(user_history) - 1
@@ -1644,6 +1644,16 @@ class Agent:
 
         # Build pruned conversation
         new_conversation = cleaned_system_messages + [summary_msg] + pruned_other
+        
+        # Add context cleared notification after summary
+        context_cleared_msg = {
+            "role": "user",
+            "content": "[SYSTEM NOTIFICATION] Context has been summarized. You now have a fresh context window and full access to tools."
+        }
+        # Insert after summary message
+        summary_idx = len(cleaned_system_messages)
+        new_conversation.insert(summary_idx + 1, context_cleared_msg)
+        
         self.conversation = new_conversation
 
         logger.debug(f"[DEBUG_PRUNING] Fallback pruning: new conversation length {len(self.conversation)}")

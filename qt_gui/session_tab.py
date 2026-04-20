@@ -10,11 +10,9 @@ from PyQt6.QtWidgets import (
     QGroupBox, QCheckBox, QMenuBar, QMenu, QFileDialog, QStyleOptionViewItem, 
     QMessageBox, QScrollArea, QFrame, QComboBox, QSpinBox, QDoubleSpinBox, QSplitter, QTabWidget, QDialog, QSizePolicy, QStyle, QInputDialog
 )
-from PyQt6.QtCore import Qt, QTimer, pyqtSlot, QAbstractListModel, QModelIndex, QVariant, QRect, QPoint, QSize, QSortFilterProxyModel, QMetaObject, QThread, QUrl
+from PyQt6.QtCore import Qt, QTimer, pyqtSlot, QAbstractListModel, QModelIndex, QVariant, QRect, QPoint, QSize, QSortFilterProxyModel, QMetaObject, QThread
 from PyQt6.QtGui import QAction, QKeySequence, QFont, QTextDocument, QTextCursor, QColor, QPainter, QPalette, QAbstractTextDocumentLayout, QPageLayout, QPageSize, QShortcut
 from PyQt6.QtPrintSupport import QPrinter
-from PyQt6.QtQuickWidgets import QQuickWidget
-from qt_gui.models.conversation_model import ConversationModel
 from dotenv import load_dotenv
 
 from agent.presenter.agent_presenter import RefactoredAgentPresenter
@@ -22,7 +20,7 @@ from agent.core.state import ExecutionState
 from agent.config.service import create_agent_config_service
 from qt_gui.config.config_bridge import GUIConfigBridge
 from session.store import FileSystemSessionStore
-from tools import TOOL_CLASSES, SIMPLIFIED_TOOL_CLASSES
+from tools import SIMPLIFIED_TOOL_CLASSES
 from pathlib import Path
 
 load_dotenv()
@@ -30,14 +28,13 @@ load_dotenv()
 # Debug logging
 from qt_gui.debug_log import debug_log
 
-from qt_gui.utils.constants import MAX_RESULT_LENGTH
 
 from qt_gui.themes import apply_theme
 from qt_gui.panels.output_panel import OutputPanel
 from qt_gui.panels.query_panel import QueryPanel
 from qt_gui.panels.status_panel import StatusPanel
 from qt_gui.panels.agent_controls import AgentControlsPanel
-from qt_gui.panels.event_models import EventDelegate, EventModel, EventFilterProxyModel
+
 
 # Import the extracted panels that were previously in qt_gui_refactored.py
 # (ToolLoaderPanel and StatusPanel are already in qt_gui.panels)
@@ -85,8 +82,7 @@ class SessionTab(QWidget):
 
         # Expose panel widgets for backward compatibility
         self.output_textedit = self.output_panel.output_textedit
-        self.event_model = self.output_panel.event_model
-        self.filter_proxy_model = self.output_panel.filter_proxy_model
+        # Note: event_model and filter_proxy_model removed in Phase 4
         self.filter_lineedit = self.output_panel.filter_lineedit
         self.filter_type_combo = self.output_panel.filter_type_combo
         self.query_entry = self.query_panel.query_entry
@@ -98,17 +94,17 @@ class SessionTab(QWidget):
         self.init_ui()
         self.setup_signal_connections()
         
-        # Create or load session
-        if session_id:
-            self.load_session_by_id(session_id)
-        else:
-            self.create_new_session()
-        
         # Conversation changed debounce timer (prevents excessive rebuilds)
         self._conversation_debounce_timer = QTimer(self)
         self._conversation_debounce_timer.setSingleShot(True)
         self._conversation_debounce_timer.setInterval(100)  # 100ms debounce
         self._conversation_debounce_timer.timeout.connect(self._on_conversation_debounced)
+        
+        # Create or load session
+        if session_id:
+            self.load_session_by_id(session_id)
+        else:
+            self.create_new_session()
         
         self.load_config()
 
@@ -126,18 +122,47 @@ class SessionTab(QWidget):
         
         # Update internal session reference
         old_session = self._session
+        
+        # Disconnect conversation changed callback from old session
+        if old_session and hasattr(old_session, 'disconnect_conversation_changed'):
+            try:
+                old_session.disconnect_conversation_changed(self._on_session_conversation_changed)
+                debug_log(f"[SessionTab] Disconnected conversation callback from old session", level="DEBUG")
+            except Exception as e:
+                debug_log(f"[SessionTab] Error disconnecting callback: {e}", level="ERROR")
+        
         self._session = value
         debug_log(f"[SessionTab] _session updated, old: {old_session}, new: {value}", level="DEBUG")
         
-        # Update conversation model if it exists
-        if hasattr(self, 'conversation_model') and self.conversation_model:
-            debug_log(f"[SessionTab] Updating conversation model session", level="DEBUG")
-            self.conversation_model.set_session(value)
+        # Connect conversation changed callback to new session
+        if value and hasattr(value, 'connect_conversation_changed'):
+            try:
+                value.connect_conversation_changed(self._on_session_conversation_changed)
+                debug_log(f"[SessionTab] Connected conversation callback to new session", level="DEBUG")
+            except Exception as e:
+                debug_log(f"[SessionTab] Error connecting callback: {e}", level="ERROR")
         
         # If we have a new session, update window title
         if value and value != old_session:
             debug_log(f"[SessionTab] New session, updating window title", level="DEBUG")
             self.update_window_title()
+    
+    def _on_session_conversation_changed(self):
+        """Callback triggered when session's user_history changes via ObservableList."""
+        from .debug_log import debug_log
+        from PyQt6.QtCore import QTimer as QTimer
+        
+        debug_log(f"[SessionTab] Session conversation changed callback triggered", level="DEBUG")
+        
+        # Ensure timer exists
+        if not hasattr(self, '_conversation_debounce_timer'):
+            debug_log(f"[SessionTab] Timer not yet initialized, skipping", level="WARNING")
+            return
+        
+        # Always use singleShot to ensure execution in main thread
+        # ObservableList callback may be called from background thread
+        QTimer.singleShot(0, lambda: self._conversation_debounce_timer.start())
+    
     def create_new_session(self):
         """Create fresh session with auto-generated name."""
         from session.models import Session, SessionConfig
@@ -147,8 +172,13 @@ class SessionTab(QWidget):
         
         
         # Create default session config
-        agent_config = self.presenter.create_agent_config()
-        session_config = self.presenter._build_session_config(agent_config)
+        try:
+            agent_config = self.presenter.create_agent_config()
+            session_config = self.presenter._build_session_config(agent_config)
+        except Exception as e:
+            from PyQt6.QtWidgets import QMessageBox
+            QMessageBox.critical(self, "Session Error", f"Failed to create session configuration: {e}")
+            return
         
         # Create session with auto-generated name (ensure_name will set it)
         old_session_id = self.session.session_id if self.session else None
@@ -293,24 +323,21 @@ class SessionTab(QWidget):
             debug_log(f"Same message count but version changed, doing full rebuild", level="DEBUG")
             needs_full_rebuild = True
         
-        # Pause smart scrolling during updates to prevent jumping
-        self.output_panel.smart_scroller.pause_tracking()
-        
+        # Use bulk load for full rebuilds, incremental for appends
         if needs_full_rebuild:
-            self.output_panel.clear_output()
-            messages_to_append = user_history
-        
-        # Append messages
-        for message in messages_to_append:
-            self.output_panel.display_message(message)
+            # Use new bulk load method with scroll suppression
+            self.output_panel.load_session_history(user_history, suppress_scroll=True)
+        else:
+            # Append messages incrementally
+            for message in messages_to_append:
+                self.output_panel.display_message(message)
+            
+            # Auto-scroll only if already at bottom
+            self.output_panel._auto_scroll_if_bottom()
         
         # Update tracking variables
         self._last_conversation_version = target_session.conversation_version
-        self._displayed_message_count = new_message_count
-        
-        # Resume smart scrolling and scroll to bottom if auto-scroll enabled
-        self.output_panel.smart_scroller.resume_tracking()
-        self.output_panel.smart_scroller.scroll_to_bottom()        
+        self._displayed_message_count = new_message_count        
         # Update status panel with current token totals and context length from presenter
         self.total_input = self.presenter.total_input
         self.total_output = self.presenter.total_output
@@ -348,7 +375,13 @@ class SessionTab(QWidget):
         self.right_layout = right_layout
 
         # Agent Controls Panel
-        self.agent_controls_panel = AgentControlsPanel(SIMPLIFIED_TOOL_CLASSES)
+        # Filter out SearchCodebaseTool if rag_enabled is False
+        rag_enabled = self.config_bridge.config_service.get('rag_enabled', False)
+        if not rag_enabled:
+            filtered_tool_classes = [cls for cls in SIMPLIFIED_TOOL_CLASSES if cls.__name__ != 'SearchCodebaseTool']
+        else:
+            filtered_tool_classes = SIMPLIFIED_TOOL_CLASSES
+        self.agent_controls_panel = AgentControlsPanel(filtered_tool_classes)
         right_layout.addWidget(self.agent_controls_panel)
 
         # Set callback for MCP config changes to refresh tools
@@ -380,23 +413,6 @@ class SessionTab(QWidget):
         for checkbox in self.agent_controls_panel.tool_checkboxes.values():
             checkbox.stateChanged.connect(self._handle_config_change)
         
-        # Connect QML UI checkbox
-        self.agent_controls_panel.qml_ui_checkbox.stateChanged.connect(self._handle_config_change)
-
-        # QML Conversation View
-        # Create conversation model
-        self.conversation_model = ConversationModel(presenter=self.presenter)
-        
-        # Create QML widget
-        self.qml_conversation_widget = QQuickWidget()
-        self.qml_conversation_widget.setSource(QUrl.fromLocalFile("qt_gui/qml/ConversationView.qml"))
-        self.qml_conversation_widget.setResizeMode(QQuickWidget.ResizeMode.SizeRootObjectToView)
-        
-        # Expose model to QML via root context
-        root_context = self.qml_conversation_widget.rootContext()
-        root_context.setContextProperty("conversationModel", self.conversation_model)
-        
-        right_layout.addWidget(self.qml_conversation_widget, 1)  # Smaller stretch factor
 
         # Add output panel (contains filter controls and output textedit)
         right_layout.addWidget(self.output_panel, 4)  # Larger stretch factor
@@ -542,7 +558,7 @@ class SessionTab(QWidget):
         """Connect presenter signals to GUI slots."""
         # Connect presenter signals
         self.presenter.state_changed.connect(self.on_state_changed)
-        self.presenter.event_received.connect(self.display_event)
+
         self.presenter.tokens_updated.connect(self.on_tokens_updated)
         self.presenter.context_updated.connect(self.on_context_updated)
         self.presenter.status_message.connect(self.on_status_message)
@@ -596,81 +612,6 @@ class SessionTab(QWidget):
             self.status_panel.update_status("Max turns reached")
             self.update_buttons(running=True, idle=True)
 
-    @pyqtSlot(dict)
-    def display_event(self, event):
-        """Display an event from presenter (similar to original display_event)."""
-
-        
-        import os
-        debug_enabled = os.environ.get('THOUGHTMACHINE_DEBUG') == '1'
-        etype = event["type"]
-        if debug_enabled:
-            debug_log(f"display_event: type={etype}, content preview={str(event.get('content', ''))[:50]}...", level="DEBUG")
-            debug_log(f"Event model has {self.event_model.rowCount()} events total", level="DEBUG")
-        if etype == "token_update":
-            # Token updates are handled by tokens_updated signal, skip display
-            return
-        
-        # Handle content events by refreshing from session history
-        content_event_types = {"user_query", "turn", "tool_call", "tool_result", "final", "llm_request", "llm_response", "raw_response"}
-        if etype in content_event_types:
-            debug_log(f"display_event: content event type {etype}, refreshing from session history", level="DEBUG")
-            self.display_conversation_from_history()
-            return
-        
-        # Debug logging for user_query events
-        if etype == "user_query":
-            debug_log(f"[TIMESTAMP_DEBUG] SessionTab.display_event: user_query event, turn={event.get('turn')}, created_at={event.get('created_at')}", level="DEBUG")
-        detail_level = self.agent_controls_panel.detail_combo.currentText()
-        
-        # Store conversation history if present
-        # print(f"[GUI] display_event: checking history, etype={etype}, has_history={'history' in event}")
-        if "history" in event:
-            self.last_history = event["history"]
-        
-        # Add detail level to event for rendering
-        event_with_detail = event.copy()
-        event_with_detail["_detail_level"] = detail_level
-        
-        # Delegate to output panel for display
-        self.output_panel.display_event(event_with_detail)
-        
-        # Handle any UI interactions
-        if etype == "user_interaction_requested":
-            # Auto-focus the query input
-            self.query_entry.setFocus()
-        
-        # Update token counts if present in event
-        if "context_length" in event:
-            self.context_length = event["context_length"]
-            self.status_panel.update_context_length(self.context_length)
-        
-        # Support both naming conventions for token counts
-        # Token counts are typically inside event["usage"] dict
-        input_tokens = None
-        output_tokens = None
-        
-        # First check usage dict
-        usage = event.get("usage", {})
-        if "total_input_tokens" in usage and "total_output_tokens" in usage:
-            input_tokens = usage["total_input_tokens"]
-            output_tokens = usage["total_output_tokens"]
-        elif "total_input" in usage and "total_output" in usage:
-            input_tokens = usage["total_input"]
-            output_tokens = usage["total_output"]
-        # For backward compatibility, also check top-level
-        elif "total_input_tokens" in event and "total_output_tokens" in event:
-            input_tokens = event["total_input_tokens"]
-            output_tokens = event["total_output_tokens"]
-        elif "total_input" in event and "total_output" in event:
-            input_tokens = event["total_input"]
-            output_tokens = event["total_output"]
-        
-        if input_tokens is not None and output_tokens is not None:
-            self.total_input = input_tokens
-            self.total_output = output_tokens
-            self.status_panel.update_tokens(self.total_input, self.total_output)
-
     @pyqtSlot(int, int)
     def on_tokens_updated(self, total_input, total_output):
         """Handle token count updates."""
@@ -694,7 +635,7 @@ class SessionTab(QWidget):
 
     def _format_event_html(self, event):
         """Format event as HTML for display in QTextEdit."""
-        delegate = EventDelegate()
+#         delegate = EventDelegate()
         return delegate._event_to_html(event)
 
 
@@ -716,17 +657,20 @@ class SessionTab(QWidget):
     @pyqtSlot()
     def on_conversation_changed(self):
         """Handle conversation changes from presenter."""
+        from PyQt6.QtCore import QTimer as QTimer
         # Debounce to prevent excessive rebuilds
-        self._conversation_debounce_timer.start()
+        # Ensure timer exists
+        if not hasattr(self, '_conversation_debounce_timer'):
+            from .debug_log import debug_log
+            debug_log(f"[SessionTab] Timer not yet initialized in on_conversation_changed, skipping", level="WARNING")
+            return
+        # Use singleShot to ensure execution in main thread
+        QTimer.singleShot(0, lambda: self._conversation_debounce_timer.start())
     
     def _on_conversation_debounced(self):
         """Debounced handler for conversation changes."""
-        # Only rebuild if agent is IDLE
-        # When agent is running/paused, we get events via display_event()
-        if self.presenter.state != ExecutionState.IDLE:
-            return
-        
-        # Refresh conversation display
+        # Refresh conversation display (state-independent)
+        # All conversation updates now flow through ObservableList callbacks
         self.display_conversation_from_history()
     
 
@@ -787,7 +731,10 @@ class SessionTab(QWidget):
             # Increment turn counter for new user query
             self._display_turn += 1
             self.output_panel.show_processing_indicator(query, self._display_turn)
-            self.presenter.start_session(query, config_dict, preset_name=preset_name)
+            try:
+                self.presenter.start_session(query, config_dict, preset_name=preset_name)
+            except Exception as e:
+                QMessageBox.critical(self, "Session Error", f"Failed to start session: {e}")
             self.query_entry.clear()
             self.update_window_title()
 
@@ -799,14 +746,11 @@ class SessionTab(QWidget):
                 self.output_panel.show_processing_indicator(query, self._display_turn)
             else:
                 # Display a placeholder for empty resume (no new turn)
-                self.output_panel.display_event({
-                    "type": "system",
-                    "content": "Session resumed",
-                    "turn": self._display_turn,
-                    "timestamp": datetime.datetime.now().isoformat(),
-                    "_detail_level": self.agent_controls_panel.detail_combo.currentText()
-                })
-            self.presenter.continue_session(query)
+                pass
+            try:
+                self.presenter.continue_session(query)
+            except Exception as e:
+                QMessageBox.critical(self, "Session Error", f"Failed to continue session: {e}")
             self.query_entry.clear()
 
         else:
@@ -836,7 +780,10 @@ class SessionTab(QWidget):
         # Clear the query entry
         self.query_entry.clear()
         # In presenter, this will stop agent if running and clear session data
-        self.presenter.new_session(name=name if name else None)
+        try:
+            self.presenter.new_session(name=name if name else None)
+        except Exception as e:
+            QMessageBox.critical(self, "Session Error", f"Failed to create new session: {e}")
         # Clear UI components
         self.output_panel.clear_output()
         # Reset token counters and turn counter
@@ -857,12 +804,10 @@ class SessionTab(QWidget):
         query = self.query_entry.toPlainText().strip()
 
         # Sync turn counter with existing events before restart
-        from PyQt6.QtCore import Qt
+        # Use session.user_history instead of event_model (Phase 4)
         max_turn = 0
-        for i in range(self.event_model.rowCount()):
-            index = self.event_model.index(i, 0)
-            event = self.event_model.data(index, Qt.ItemDataRole.UserRole)
-            if event:
+        if self.presenter.current_session and hasattr(self.presenter.current_session, 'user_history'):
+            for event in self.presenter.current_session.user_history:
                 turn = event.get('turn', 0)
                 if turn > max_turn:
                     max_turn = turn
@@ -873,7 +818,10 @@ class SessionTab(QWidget):
         self.presenter.update_config(config)
         
         # Restart the agent (preserves session and conversation)
-        self.presenter.restart_session(query)
+        try:
+            self.presenter.restart_session(query)
+        except Exception as e:
+            QMessageBox.critical(self, "Session Error", f"Failed to restart session: {e}")
 
         # Update UI status (token counters remain as they represent cumulative session totals)
         self.status_panel.update_status("Ready for new session")
@@ -916,110 +864,32 @@ class SessionTab(QWidget):
     
 
     
-    def _create_result_widget(self, result_text, full_text):
-        """
-        Create a widget to display a tool result.
-        If result_text is longer than MAX_RESULT_LENGTH, show a truncated version
-        with a "Show full" button. Otherwise just show a label.
-        """
-        widget = QWidget()
-        layout = QHBoxLayout()
-        layout.setContentsMargins(0, 0, 0, 0)
-        widget.setLayout(layout)
-        
-        # Unescape HTML entities in the text
-        unescaped_full_text = html.unescape(full_text)
-        
-        # Determine if truncation is needed
-        if len(unescaped_full_text) > MAX_RESULT_LENGTH:
-            truncated = unescaped_full_text[:MAX_RESULT_LENGTH] + "..."
-            label = QLabel(f"Result: {truncated}")
-            label.setWordWrap(True)
-            label.setTextFormat(Qt.TextFormat.PlainText)
-            label.setStyleSheet("color: #006400;")
-            layout.addWidget(label, 1)  # stretch factor 1
-            
-            button = QPushButton("Show full")
-            button.setMaximumWidth(80)
-            # Connect button to open a dialog with full text
-            button.clicked.connect(lambda checked, text=unescaped_full_text: self._show_full_text_dialog(text))
-            layout.addWidget(button)
-        else:
-            label = QLabel(f"Result: {unescaped_full_text}")
-            label.setWordWrap(True)
-            label.setTextFormat(Qt.TextFormat.PlainText)
-            label.setStyleSheet("color: #006400;")
-            layout.addWidget(label)
-        
-        return widget
-    
-    def _show_full_text_dialog(self, text):
-        """Open a modal dialog displaying the full text."""
-        dialog = QDialog(self)
-        dialog.setWindowTitle("Full Tool Result")
-        dialog.resize(600, 400)
-        layout = QVBoxLayout(dialog)
-        text_edit = QTextEdit()
-        # Unescape any HTML entities in the text
-        unescaped_text = html.unescape(text)
-        text_edit.setPlainText(unescaped_text)
-        text_edit.setReadOnly(True)
-        layout.addWidget(text_edit)
-        close_btn = QPushButton("Close")
-        close_btn.clicked.connect(dialog.accept)
-        layout.addWidget(close_btn)
-        dialog.exec()
     
     
     def load_config(self):
         """Load configuration from file and update controls."""
         self._loading_config = True
-        
+
         try:
             # Load config from bridge
             config = self.config_bridge.get_config()
-            
+
+            # Refresh tools list based on rag_enabled
+            self._refresh_tools()
+
             # Update controls
             self.agent_controls_panel.set_config_dict(config)
-            
+
             # Update presenter configuration
             self.presenter.update_config(config)
-            
-            # Update UI mode (QML vs classic)
-            self._update_ui_mode()
 
-            # print("[GUI] Configuration loaded")            
+
+            # print("[GUI] Configuration loaded")
         except Exception as e:
             # print(f"[GUI] Error loading config: {e}")
             pass
         finally:
-            self._loading_config = False
-    
-    def _update_ui_mode(self):
-        """Update UI mode based on use_qml_ui config flag."""
-        try:
-            config = self.config_bridge.get_config()
-            use_qml = config.get("use_qml_ui", False)
-            
-            if not hasattr(self, 'right_layout'):
-                return
-                
-            # Show/hide output panel
-            self.output_panel.setVisible(not use_qml)
-            
-            # Adjust stretch factors
-            if use_qml:
-                # QML gets all space, output panel none
-                self.right_layout.setStretchFactor(self.qml_conversation_widget, 5)
-                self.right_layout.setStretchFactor(self.output_panel, 0)
-            else:
-                # Restore original stretch factors
-                self.right_layout.setStretchFactor(self.qml_conversation_widget, 1)
-                self.right_layout.setStretchFactor(self.output_panel, 4)
-        except Exception as e:
-            import traceback
-            traceback.print_exc()
-
+            self._loading_config = False    
     def _on_config_changed(self, config):
         """Handle configuration changes from bridge (e.g., file changed)."""
         # Update UI with new config
@@ -1074,11 +944,17 @@ class SessionTab(QWidget):
         try:
             import tools
             importlib.reload(tools)
-            from tools import TOOL_CLASSES
-            self.tool_classes = TOOL_CLASSES
-            self.agent_controls_panel.tool_classes = TOOL_CLASSES
+            from tools import SIMPLIFIED_TOOL_CLASSES
+            # Filter out SearchCodebaseTool if rag_enabled is False
+            rag_enabled = self.config_bridge.config_service.get('rag_enabled', False)
+            if not rag_enabled:
+                filtered_tool_classes = [cls for cls in SIMPLIFIED_TOOL_CLASSES if cls.__name__ != 'SearchCodebaseTool']
+            else:
+                filtered_tool_classes = SIMPLIFIED_TOOL_CLASSES
+            self.tool_classes = filtered_tool_classes
+            self.agent_controls_panel.tool_classes = filtered_tool_classes
             self.agent_controls_panel._rebuild_tool_checkboxes()
-            # print(f"[GUI] Refreshed tools: {len(TOOL_CLASSES)} tools loaded")
+            # print(f"[GUI] Refreshed tools: {len(filtered_tool_classes)} tools loaded")
         except Exception as e:
             # print(f"[GUI] Error refreshing tools: {e}")
             pass
@@ -1217,21 +1093,17 @@ class SessionTab(QWidget):
         
         try:
             with open(file_path, 'w', encoding='utf-8') as f:
-                # Get all events from the model
-                for i in range(self.event_model.rowCount()):
-                    event = self.event_model.data(self.event_model.index(i), Qt.ItemDataRole.UserRole)
+                # Get all events from session.user_history (Phase 4)
+                events = []
+                if self.presenter.current_session and hasattr(self.presenter.current_session, 'user_history'):
+                    events = self.presenter.current_session.user_history
+                
+                for event in events:
                     if event:
-                        # Use delegate's plain text conversion method
-                        delegate = EventDelegate()
-                        if hasattr(delegate, '_event_to_plain_text'):
-                            plain_text = delegate._event_to_plain_text(event)
-                            f.write(plain_text)
-                            f.write('                            ' + '-'*80 + '                                                        ')
-                        else:
-                            # Fallback to JSON representation
-                            import json
-                            f.write(json.dumps(event, indent=2))
-                            f.write('                            ' + '-'*80 + '                                                        ')
+                        # Fallback to JSON representation (EventDelegate not available in Phase 4)
+                        import json
+                        f.write(json.dumps(event, indent=2))
+                        f.write('\n' + '-'*80 + '\n')
             
             self.presenter.gui_integration.emit_status_message(f"Conversation exported to {file_path}")
         except Exception as e:
@@ -1264,9 +1136,12 @@ class SessionTab(QWidget):
     <p>Exported on ''' + datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S') + '''</p>
 '''
             
-            # Get all events from the model
-            for i in range(self.event_model.rowCount()):
-                event = self.event_model.data(self.event_model.index(i), Qt.ItemDataRole.UserRole)
+            # Get all events from session.user_history (Phase 4)
+            events = []
+            if self.presenter.current_session and hasattr(self.presenter.current_session, 'user_history'):
+                events = self.presenter.current_session.user_history
+            
+            for event in events:
                 if event:
                     role = event.get('role', 'unknown')
                     content = event.get('content', '')
@@ -1322,9 +1197,12 @@ class SessionTab(QWidget):
     <h1>Agent Conversation</h1>
 '''
             
-            # Get all events from the model
-            for i in range(self.event_model.rowCount()):
-                event = self.event_model.data(self.event_model.index(i), Qt.ItemDataRole.UserRole)
+            # Get all events from session.user_history (Phase 4)
+            events = []
+            if self.presenter.current_session and hasattr(self.presenter.current_session, 'user_history'):
+                events = self.presenter.current_session.user_history
+            
+            for event in events:
                 if event:
                     role = event.get('role', 'unknown')
                     content = event.get('content', '')
@@ -1771,7 +1649,7 @@ class SessionTab(QWidget):
         # Disconnect all presenter signals to prevent signal-driven re-entrance
         try:
             self.presenter.state_changed.disconnect(self.on_state_changed)
-            self.presenter.event_received.disconnect(self.display_event)
+
             self.presenter.tokens_updated.disconnect(self.on_tokens_updated)
             self.presenter.context_updated.disconnect(self.on_context_updated)
             self.presenter.status_message.disconnect(self.on_status_message)
