@@ -428,6 +428,10 @@ class OutputPanel(QWidget):
         if 'content' not in event:
             event['content'] = ''
         self.display_event(event)
+        # Phase 2 logging: GUI display
+        log('DEBUG', 'ui.output_panel', f'GUI displayed message: role={message.get("role")}, content_preview={str(message.get("content", ""))[:100]}')
+        content_hash = hash(message.get("content", ""))
+        log('DEBUG', 'ui.output_panel', f'GUI displayed message hash: {content_hash}')
 
     @property
     def smart_scroller(self):

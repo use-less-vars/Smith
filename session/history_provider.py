@@ -29,6 +29,13 @@ except ImportError:
 from .models import Session
 from .context_builder import ContextBuilder, SummaryBuilder
 from agent.logging import log
+# Import for Phase 3 debugging
+try:
+    from agent.logging_helpers import dump_messages
+    DUMP_MESSAGES_AVAILABLE = True
+except ImportError:
+    DUMP_MESSAGES_AVAILABLE = False
+    dump_messages = lambda messages, label: None
 logger = logging.getLogger(__name__)
 DEFAULT_KEEP_TURNS = 5
 DEBUG_HISTORY_PROVIDER = os.environ.get('DEBUG_HISTORY_PROVIDER') is not None
@@ -118,6 +125,19 @@ class HistoryProvider:
         if DEBUG_HISTORY_PROVIDER and len(context) != original_len:
             logger.warning(f'[DEBUG_HISTORY_PROVIDER] Removed {original_len - len(context)} orphaned tool messages from context')
         log('DEBUG', 'session.history_provider', f'get_context_for_llm returning {len(context)} messages (full history: {len(self.session.user_history)})')
+        # Phase 3 logging: LLM context built (entry point)
+        try:
+            import tiktoken
+            encoder = tiktoken.get_encoding('cl100k_base')
+            total_tokens = sum((self.context_builder._estimate_tokens(msg, encoder) for msg in context))
+            log('DEBUG', 'core.context', 'LLM context built', {
+                'num_messages': len(context),
+                'estimated_tokens': total_tokens
+            })
+            if DUMP_MESSAGES_AVAILABLE:
+                dump_messages(context, 'llm_context final (HistoryProvider)')
+        except Exception as e:
+            log('DEBUG', 'core.context', f'Failed to compute token count: {e}')
         self._cached_context = context
         return context
 

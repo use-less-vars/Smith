@@ -28,6 +28,13 @@ def log(level, tag, message, data=None, event_type=None, truncate_hint=None):
         from agent.logging import log as real_log
         _log_real = real_log
     return _log_real(level, tag, message, data, event_type, truncate_hint)
+# Import for Phase 3 debugging
+try:
+    from agent.logging_helpers import dump_messages
+    DUMP_MESSAGES_AVAILABLE = True
+except ImportError:
+    DUMP_MESSAGES_AVAILABLE = False
+    dump_messages = lambda messages, label: None
 DEBUG_CONTEXT = os.environ.get('DEBUG_CONTEXT') is not None
 
 class ContextBuilder(ABC):
@@ -252,6 +259,18 @@ class SummaryBuilder(ContextBuilder):
                 logger.debug(f'  [{i}] role={role}: {content_preview}')
         context = self._cleanup_orphaned_tool_messages(context)
         log('DEBUG', 'session.summary_builder', f'SummaryBuilder.build: final context length {len(context)} messages')
+        # Phase 3 logging: LLM context built
+        try:
+            encoder = tiktoken.get_encoding('cl100k_base')
+            total_tokens = sum((self._estimate_tokens(msg, encoder) for msg in context))
+            log('DEBUG', 'core.context', 'LLM context built', {
+                'num_messages': len(context),
+                'estimated_tokens': total_tokens
+            })
+            if DUMP_MESSAGES_AVAILABLE:
+                dump_messages(context, 'llm_context final')
+        except Exception as e:
+            log('DEBUG', 'core.context', f'Failed to compute token count: {e}')
         if os.environ.get('DEBUG_CONTEXT'):
             logger.debug(f'[DEBUG_CONTEXT] SummaryBuilder.build returning {len(context)} context messages')
             try:

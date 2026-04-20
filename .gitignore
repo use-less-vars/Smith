@@ -59,7 +59,6 @@ example_mcp_config.json
 
 # AI tasks and documentation (temporary)
 AI_tasks/
-docs/
 user_docs/
 reports/
 MCP_INTEGRATION.md

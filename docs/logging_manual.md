@@ -1,49 +1,46 @@
-Here's a compact, AI‑optimized version designed for a limited context window. It contains only what an agent needs to know to add and control logging.
+ThoughtMachine Logging – AI Quick Reference (v2.1)
+Adding a Log Statement
+python
 
-```markdown
-# ThoughtMachine Logging – AI Quick Reference
-
-## Adding a Log Statement
-
-```python
 from agent.logging import log
 
 log(level: str, tag: str, message: str, data: dict = None)
-```
 
-| Parameter | Description | Example |
-|-----------|-------------|---------|
-| `level` | `"DEBUG"`, `"INFO"`, `"WARNING"`, `"ERROR"` | `"DEBUG"` |
-| `tag` | Hierarchical component name (`area.component`) | `"tools.file_editor"` |
-| `message` | Human-readable description | `"Writing file"` |
-| `data` | Optional dict (auto‑truncated) | `{"path": p, "size": n}` |
+Parameter	Description	Example
+level	"DEBUG", "INFO", "WARNING", "ERROR"	"DEBUG"
+tag	Hierarchical component name (area.component)	"tools.file_editor"
+message	Human-readable description	"Writing file"
+data	Optional dict (auto‑truncated)	{"path": p, "size": n}
 
-**Example:**
-```python
+Example:
+python
+
 log("DEBUG", "core.pruning", "Pruning context", {"kept": 5, "removed": 2})
-```
 
-## Tag Naming Convention
+Tag Naming Convention
 
-Use `area.component`. Common areas:
+Use area.component. Common areas:
 
-- `core` – agent core, session, pruning, config
-- `tools` – file_editor, docker, search
-- `llm` – anthropic, openai, stepfun
-- `ui` – presenter, output_panel, events
-- `session` – history_provider, context_builder
+    core – agent core, session, pruning, config
 
-## Console Output Control (Environment Variables)
+    tools – file_editor, docker, search
 
-| Variable | Effect | Example |
-|----------|--------|---------|
-| `TM_LOG_LEVEL` | Minimum console level (default `WARNING`) | `DEBUG` |
-| `TM_LOG_TAGS` | Comma‑separated tags to show at DEBUG/INFO | `core.pruning,tools.*` |
-| `DEBUG_<COMP>` | Legacy flag for a single component | `DEBUG_EVENTBUS=1` |
-| `THOUGHTMACHINE_DEBUG=1` | Firehose (all debug) – use sparingly | |
+    llm – anthropic, openai, stepfun
 
-**Examples:**
-```bash
+    ui – presenter, output_panel, events
+
+    session – history_provider, context_builder
+
+Console Output Control
+Variable	Effect	Default
+TM_LOG_LEVEL	Minimum console level	WARNING
+TM_LOG_TAGS	Comma‑separated tags to show at DEBUG/INFO	(empty)
+DEBUG_<COMP>	Legacy flag for a single component	–
+THOUGHTMACHINE_DEBUG=1	Firehose (all debug) – use sparingly	–
+
+Examples:
+bash
+
 # Debug only pruning and all tools
 export TM_LOG_LEVEL=DEBUG
 export TM_LOG_TAGS=core.pruning,tools.*
@@ -53,30 +50,29 @@ export DEBUG_EVENTBUS=1
 
 # Back to quiet (default)
 unset TM_LOG_LEVEL TM_LOG_TAGS DEBUG_EVENTBUS
-```
 
-## Truncation (Prevents Bloat)
+File Logging (JSONL) Control
+Variable	Effect	Default
+TM_LOG_FILE_LEVEL	Minimum level written to JSONL file	DEBUG
 
-| Variable | Default |
-|----------|---------|
-| `TM_DEBUG_TRUNCATE_LENGTH` | 100 |
-| `TM_TOOL_ARGUMENTS_TRUNCATE` | 100 |
-| `TM_TOOL_RESULT_TRUNCATE` | 100 |
-| `TM_RAW_RESPONSE_TRUNCATE` | 100 |
-| `TM_CONSOLE_DATA_TRUNCATE` | 200 |
+All logs are written to logs/agent_<session_id>.jsonl. Rotation: 10 MB, 5 backups.
+Truncation (Prevents Bloat)
+Variable	Default	Applies To
+TM_DEBUG_TRUNCATE_LENGTH	100	Generic debug messages, dump_messages preview
+TM_TOOL_ARGUMENTS_TRUNCATE	100	Tool call arguments
+TM_TOOL_RESULT_TRUNCATE	100	Tool call results
+TM_RAW_RESPONSE_TRUNCATE	100	Raw LLM responses
+TM_CONSOLE_DATA_TRUNCATE	200	Structured data printed to console (when hint is provided)
+TM_CONVERSATION_CONTENT_TRUNCATE	10000	Conversation messages in JSONL
+TM_DOCKER_OUTPUT_TRUNCATE	10000	Docker sandbox output
 
-## File Logging (Always On)
+Note: TM_DEBUG_TRUNCATE_LENGTH controls generic debug console output. For structured data with a hint (e.g., tool_arguments), the type‑specific limit is used. The JSONL file receives data truncated only once by type‑specific limits; console applies an additional truncation for readability.
+Best Practices
 
-- Location: `logs/agent_<session_id>.jsonl`
-- Format: JSONL (one JSON object per line)
-- Rotation: 10 MB, 5 backups
+    Use DEBUG for temporary instrumentation – it won't spam unless explicitly enabled.
 
-## Best Practices
+    Use INFO for normal noteworthy events.
 
-- Use `DEBUG` for temporary instrumentation – leave it in; it won't spam.
-- Use `INFO` for normal noteworthy events.
-- Choose a specific tag (e.g., `"tools.my_new_tool"`).
-- Provide a `data` dict even for minimal context.
-```
+    Choose a specific tag (e.g., "tools.my_new_tool").
 
-This version is self‑contained, around 60 lines, and includes everything an AI agent needs to implement logging correctly.
+    Provide a data dict even for minimal context.

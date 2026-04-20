@@ -84,7 +84,7 @@ class _AgentLogger:
     Thread-safe for use in the agent's background thread.
     """
 
-    def __init__(self, config: 'AgentConfig', log_dir: str='./logs', log_level: Union[str, LogLevel]=LogLevel.INFO, enable_file_logging: bool=True, enable_console_logging: bool=False, jsonl_format: bool=True, max_file_size_mb: int=10, max_backup_files: int=5, session_id: Optional[str]=None):
+    def __init__(self, config: 'AgentConfig', log_dir: str='./logs', log_level: Union[str, LogLevel]=LogLevel.INFO, file_log_level: Union[str, LogLevel]=LogLevel.DEBUG, enable_file_logging: bool=True, enable_console_logging: bool=False, jsonl_format: bool=True, max_file_size_mb: int=10, max_backup_files: int=5, session_id: Optional[str]=None):
         """
         Initialize the logger.
         
@@ -92,6 +92,7 @@ class _AgentLogger:
             config: AgentConfig instance
             log_dir: Directory to store log files
             log_level: Minimum log level to record
+            file_log_level: Minimum log level for file logging (default: DEBUG)
             enable_file_logging: Whether to write logs to file
             enable_console_logging: Whether to print logs to console
             jsonl_format: Whether to use JSONL format for file logging
@@ -110,6 +111,9 @@ class _AgentLogger:
         if log_level == LogLevel.INFO and hasattr(config, 'log_level'):
             log_level = config.log_level
         self.log_level = LogLevel(log_level) if isinstance(log_level, str) else log_level
+        if file_log_level == LogLevel.DEBUG and hasattr(config, 'file_log_level'):
+            file_log_level = config.file_log_level
+        self.file_log_level = LogLevel(file_log_level) if isinstance(file_log_level, str) else file_log_level
         self.enable_file_logging = enable_file_logging
         self.enable_console_logging = enable_console_logging
         self.jsonl_format = jsonl_format
@@ -179,10 +183,15 @@ class _AgentLogger:
         msg_priority = level_priority.get(level, 20)
         return msg_priority >= current_priority
 
+    def _should_log_to_file(self, level: LogLevel) -> bool:
+        """Check if a message at given level should be written to file."""
+        level_priority = {LogLevel.DEBUG: 10, LogLevel.INFO: 20, LogLevel.WARNING: 30, LogLevel.ERROR: 40, LogLevel.CRITICAL: 50}
+        current_priority = level_priority.get(self.file_log_level, 10)  # DEBUG default
+        msg_priority = level_priority.get(level, 20)
+        return msg_priority >= current_priority
+
     def _should_log_event(self, event_type: LogEventType, level: LogLevel) -> bool:
-        """Check if an event should be logged based on level and category."""
-        if not self._should_log(level):
-            return False
+        """Check if an event should be logged based on category."""
         category = EVENT_TYPE_TO_CATEGORY.get(event_type)
         if category is None:
             return True
@@ -243,7 +252,7 @@ class _AgentLogger:
         if not self._should_log_event(event_type, level):
             return
         event = {'type': event_type.value, 'level': level.value, 'message': message, 'data': data or {}, 'turn': turn if turn is not None else self.current_turn, 'total_input_tokens': self.total_input_tokens, 'total_output_tokens': self.total_output_tokens}
-        if self.enable_file_logging and self.jsonl_format:
+        if self.enable_file_logging and self.jsonl_format and self._should_log_to_file(level):
             self._write_jsonl(event)
         log_method = getattr(self.py_logger, level.value.lower())
         log_msg = f'[{event_type.value}] {message}'
@@ -581,7 +590,30 @@ def create_logger(config: 'AgentConfig') -> Optional[_AgentLogger]:
     if not getattr(config, 'enable_logging', False):
         return None
     try:
-        logger = _AgentLogger(config=config, log_dir=getattr(config, 'log_dir', './logs'), log_level=getattr(config, 'log_level', LogLevel.INFO), enable_file_logging=getattr(config, 'enable_file_logging', True), enable_console_logging=getattr(config, 'enable_console_logging', False), jsonl_format=getattr(config, 'jsonl_format', True), max_file_size_mb=getattr(config, 'max_file_size_mb', 10), max_backup_files=getattr(config, 'max_backup_files', 5), session_id=getattr(config, 'session_id', None))
+        # Determine file log level from environment variable TM_LOG_FILE_LEVEL
+        # or config.file_log_level attribute, defaulting to DEBUG
+        file_log_level = LogLevel.DEBUG
+        env_level = os.environ.get('TM_LOG_FILE_LEVEL')
+        if env_level:
+            try:
+                file_log_level = LogLevel(env_level.upper())
+            except ValueError:
+                pass
+        elif hasattr(config, 'file_log_level') and config.file_log_level:
+            file_log_level = LogLevel(config.file_log_level) if isinstance(config.file_log_level, str) else config.file_log_level
+        
+        logger = _AgentLogger(
+            config=config,
+            log_dir=getattr(config, 'log_dir', './logs'),
+            log_level=getattr(config, 'log_level', LogLevel.INFO),
+            file_log_level=file_log_level,
+            enable_file_logging=getattr(config, 'enable_file_logging', True),
+            enable_console_logging=getattr(config, 'enable_console_logging', False),
+            jsonl_format=getattr(config, 'jsonl_format', True),
+            max_file_size_mb=getattr(config, 'max_file_size_mb', 10),
+            max_backup_files=getattr(config, 'max_backup_files', 5),
+            session_id=getattr(config, 'session_id', None)
+        )
         return logger
     except Exception as e:
         log('ERROR', 'logging.agent_logger', f'Failed to create logger: {e}')

@@ -20,6 +20,7 @@ import logging
 from datetime import datetime
 from typing import Optional, List, Dict, Any, TYPE_CHECKING, Generator
 from agent.logging import log
+from agent.logging_helpers import dump_messages
 from pydantic import ValidationError
 from llm_providers.exceptions import ProviderError, RateLimitExceeded
 from tools import SIMPLIFIED_TOOL_CLASSES
@@ -309,6 +310,9 @@ class Agent:
         pause_debug(f'Before add, conversation length: {len(self.conversation)}')
         updated = self.conversation_manager.add_message(message, self.conversation)
         self.conversation = updated
+        # Phase 1 logging: user_history after add
+        log("DEBUG", "core.history", "Message added", {"role": message.get("role"), "content_preview": message.get("content", "")[:100]})
+        dump_messages(self.conversation, "user_history after add")
         pause_debug(f'After add, conversation length: {len(self.conversation)}')
         if hasattr(self, 'context_builder') and self.context_builder is not None:
             if hasattr(self.context_builder, '_cached_context'):
@@ -851,6 +855,10 @@ class Agent:
         """
         log('DEBUG', 'core.pruning', f'_apply_summary_pruning called with summary length={len(summary)}, keep_recent_turns={keep_recent_turns}')
         log('DEBUG', 'core.session_history', f'self.session exists: {self.session is not None}')
+        # Phase 4 logging: summarization
+        log('DEBUG', 'core.pruning', f'Conversation length: {len(self.conversation) if self.conversation else 0}')
+        if self.conversation:
+            dump_messages(self.conversation, "Conversation before summarization")
         if self.session is None:
             logger.warning('[DEBUG_PRUNING] No session available, using fallback pruning')
             log('DEBUG', 'core.pruning', 'No session available, using fallback pruning')
@@ -890,14 +898,18 @@ class Agent:
             user_history.insert(insertion_idx, summary_msg)
             log('DEBUG', 'core.message_insertion', f'Inserted summary at index {insertion_idx}')
         context_cleared_msg = {'role': 'user', 'content': '[SYSTEM NOTIFICATION] Context has been summarized. You now have a fresh context window and full access to tools.'}
-        summary_position = insertion_idx if insertion_idx < len(user_history) else len(user_history) - 1
-        user_history.insert(summary_position + 1, context_cleared_msg)
-        log('DEBUG', 'core.message_insertion', f'Added context cleared message at index {summary_position + 1}')
+        # Append unwarning after the tool result (at the end of user_history)
+        user_history.append(context_cleared_msg)
+        log('DEBUG', 'core.message_insertion', f'Appended context cleared message at end (history length: {len(user_history)})')
         self.session.summary = summary_msg
         self.session.updated_at = datetime.now()
         if self.conversation is not user_history:
             self.conversation = user_history
         log('DEBUG', 'core.context_builder', f"_apply_summary_pruning: clearing context_builder cache, exists={hasattr(self, 'context_builder')}, is None={(self.context_builder if hasattr(self, 'context_builder') else 'no attr')}, has _cached_context={(hasattr(self.context_builder, '_cached_context') if hasattr(self, 'context_builder') and self.context_builder is not None else False)}")
+        # Phase 4 logging: after summarization
+        log('DEBUG', 'core.pruning', f'Conversation length after summarization: {len(self.conversation) if self.conversation else 0}')
+        if self.conversation:
+            dump_messages(self.conversation, "Conversation after summarization")
         if hasattr(self, 'context_builder') and self.context_builder is not None and hasattr(self.context_builder, '_cached_context'):
             self.context_builder._cached_context = None
             log('DEBUG', 'core.context_builder', f'_apply_summary_pruning: cleared _cached_context')
@@ -947,8 +959,8 @@ class Agent:
             pruned_other.extend(turn)
         new_conversation = cleaned_system_messages + [summary_msg] + pruned_other
         context_cleared_msg = {'role': 'user', 'content': '[SYSTEM NOTIFICATION] Context has been summarized. You now have a fresh context window and full access to tools.'}
-        summary_idx = len(cleaned_system_messages)
-        new_conversation.insert(summary_idx + 1, context_cleared_msg)
+        # Append unwarning after the tool result (at the end of new_conversation)
+        new_conversation.append(context_cleared_msg)
         self.conversation = new_conversation
         logger.debug(f'[DEBUG_PRUNING] Fallback pruning: new conversation length {len(self.conversation)}')
 
