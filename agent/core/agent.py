@@ -213,14 +213,6 @@ class Agent:
             pass
         elif event.get('type') == 'turn_warning':
             pass
-        elif event.get('type') in ('token_critical_countdown_start', 'turn_critical_countdown_start', 'token_critical_countdown_expired', 'turn_critical_countdown_expired'):
-            message = event.get('message', '')
-            sender = event.get('sender', 'system')
-            warning_msg = {'role': sender, 'content': '[**SYSTEM NOTIFICATION**] ' + message, 'is_system_notification': True}
-            self._add_to_conversation(warning_msg)
-            warning_tokens = self._estimate_tokens(warning_msg)
-            self.state.current_conversation_tokens += warning_tokens
-            yield self._create_token_update_event()
         elif event.get('type') == 'execution_state_change':
             old_state = event.get('old_state')
             new_state = event.get('new_state')
@@ -307,16 +299,17 @@ class Agent:
         return self.token_counter.estimate_tokens(message)
 
     def _update_tokens_and_yield(self, tool_tokens=None):
-        """Update token count and yield token update event.
-        
+        """Update token count, check/clear restrictions, and yield token update event.
+
         Args:
             tool_tokens: Optional token count for tool result (ignored, we recalculate).
         """
         self._update_conversation_token_estimate()
+        # Update token state so restrictions get cleared if tokens dropped below critical
+        self.state.update_token_state(self.state.current_conversation_tokens)
         event_dict = {'type': 'token_update', 'context_length': self.state.current_conversation_tokens, 'usage': {'input': 0, 'output': 0, 'total_input': self.total_input_tokens, 'total_output': self.total_output_tokens}}
         self._add_conversation_data_to_event(event_dict)
         yield event_dict
-
     @property
     def total_input_tokens(self):
         if self.session is not None:
@@ -495,10 +488,6 @@ class Agent:
                 self.logger.log_turn_start(turn)
                 if turn % 5 == 0:
                     self.logger.log_system_resources()
-            countdown_events = self.state.decrement_critical_countdown()
-            for event in countdown_events:
-                for yielded_event in self._handle_state_event(event):
-                    yield yielded_event
             if self.stop_check and self.stop_check():
                 events = self.state.set_execution_state(ExecutionState.PAUSING)
                 for event in events:
@@ -1115,7 +1104,7 @@ class Agent:
         for tool_cls in SIMPLIFIED_TOOL_CLASSES:
             if tool_cls.__name__ in preset_tool_names:
                 tool_classes.append(tool_cls)
-        config_data = {'api_key': api_key or '', 'base_url': base_url, 'model': preset.model, 'temperature': preset.temperature, 'tool_classes': tool_classes, 'enabled_tools': list(preset_tool_names), 'system_prompt': preset.system_prompt, 'provider_type': 'openai_compatible', 'max_turns': overrides.get('max_turns', 100), 'detail': overrides.get('detail', 'normal'), 'workspace_path': overrides.get('workspace_path'), 'tool_output_token_limit': overrides.get('tool_output_token_limit', 10000), 'token_monitor_enabled': overrides.get('token_monitor_enabled', True), 'token_monitor_warning_threshold': overrides.get('token_monitor_warning_threshold', 35000), 'token_monitor_critical_threshold': overrides.get('token_monitor_critical_threshold', 50000), 'turn_monitor_enabled': overrides.get('turn_monitor_enabled', True), 'turn_monitor_warning_threshold': overrides.get('turn_monitor_warning_threshold', 0.8), 'turn_monitor_critical_threshold': overrides.get('turn_monitor_critical_threshold', 0.95), 'critical_countdown_turns': overrides.get('critical_countdown_turns', 5), 'enable_logging': overrides.get('enable_logging', True), 'log_dir': overrides.get('log_dir', './logs'), 'log_level': overrides.get('log_level', 'INFO'), 'enable_file_logging': overrides.get('enable_file_logging', True), 'enable_console_logging': overrides.get('enable_console_logging', False), 'jsonl_format': overrides.get('jsonl_format', True), 'log_categories': overrides.get('log_categories', ['SESSION', 'LLM', 'TOOLS']), 'max_file_size_mb': overrides.get('max_file_size_mb', 10), 'max_backup_files': overrides.get('max_backup_files', 5)}
+        config_data = {'api_key': api_key or '', 'base_url': base_url, 'model': preset.model, 'temperature': preset.temperature, 'tool_classes': tool_classes, 'enabled_tools': list(preset_tool_names), 'system_prompt': preset.system_prompt, 'provider_type': 'openai_compatible', 'max_turns': overrides.get('max_turns', 100), 'detail': overrides.get('detail', 'normal'), 'workspace_path': overrides.get('workspace_path'), 'tool_output_token_limit': overrides.get('tool_output_token_limit', 10000), 'token_monitor_enabled': overrides.get('token_monitor_enabled', True), 'token_monitor_warning_threshold': overrides.get('token_monitor_warning_threshold', 35000), 'token_monitor_critical_threshold': overrides.get('token_monitor_critical_threshold', 50000), 'turn_monitor_enabled': overrides.get('turn_monitor_enabled', True), 'turn_monitor_warning_threshold': overrides.get('turn_monitor_warning_threshold', 0.8), 'turn_monitor_critical_threshold': overrides.get('turn_monitor_critical_threshold', 0.95), 'enable_logging': overrides.get('enable_logging', True), 'log_dir': overrides.get('log_dir', './logs'), 'log_level': overrides.get('log_level', 'INFO'), 'enable_file_logging': overrides.get('enable_file_logging', True), 'enable_console_logging': overrides.get('enable_console_logging', False), 'jsonl_format': overrides.get('jsonl_format', True), 'log_categories': overrides.get('log_categories', ['SESSION', 'LLM', 'TOOLS']), 'max_file_size_mb': overrides.get('max_file_size_mb', 10), 'max_backup_files': overrides.get('max_backup_files', 5)}
         config_data.update(overrides)
         from agent.config import AgentConfig
         config = AgentConfig(**config_data)

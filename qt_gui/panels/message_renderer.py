@@ -85,7 +85,7 @@ class MessageRenderer:
         ),
         MessageType.USER_SYSTEM: MessageStyle(
             border_color="#cda2a2",
-            background_color="#f9ebeb",
+            background_color="#000000",
             header_text_color="#000000"
         ),
         MessageType.ASSISTANT: MessageStyle(
@@ -95,7 +95,7 @@ class MessageRenderer:
         ),
         MessageType.SYSTEM: MessageStyle(
             border_color="#ffcccc",
-            background_color="#ffe6e6",
+            background_color="#FCEFEF",
             header_text_color="#000000"
         ),
         MessageType.TOOL_CALL: MessageStyle(

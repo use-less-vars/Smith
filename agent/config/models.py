@@ -31,7 +31,6 @@ class AgentConfig(BaseModel):
     turn_monitor_enabled: bool = Field(default=True, description='Enable automatic turn limit warnings')
     turn_monitor_warning_threshold: float = Field(default=0.8, description='Warning threshold as fraction of max_turns (e.g., 0.8 = 80%)')
     turn_monitor_critical_threshold: float = Field(default=0.95, description='Critical threshold as fraction of max_turns (e.g., 0.95 = 95%)')
-    critical_countdown_turns: int = Field(default=5, description='Number of turns to count down before tool restrictions apply after entering critical state')
     enable_logging: bool = Field(default=True, description='Enable agent logging')
     log_dir: str = Field(default='./logs', description='Directory for log files')
     log_level: str = Field(default='INFO', description='Logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL)')
