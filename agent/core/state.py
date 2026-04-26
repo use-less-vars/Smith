@@ -116,7 +116,7 @@ class AgentState:
         if self.restrictions_pending and self.token_state == TokenState.CRITICAL:
             self.restrictions_active = True
             self.restrictions_pending = False
-        elif self.token_state != TokenState.CRITICAL:
+        elif self.token_state != TokenState.CRITICAL and self.turn_state != TurnState.CRITICAL:
             self.restrictions_pending = False
             self.restrictions_active = False
 
@@ -164,7 +164,7 @@ class AgentState:
         if self.restrictions_pending and self.turn_state == TurnState.CRITICAL:
             self.restrictions_active = True
             self.restrictions_pending = False
-        elif self.turn_state != TurnState.CRITICAL:
+        elif self.turn_state != TurnState.CRITICAL and self.token_state != TokenState.CRITICAL:
             self.restrictions_pending = False
             self.restrictions_active = False
 

@@ -101,7 +101,7 @@ class Agent:
         self.debug_context = DebugContext(self.logger)
         self.tool_classes = config.tool_classes if config.tool_classes is not None else config.get_filtered_tool_classes()
         self.tool_definitions = [model_to_openai_tool(cls) for cls in self.tool_classes]
-        self.tool_executor = ToolExecutor(self.tool_classes, config, None, self.logger, self.security_available)
+        self.tool_executor = ToolExecutor(self.tool_classes, config, None, self.logger, self.security_available, agent=self)
         self.provider = self.llm_client.provider
         self.runtime_params = RuntimeParams(temperature=config.temperature, max_tokens=config.max_tokens, top_p=None)
         self._token_encoder = None
@@ -267,7 +267,7 @@ class Agent:
         original_len = len(runtime_context)
         runtime_context = ContextBuilder._cleanup_orphaned_tool_messages(runtime_context)
         if original_len != len(runtime_context):
-            logger.warning(f'[DEBUG_CONTEXT] Token estimate: cleaned {original_len - len(runtime_context)} orphaned tool messages')
+            logger.debug(f'[DEBUG_CONTEXT] Token estimate: cleaned {original_len - len(runtime_context)} orphaned tool messages')
         estimated_tokens = 0
         for msg in runtime_context:
             estimated_tokens += self.token_counter.estimate_tokens(msg)
@@ -298,18 +298,31 @@ class Agent:
         """Estimate tokens for a message."""
         return self.token_counter.estimate_tokens(message)
 
-    def _update_tokens_and_yield(self, tool_tokens=None):
-        """Update token count, check/clear restrictions, and yield token update event.
+    def _update_tokens_after_tool(self, tool_tokens=None):
+        """Update token count after a tool result and inject any warnings.
+
+        This is a regular function (not a generator) so it executes immediately.
+        Unlike the old generator version, it consumes warning events from
+        update_token_state() and injects them as [SYSTEM NOTIFICATION] messages.
 
         Args:
-            tool_tokens: Optional token count for tool result (ignored, we recalculate).
+            tool_tokens: Optional estimated token count for tool result to add.
         """
-        self._update_conversation_token_estimate()
-        # Update token state so restrictions get cleared if tokens dropped below critical
-        self.state.update_token_state(self.state.current_conversation_tokens)
-        event_dict = {'type': 'token_update', 'context_length': self.state.current_conversation_tokens, 'usage': {'input': 0, 'output': 0, 'total_input': self.total_input_tokens, 'total_output': self.total_output_tokens}}
-        self._add_conversation_data_to_event(event_dict)
-        yield event_dict
+        if tool_tokens is not None:
+            self.state.current_conversation_tokens += tool_tokens
+
+        # Process any warnings or state changes from the token update
+        for event in self.state.update_token_state(self.state.current_conversation_tokens):
+            if event['type'] == 'token_warning':
+                # Inject the warning as a user-visible message so the agent can react
+                warning_msg = {
+                    'role': 'user',
+                    'content': f'[SYSTEM NOTIFICATION] {event.get("message", event.get("warning", ""))}',
+                    'is_system_notification': True
+                }
+                self._add_to_conversation(warning_msg)
+                warning_tokens = self._estimate_tokens(warning_msg)
+                self.state.current_conversation_tokens += warning_tokens
     @property
     def total_input_tokens(self):
         if self.session is not None:
@@ -414,7 +427,7 @@ class Agent:
         self.runtime_params = RuntimeParams(temperature=new_config.temperature, max_tokens=new_config.max_tokens, top_p=None)
         self.tool_classes = new_config.tool_classes if new_config.tool_classes is not None else new_config.get_filtered_tool_classes()
         self.tool_definitions = [model_to_openai_tool(cls) for cls in self.tool_classes]
-        self.tool_executor = ToolExecutor(self.tool_classes, new_config, self.state, self.logger, self.security_available)
+        self.tool_executor = ToolExecutor(self.tool_classes, new_config, self.state, self.logger, self.security_available, agent=self)
         max_context_tokens = self._get_max_context_tokens()
         self.context_builder = self.llm_client.create_context_builder(token_limit=max_context_tokens)
         if self.context_builder:
@@ -517,7 +530,8 @@ class Agent:
                 event_dict = {'type': event['type'], 'message': event.get('message', event.get('warning', '')), 'turn_count': event.get('turn_count', turn), 'turn': self._display_turn, 'context_length': self.state.current_conversation_tokens, 'usage': {'input': last_input_tokens, 'output': last_output_tokens, 'total_input': self.total_input_tokens, 'total_output': self.total_output_tokens}}
                 self._add_conversation_data_to_event(event_dict)
                 yield event_dict
-            self._update_conversation_token_estimate()
+            # Don't recalculate full estimate here - truth-based current_conversation_tokens
+            # is maintained by LLM prompt_tokens + estimated additions for new content
             yield self._create_token_update_event()
             token_events = self.state.update_token_state(self.state.current_conversation_tokens)
             for event in token_events:
@@ -554,7 +568,7 @@ class Agent:
             original_len = len(messages)
             messages = ContextBuilder._cleanup_orphaned_tool_messages(messages)
             if original_len != len(messages):
-                logger.warning(f'[DEBUG_CONTEXT] Agent: cleaned {original_len - len(messages)} orphaned tool messages from final context')
+                logger.debug(f'[DEBUG_CONTEXT] Agent: cleaned {original_len - len(messages)} orphaned tool messages from final context')
             if self.logger and hasattr(self.logger, 'py_logger'):
                 import tiktoken
                 try:
@@ -576,19 +590,7 @@ class Agent:
             model_context_window = self.token_counter.get_model_context_window()
             critical_threshold = int(model_context_window * 0.95)
             warning_threshold = int(model_context_window * 0.85)
-            if request_tokens > model_context_window:
-                error = f'Request token count ({request_tokens}) exceeds model context window ({model_context_window}). Cannot make API call. Please use SummarizeTool to reduce context size.'
-                error_msg = {'role': 'user', 'content': '[SYSTEM NOTIFICATION] ' + error, 'is_system_notification': True}
-                self._add_to_conversation(error_msg)
-                error_tokens = self._estimate_tokens(error_msg)
-                self.state.current_conversation_tokens += error_tokens
-                yield self._create_token_update_event()
-                event_dict = {'type': 'token_warning', 'message': error, 'token_count': request_tokens, 'old_state': 'low', 'new_state': 'critical', 'state': 'critical', 'request_tokens': request_tokens, 'model_context_window': model_context_window}
-                self._add_conversation_data_to_event(event_dict)
-                yield event_dict
-                if self.logger:
-                    self.logger.log_token_warning('low', 'critical', request_tokens, f'Request tokens {request_tokens} exceed model context window {model_context_window}')
-            elif request_tokens > critical_threshold:
+            if request_tokens > critical_threshold:
                 warning = f'Request token count ({request_tokens}) is near model context window limit ({model_context_window}). Please use SummarizeTool immediately to reduce context size.'
                 warning_msg = {'role': 'user', 'content': '[SYSTEM NOTIFICATION] ' + warning, 'is_system_notification': True}
                 self._add_to_conversation(warning_msg)
@@ -625,6 +627,8 @@ class Agent:
                     self.logger.log_latency('llm_call', llm_duration_ms, {'turn': turn, 'request_tokens': request_tokens, 'model': self.config.model, 'has_tools': bool(tools)})
                 input_tokens = response.usage.get('prompt_tokens', 0) if response.usage else 0
                 output_tokens = response.usage.get('completion_tokens', 0) if response.usage else 0
+                # Use LLM-reported prompt_tokens as ground truth for conversation token count
+                self.state.current_conversation_tokens = input_tokens
                 last_input_tokens = input_tokens
                 last_output_tokens = output_tokens
                 self.total_input_tokens += input_tokens
@@ -708,8 +712,7 @@ class Agent:
             if tool_calls:
                 assistant_msg['tool_calls'] = tool_calls
             turn_transaction.add_assistant_message(assistant_msg)
-            for event in self._update_tokens_and_yield():
-                yield event
+            yield self._create_token_update_event()
             turn_event = {'type': 'turn', 'content': content, 'assistant_content': content, 'tool_calls': [], 'turn': self._display_turn, 'context_length': self.state.current_conversation_tokens, 'usage': {'input': last_input_tokens, 'output': last_output_tokens, 'total_input': self.total_input_tokens, 'total_output': self.total_output_tokens}}
             if reasoning is not None:
                 turn_event['reasoning'] = reasoning
@@ -718,7 +721,7 @@ class Agent:
             self._add_conversation_data_to_event(turn_event)
             yield turn_event
             if tool_calls:
-                executed_tools, final_detected, final_content, user_interaction_message, summary_text, summary_keep_recent_turns = self.tool_executor.execute_tool_calls(tool_calls, add_to_conversation_func=self._add_to_conversation, update_token_func=self._update_tokens_and_yield, agent_id=0, turn_transaction=turn_transaction)
+                executed_tools, final_detected, final_content, user_interaction_message, summary_text, summary_keep_recent_turns = self.tool_executor.execute_tool_calls(tool_calls, add_to_conversation_func=self._add_to_conversation, agent_id=0, turn_transaction=turn_transaction)
                 processed_tools = []
                 for tool_info in executed_tools:
                     result = tool_info.get('result', '')
@@ -769,8 +772,7 @@ class Agent:
                 if summary_text is not None:
                     log('DEBUG', 'core.summary', f'Processing summary request: summary length={len(summary_text)}, keep_recent_turns={summary_keep_recent_turns}')
                     self._apply_summary_pruning(summary_text, summary_keep_recent_turns)
-                    for event in self._update_tokens_and_yield():
-                        yield event
+                    yield self._create_token_update_event()
             pause_debug(f'Checking pause request after turn processing: _pause_requested={self._pause_requested}')
             if self._pause_requested:
                 pause_debug(f'Pause detected after turn processing! Transitioning to PAUSING then PAUSED')

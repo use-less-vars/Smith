@@ -118,7 +118,7 @@ class ContextBuilder(ABC):
                     cleaned_msg.pop('tool_calls', None)
                     result.append(cleaned_msg)
                     missing_count = len(tool_call_id_to_call) - len(tool_call_id_to_message)
-                    logger.warning(f'[DEBUG_CONTEXT] Removing incomplete tool sequence: {len(tool_call_id_to_call)} calls but only {len(tool_call_id_to_message)} valid tool messages ({missing_count} missing)')
+                    logger.debug(f'[DEBUG_CONTEXT] Removing incomplete tool sequence: {len(tool_call_id_to_call)} calls but only {len(tool_call_id_to_message)} valid tool messages ({missing_count} missing)')
                     i = j
                 else:
                     result.append(msg)
@@ -144,7 +144,7 @@ class ContextBuilder(ABC):
                 if found_matching_assistant:
                     logger.warning(f'[DEBUG_CONTEXT] Removing duplicate tool message: {tool_call_id}')
                 else:
-                    logger.warning(f'[DEBUG_CONTEXT] Removing orphaned tool message: {tool_call_id}')
+                    logger.debug(f'[DEBUG_CONTEXT] Removing orphaned tool message: {tool_call_id}')
                 i += 1
             else:
                 result.append(msg)
@@ -361,7 +361,14 @@ class SummaryBuilder(ContextBuilder):
                 current_turn = [msg]
             elif current_turn:
                 if role == 'tool':
-                    if current_turn and current_turn[-1].get('role') == 'assistant' and current_turn[-1].get('tool_calls'):
+                    # Check if ANY message in the current turn is an assistant with tool_calls
+                    # (not just the last message), to support multi-tool-call scenarios where
+                    # multiple tool results follow a single assistant message.
+                    has_tool_call_assistant = any(
+                        m.get('role') == 'assistant' and m.get('tool_calls')
+                        for m in current_turn
+                    )
+                    if current_turn and has_tool_call_assistant:
                         current_turn.append(msg)
                     else:
                         if debug:
