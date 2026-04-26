@@ -151,40 +151,46 @@ class FileEditor(ToolBase):
 
         total_lines = len(lines)
 
-        if self.line_numbers is None or self.line_numbers == 'all':
+        # Determine which line specification to use.
+        # Fallback: if line_numbers (plural) is not set but line_number (singular) is, use it.
+        line_numbers = self.line_numbers
+        if line_numbers is None and self.line_number is not None:
+            line_numbers = self.line_number
+
+        if line_numbers is None or line_numbers == 'all':
             # Read all lines
             result_lines = lines
             line_indices = list(range(1, total_lines + 1))
-        elif isinstance(self.line_numbers, int):
+        elif isinstance(line_numbers, int):
             # Single line number
-            line_num = self.line_numbers
+            line_num = line_numbers
             if line_num < 1 or line_num > total_lines:
                 return f"Error: Line number {line_num} is out of range (file has {total_lines} lines)"
             result_lines = [lines[line_num - 1]]
             line_indices = [line_num]
-        elif isinstance(self.line_numbers, list):
+        elif isinstance(line_numbers, list):
             # List of line numbers
             line_indices = []
             result_lines = []
             
             # Special case: 2-element list treated as range [start, end]
-            if len(self.line_numbers) == 2:
-                start, end = self.line_numbers[0], self.line_numbers[1]
+            if len(line_numbers) == 2:
+                start, end = line_numbers[0], line_numbers[1]
                 if start < 1 or end > total_lines or start > end:
                     return f"Error: Invalid range {start}-{end} (file has {total_lines} lines)"
                 line_indices = list(range(start, end + 1))
                 result_lines = [lines[i - 1] for i in line_indices]
             else:
                 # Regular list of discrete line numbers
-                for line_num in self.line_numbers:
+                for line_num in line_numbers:
                     if line_num < 1 or line_num > total_lines:
                         return f"Error: Line number {line_num} is out of range (file has {total_lines} lines)"
                     line_indices.append(line_num)
                     result_lines.append(lines[line_num - 1])
-        elif isinstance(self.line_numbers, str) and '-' in self.line_numbers:
+        elif isinstance(line_numbers, str) and '-' in line_numbers:
             # Range string like "1-10"
             try:
-                start_str, end_str = self.line_numbers.split('-')
+                start_str, end_str = line_numbers.split('-')
                 start = int(start_str.strip())
                 end = int(end_str.strip())
 
@@ -194,9 +200,9 @@ class FileEditor(ToolBase):
                 line_indices = list(range(start, end + 1))
                 result_lines = [lines[i - 1] for i in line_indices]
             except ValueError:
-                return f"Error: Invalid range format '{self.line_numbers}'. Use format like '1-10'"
+                return f"Error: Invalid range format '{line_numbers}'. Use format like '1-10'"
         else:
-            return f"Error: Invalid line_numbers parameter: {self.line_numbers}"
+            return f"Error: Invalid line_numbers parameter: {line_numbers}"
 
         # Apply context lines if specified
         if self.context_lines > 0:
@@ -209,11 +215,6 @@ class FileEditor(ToolBase):
             result_lines = [lines[i-1] for i in line_indices]
 
         # Format the output
-        output_lines = []
-        for idx, line in zip(line_indices, result_lines):
-            output_lines.append(f"Line {idx}: {line.rstrip()}")
-
-        return f"File: {filename}\nTotal lines: {total_lines}\n" + "\n".join(output_lines)
         output_lines = []
         for idx, line in zip(line_indices, result_lines):
             output_lines.append(f"Line {idx}: {line.rstrip()}")
