@@ -12,7 +12,7 @@ The following fields may appear on any message:
 
 - created_at (string, ISO format): Timestamp when the message was added to user_history. Used for display and session persistence.
 
-- is_system_notification (boolean): Indicates that the message is a system-generated notification (token warning, countdown expiry, context cleared). Used only in turn counting and summary insertion logic (see System Notifications document). Do not set this flag on normal user or assistant messages.
+- is_system_notification (boolean): Indicates that the message is a system-generated notification (token warning, turn warning, context cleared). Countdown expiry notifications no longer exist. Used only in turn counting and summary insertion logic (see System Notifications document). Do not set this flag on normal user or assistant messages.
 
 Fields specific to tool messages
 
@@ -79,9 +79,9 @@ A system notification with metadata:
 
 {
   "role": "user",
-  "content": "[SYSTEM NOTIFICATION] Token countdown expired...",
+  "content": "[SYSTEM NOTIFICATION] CRITICAL: Token limit reached (60k tokens). Tool restrictions will apply starting next turn.",
   "seq": 98,
-  "created_at": "2026-04-22T10:35:00",
+  "created_at": "2026-04-26T10:35:00",
   "is_system_notification": true
 }
 
@@ -100,6 +100,6 @@ A summary system message inserted during pruning:
 
 Related documentation
 
-- system-notifications.md – detailed explanation of is_system_notification
-- pruning-context-management.md – how summary metadata fields are used
+- system_notifications.md – detailed explanation of is_system_notification
+- pruning_system.md – how summary metadata fields are used
 - session/models.py – ObservableList and Session.add_message implementation

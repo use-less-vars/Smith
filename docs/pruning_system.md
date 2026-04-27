@@ -90,53 +90,40 @@ After insertion:
 
 The LLM context will now start at the new summary system message (index 85) and include everything after it – i.e., the kept turns (originally 85…100) plus the unwarning. Old messages (0…84) are excluded.
 4. Token Warnings and Their Lifecycle (Revised)
+
 4.1 Generation
 
 AgentState.update_token_state() monitors total tokens against two thresholds (configurable, defaults below):
-
-    token_monitor_warning_threshold (default 35k) → emits a soft warning.
-
-    token_monitor_critical_threshold (default 50k) → emits a critical warning.
+- token_monitor_warning_threshold (default 35k) → soft warning.
+- token_monitor_critical_threshold (default 50k) → critical warning.
 
 No countdown is started. The agent is informed of the thresholds and the required action (summarise).
+
 4.2 Warning Messages
 
 All warnings are injected as messages with role='user', content prefixed by [SYSTEM NOTIFICATION], and "is_system_notification": true.
 
-Soft warning (example):
-text
+Soft warning example:
+[SYSTEM NOTIFICATION] Token usage warning: Conversation is nearing context window limits (50k tokens). Critical threshold is at 60k tokens. This is not a problem: simply use SummarizeTool to summarise the session and keep a number of recent turns. The summary will free up the context window and you can continue working smoothly.
 
-[SYSTEM NOTIFICATION] Token usage warning: Conversation is nearing context window limits (50k tokens). Critical threshold is at 60k tokens. This is not a problem: simply use SummarizeTool to summarize the session and keep a number of recent turns. The summary will free up the context window and you can continue working smoothly.
-
-Critical warning (example):
-text
-
+Critical warning example:
 [SYSTEM NOTIFICATION] CRITICAL: Token limit reached (60k tokens). Tool restrictions will apply starting next turn. Call SummarizeTool now to free context and continue.
 
-4.3 Tool Restrictions
+4.3 Tool Restrictions (Two-Phase)
 
-    On critical warning, a flag restrictions_pending is set to True.
+On critical warning:
+- restrictions_pending = True
+- Same turn: all tools remain allowed. The agent can call SummarizeTool immediately.
+- Next turn (if token state is still CRITICAL): restrictions_active = True. From that turn onward, only SummarizeTool, Final, and FinalReport are allowed.
+- If the agent summarises in the same turn, token count drops below critical, and both flags are cleared. No restrictions apply.
 
-    Same turn: all tools remain allowed. The agent can call SummarizeTool immediately.
+4.4 No Countdown, No "Expired" Notifications
 
-    Next turn: if the token state is still CRITICAL (i.e., the agent did not summarise), restrictions_pending becomes False and restrictions_active becomes True. From that turn onward, only SummarizeTool, Final, and FinalReport are allowed.
+The previous countdown logic (5‑turn grace period, countdown expiration events) has been removed. The agent never receives a "[SYSTEM NOTIFICATION] Token countdown expired" message. The simplified model eliminates race conditions and ordering bugs.
 
-    If the agent does summarise in the same turn as the critical warning, the token estimate is updated, update_token_state() re‑evaluates the state, and if the token count drops below CRITICAL, both restrictions_pending and restrictions_active are cleared. No restrictions apply in the next turn.
-
-4.4 No Countdown, No “Expired” Notifications
-
-The previous countdown logic (5‑turn grace period, countdown expiration events) has been removed. The agent never receives a [SYSTEM NOTIFICATION] Token countdown expired message. The simplified model is:
-
-    Soft warning → informs about the critical threshold.
-
-    Critical warning → one turn to summarise; otherwise restrictions apply next turn.
-
-    Summarisation → immediately clears pending restrictions if tokens drop.
-
-This eliminates race conditions, ordering bugs, and confusing “expired” messages.
 4.5 Turn‑Based Warnings
 
-The same logic applies to turn limits. The agent tracks turn count; when it reaches a critical percentage (default 95% of max_turns), a critical turn warning is issued with the same behaviour: one turn to summarise, otherwise restrictions next turn. Summarisation does not reset the turn counter, but it reduces token count and may indirectly prevent turn‑based restrictions.
+The same logic applies to turn limits. When turn count reaches critical percentage (default 95% of max_turns), a critical turn warning is issued with the same two‑phase restriction behaviour. Summarisation does not reset the turn counter but may reduce token count and indirectly avoid turn‑based restrictions.
 
 
 5. The Unwarning Placement Fix (Critical)
@@ -223,30 +210,21 @@ To verify correct behaviour after a summarisation:
     What about stale warnings in the GUI?
     They are normal – the GUI shows the full history. If desired, a display filter can hide them, but that is a separate UI feature, not a core bug.
 
-10. Summary (Updated)
+10. Summary
 
 The pruning mechanism:
-
-    Keeps immutable full history (user_history).
-
-    Inserts a summary system message at a turn boundary.
-
-    Builds LLM context starting from that summary.
-
-    Appends an unwarning after the summary tool result.
-
-    Excludes messages before the summary from the LLM context.
+- Keeps immutable full history (user_history).
+- Inserts a summary system message at a turn boundary.
+- Builds LLM context starting from that summary.
+- Appends an unwarning after the summary tool result.
+- Excludes messages before the summary from LLM context.
 
 Token warning flow (simplified):
-
-    Soft warning informs about thresholds.
-
-    Critical warning triggers one‑turn grace to summarise.
-
-    No countdown, no expiration messages.
-
-    Tool restrictions apply only after the turn if the agent fails to summarise.
+- Soft warning informs about thresholds.
+- Critical warning triggers one‑turn grace to summarise.
+- No countdown, no expiration messages.
+- Tool restrictions apply only after the turn if the agent fails to summarise.
 
 This removes all previous race conditions and fragility while keeping the agent fully informed.
 
-Document version: 1.0 – Last updated: 2026‑04‑25
+Document version: 1.0 – Last updated: 2026‑04‑26
