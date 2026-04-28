@@ -173,7 +173,7 @@ class _AgentLogger:
                 self._file_handle = open(self.log_file_path, 'a', encoding='utf-8')
                 self._current_file_size = os.path.getsize(self.log_file_path) if os.path.exists(self.log_file_path) else 0
             except Exception as e:
-                log('ERROR', 'logging.agent_logger', f'Failed to open log file {self.log_file_path}: {e}')
+                print(f"[LOGGING ERROR] Failed to open log file {self.log_file_path}: {e}", file=__import__('sys').stderr)
                 self.enable_file_logging = False
 
     def _should_log(self, level: LogLevel) -> bool:
@@ -199,9 +199,9 @@ class _AgentLogger:
 
     def _write_jsonl(self, event: Dict[str, Any]):
         """Write a JSONL entry to the log file."""
-        if not self.enable_file_logging or not self._file_handle:
-            return
         with self._lock:
+            if not self.enable_file_logging or not self._file_handle or self._file_handle.closed:
+                return
             try:
                 event['timestamp'] = datetime.now().isoformat()
                 event['session_id'] = self.session_id
@@ -213,29 +213,43 @@ class _AgentLogger:
                 if self._current_file_size >= self.max_file_size_bytes:
                     self._rotate_log_file()
             except Exception as e:
-                log('ERROR', 'logging.agent_logger', f'Failed to write log entry: {e}')
+                print(f"[LOGGING ERROR] Failed to write log entry: {e}", file=__import__('sys').stderr)
+                try:
+                    if self._file_handle and not self._file_handle.closed:
+                        self._file_handle.close()
+                except:
+                    pass
+                self._file_handle = None
 
     def _rotate_log_file(self):
         """Rotate log file when it reaches maximum size."""
-        if not self.enable_file_logging or not self._file_handle:
+        if not self.enable_file_logging or not self._file_handle or self._file_handle.closed:
             return
         with self._lock:
             try:
                 self._file_handle.close()
+                # Clean up the oldest backup file if it exists (beyond max_backup_files)
+                oldest_file = f'{self.log_file_path}.{self.max_backup_files + 1}'
+                if os.path.exists(oldest_file):
+                    os.remove(oldest_file)
+                # Rotate: shift .i → .i+1 for i from max_backup_files-1 down to 1
                 for i in range(self.max_backup_files - 1, 0, -1):
                     old_file = f'{self.log_file_path}.{i}'
                     new_file = f'{self.log_file_path}.{i + 1}'
                     if os.path.exists(old_file):
-                        os.rename(old_file, new_file)
+                        os.replace(old_file, new_file)
+                # Move current log to .1 (overwrites if exists)
                 if os.path.exists(self.log_file_path):
-                    os.rename(self.log_file_path, f'{self.log_file_path}.1')
+                    os.replace(self.log_file_path, f'{self.log_file_path}.1')
                 self._file_handle = open(self.log_file_path, 'a', encoding='utf-8')
                 self._current_file_size = 0
             except Exception as e:
-                log('ERROR', 'logging.agent_logger', f'Failed to rotate log file: {e}')
+                print(f"[LOGGING ERROR] Failed to rotate log file: {e}", file=__import__('sys').stderr)
+                self._file_handle = None
                 try:
                     self._file_handle = open(self.log_file_path, 'a', encoding='utf-8')
                 except:
+                    self._file_handle = None
                     self.enable_file_logging = False
 
     def _log_event(self, event_type: LogEventType, level: LogLevel, message: str='', data: Optional[Dict[str, Any]]=None, turn: Optional[int]=None):
@@ -572,7 +586,7 @@ class _AgentLogger:
             cpu_percent = psutil.cpu_percent(interval=0.1)
             self.log_resource_utilization(cpu_percent=cpu_percent, memory_percent=system_memory_percent, disk_usage=None, network_io=None, metadata={'system_memory_total_mb': system_memory_total, 'system_memory_used_mb': system_memory_used, 'process_memory_mb': memory_mb})
         except Exception as e:
-            self._log_event(LogEventType.PERFORMANCE_METRIC, LogLevel.WARNING, f'Failed to collect system resources: {e}', {'error': str(e)}, self.current_turn)
+            self._log_event(LogEventType.RESOURCE_UTILIZATION, LogLevel.WARNING, f'Failed to collect system resources: {e}', {'error': str(e)}, self.current_turn)
 
     def close(self):
         """Close log file and cleanup."""
@@ -616,6 +630,6 @@ def create_logger(config: 'AgentConfig') -> Optional[_AgentLogger]:
         )
         return logger
     except Exception as e:
-        log('ERROR', 'logging.agent_logger', f'Failed to create logger: {e}')
+        print(f"[LOGGING ERROR] Failed to create logger: {e}", file=__import__('sys').stderr)
 from .unified import log
 __all__ = ['log', 'LogLevel', 'LogCategory', 'LogEventType', 'create_logger', 'AgentLogger']
