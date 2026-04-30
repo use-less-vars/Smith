@@ -24,7 +24,6 @@ class AgentController(QObject):
         self.pause_event.set()
         self.thread = None
         self._running = False
-        self._initial_conversation = None
         self._agent_override = None
         self.agent = None
         self.current_session_id = None
@@ -62,7 +61,6 @@ class AgentController(QObject):
         self.pause_event.set()
         self.thread = None
         self._running = False
-        self._initial_conversation = None
         self.agent = None
         self._keep_alive = True
         self._pause_requested = False

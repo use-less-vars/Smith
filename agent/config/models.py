@@ -1,13 +1,61 @@
 """
 Configuration models for the ThoughtMachine agent.
 """
-from typing import Optional, Callable, List, Any, Dict, Literal
+from typing import ClassVar, Optional, Callable, List, Any, Dict, Literal
 from pydantic import BaseModel, Field, field_validator, model_validator, ConfigDict
 from agent.logging import log
 from tools import SIMPLIFIED_TOOL_CLASSES
 
+# Category constants for AgentConfig fields
+RESTART_REQUIRED = "restart_required"
+HOT_SWAPPABLE = "hot_swappable"
+SESSION_IDENTITY = "session_identity"
+GLOBAL_STATIC = "global_static"
+
+
 class AgentConfig(BaseModel):
     """Main configuration model for the ThoughtMachine agent."""
+
+    #: Maps each field name to its category for driving GUI behavior and update logic.
+    FIELD_CATEGORIES: ClassVar[Dict[str, str]] = {
+        'provider_type': RESTART_REQUIRED,
+        'model': RESTART_REQUIRED,
+        'api_key': RESTART_REQUIRED,
+        'base_url': RESTART_REQUIRED,
+        'temperature': HOT_SWAPPABLE,
+        'max_tokens': HOT_SWAPPABLE,
+        'stop_check': RESTART_REQUIRED,
+        'provider_config': RESTART_REQUIRED,
+        'max_turns': HOT_SWAPPABLE,
+        'system_prompt': RESTART_REQUIRED,
+        'token_monitor_enabled': HOT_SWAPPABLE,
+        'token_monitor_warning_threshold': HOT_SWAPPABLE,
+        'token_monitor_critical_threshold': HOT_SWAPPABLE,
+        'turn_monitor_enabled': HOT_SWAPPABLE,
+        'turn_monitor_warning_threshold': HOT_SWAPPABLE,
+        'turn_monitor_critical_threshold': HOT_SWAPPABLE,
+        'enable_logging': GLOBAL_STATIC,
+        'log_dir': GLOBAL_STATIC,
+        'log_level': GLOBAL_STATIC,
+        'enable_file_logging': GLOBAL_STATIC,
+        'enable_console_logging': GLOBAL_STATIC,
+        'jsonl_format': GLOBAL_STATIC,
+        'log_categories': GLOBAL_STATIC,
+        'max_file_size_mb': GLOBAL_STATIC,
+        'max_backup_files': GLOBAL_STATIC,
+        'workspace_path': RESTART_REQUIRED,
+        'detail': HOT_SWAPPABLE,
+        'rag_enabled': RESTART_REQUIRED,
+        'rag_embedding_model': RESTART_REQUIRED,
+        'rag_vector_store_path': RESTART_REQUIRED,
+        'rag_chunk_size': RESTART_REQUIRED,
+        'rag_chunk_overlap': RESTART_REQUIRED,
+        'rag_batch_size': RESTART_REQUIRED,
+        'rag_truncate_dim': RESTART_REQUIRED,
+        'tool_output_token_limit': HOT_SWAPPABLE,
+        'enabled_tools': HOT_SWAPPABLE,
+    }
+
     api_key: str = ''
     base_url: str = 'https://api.deepseek.com'
     model: str = 'deepseek-reasoner'
@@ -16,14 +64,7 @@ class AgentConfig(BaseModel):
     temperature: float = 0.2
     max_turns: int = 100
     stop_check: Optional[Callable[[], bool]] = None
-    tool_classes: Optional[List[type]] = None
-    initial_conversation: Optional[List[Dict[str, Any]]] = None
-    max_history_turns: Optional[int] = None
     max_tokens: Optional[int] = None
-    keep_initial_query: bool = True
-    keep_system_messages: bool = True
-    initial_input_tokens: int = 0
-    initial_output_tokens: int = 0
     system_prompt: Optional[str] = None
     token_monitor_enabled: bool = Field(default=True, description='Enable automatic token usage warnings')
     token_monitor_warning_threshold: int = Field(default=35000, description='Token count threshold for warning (user)')
@@ -40,9 +81,7 @@ class AgentConfig(BaseModel):
     log_categories: List[str] = Field(default_factory=lambda: ['SESSION', 'LLM', 'TOOLS'], description='List of log categories to enable (SESSION, UI, LLM, TOOLS, SECURITY, PERFORMANCE). Can be overridden by AGENT_LOG_CATEGORIES environment variable.')
     max_file_size_mb: int = Field(default=10, description='Maximum log file size in MB before rotation')
     max_backup_files: int = Field(default=5, description='Maximum number of backup log files to keep')
-    session_id: Optional[str] = Field(default=None, description='Unique session ID for logging (auto-generated if None)')
     workspace_path: Optional[str] = Field(default=None, description='Root directory for file operations (None = unrestricted)')
-    use_qml_ui: bool = Field(default=False, description='Use QML-based UI instead of Qt Widgets')
     rag_enabled: bool = Field(default=False, description='Enable RAG functionality')
     rag_embedding_model: str = Field(default='BAAI/bge-small-en-v1.5', description='Model name for sentence-transformers embeddings')
     rag_vector_store_path: Optional[str] = Field(default=None, description='Path to vector store database (None = default .thoughtmachine/rag/)')

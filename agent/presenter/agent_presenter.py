@@ -16,7 +16,7 @@ from agent.controller import AgentController
 from agent.config import AgentConfig, load_default_config
 from tools import SIMPLIFIED_TOOL_CLASSES
 from agent.core.state import ExecutionState
-from session.models import Session, SessionConfig, RuntimeParams
+from session.models import Session, RuntimeParams
 from session.store import FileSystemSessionStore
 from .state_bridge import StateBridge
 from .gui_integration import GUIIntegration
@@ -339,10 +339,6 @@ class RefactoredAgentPresenter(QObject):
         """Bind a session to the presenter."""
         self.state_bridge.bind_session(session)
 
-    def _build_session_config(self, agent_config: AgentConfig) -> SessionConfig:
-        """Build SessionConfig from AgentConfig."""
-        return self.state_bridge.build_session_config(agent_config)
-
     @property
     def state(self) -> ExecutionState:
         """Current execution state."""
@@ -398,10 +394,7 @@ class RefactoredAgentPresenter(QObject):
         """User conversation history."""
         return self.state_bridge.user_history
 
-    @property
-    def _initial_conversation(self) -> Optional[List[Dict[str, Any]]]:
-        """Initial conversation for session loading (backward compatibility)."""
-        return self.session_lifecycle._initial_conversation
+
 
     def get_conversation_snapshot(self) -> Optional[List[Dict[str, Any]]]:
         """Get current conversation snapshot from session.

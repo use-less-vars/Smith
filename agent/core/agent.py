@@ -50,14 +50,13 @@ class Agent:
     SAFETY_MARGIN = 1000
     DEFAULT_RESPONSE_TOKENS = 4096
 
-    def __init__(self, config: AgentConfig, session=None, initial_conversation=None, session_id: str=None):
+    def __init__(self, config: AgentConfig, session=None, session_id: str=None):
         """
         Initialize modular agent.
         
         Args:
             config: Agent configuration.
             session: Optional session object.
-            initial_conversation: Optional initial conversation history.
             session_id: Session ID if no session provided.
         """
         self.config = config
@@ -86,7 +85,7 @@ class Agent:
         else:
             self._session = None
             self.session_id = session_id
-            self._conversation = initial_conversation.copy() if initial_conversation else []
+            self._conversation = []
         user_msg_count = 0
         for msg in self.conversation:
             if msg.get('role') == 'user':
@@ -99,7 +98,7 @@ class Agent:
         self.llm_client = LLMClient(config, session, self.logger)
         self.conversation_manager = ConversationManager(session, None, self.logger)
         self.debug_context = DebugContext(self.logger)
-        self.tool_classes = config.tool_classes if config.tool_classes is not None else config.get_filtered_tool_classes()
+        self.tool_classes = config.get_filtered_tool_classes()
         self.tool_definitions = [model_to_openai_tool(cls) for cls in self.tool_classes]
         self.tool_executor = ToolExecutor(self.tool_classes, config, None, self.logger, self.security_available, agent=self)
         self.provider = self.llm_client.provider
@@ -108,7 +107,7 @@ class Agent:
         if session is not None:
             self._token_counts = {'input': session.total_input_tokens, 'output': session.total_output_tokens}
         else:
-            self._token_counts = {'input': config.initial_input_tokens, 'output': config.initial_output_tokens}
+            self._token_counts = {'input': 0, 'output': 0}
         self.conversation = self.llm_client.ensure_system_prompt(self.conversation)
         max_context_tokens = self._get_max_context_tokens()
         log('DEBUG', 'core.context_builder', f'Agent init: session is None={session is None}, max_context_tokens={max_context_tokens}')
@@ -202,8 +201,7 @@ class Agent:
             return False
         if new_config.system_prompt != self.config.system_prompt:
             return False
-        if new_config.tool_classes != self.config.tool_classes:
-            return False
+
         # Workspace path changes require a full restart
         if new_config.workspace_path != self.config.workspace_path:
             return False
@@ -328,7 +326,7 @@ class Agent:
             self.provider = self.llm_client.provider
 
             # Rebuild tool_classes and tool_definitions
-            self.tool_classes = new_config.tool_classes if new_config.tool_classes is not None else new_config.get_filtered_tool_classes()
+            self.tool_classes = new_config.get_filtered_tool_classes()
             self.tool_definitions = [model_to_openai_tool(cls) for cls in self.tool_classes]
             log('DEBUG', 'core.config', f'[CONFIG_TRACE] restart: creating executors with workspace={new_config.workspace_path}')
             self.tool_executor = ToolExecutor(self.tool_classes, new_config, self.state, old_logger, self.security_available, agent=self)
@@ -697,7 +695,7 @@ class Agent:
                 for yielded_event in self._handle_state_event(event):
                     yield yielded_event
         if self.logger:
-            config_data = {'model': self.config.model, 'temperature': self.config.temperature, 'max_turns': self.config.max_turns, 'max_history_turns': self.config.max_history_turns, 'max_tokens': self.config.max_tokens, 'keep_initial_query': self.config.keep_initial_query, 'keep_system_messages': self.config.keep_system_messages}
+            config_data = {'model': self.config.model, 'temperature': self.config.temperature, 'max_turns': self.config.max_turns, 'max_tokens': self.config.max_tokens}
             self.logger.log_agent_start(query, config_data)
             self.logger.log_system_resources()
         pause_debug(f"Adding user message to conversation: '{query[:50]}...'")
@@ -1330,7 +1328,7 @@ class Agent:
         for tool_cls in SIMPLIFIED_TOOL_CLASSES:
             if tool_cls.__name__ in preset_tool_names:
                 tool_classes.append(tool_cls)
-        config_data = {'api_key': api_key or '', 'base_url': base_url, 'model': preset.model, 'temperature': preset.temperature, 'tool_classes': tool_classes, 'enabled_tools': list(preset_tool_names), 'system_prompt': preset.system_prompt, 'provider_type': 'openai_compatible', 'max_turns': overrides.get('max_turns', 100), 'detail': overrides.get('detail', 'normal'), 'workspace_path': overrides.get('workspace_path'), 'tool_output_token_limit': overrides.get('tool_output_token_limit', 10000), 'token_monitor_enabled': overrides.get('token_monitor_enabled', True), 'token_monitor_warning_threshold': overrides.get('token_monitor_warning_threshold', 35000), 'token_monitor_critical_threshold': overrides.get('token_monitor_critical_threshold', 50000), 'turn_monitor_enabled': overrides.get('turn_monitor_enabled', True), 'turn_monitor_warning_threshold': overrides.get('turn_monitor_warning_threshold', 0.8), 'turn_monitor_critical_threshold': overrides.get('turn_monitor_critical_threshold', 0.95), 'enable_logging': overrides.get('enable_logging', True), 'log_dir': overrides.get('log_dir', './logs'), 'log_level': overrides.get('log_level', 'INFO'), 'enable_file_logging': overrides.get('enable_file_logging', True), 'enable_console_logging': overrides.get('enable_console_logging', False), 'jsonl_format': overrides.get('jsonl_format', True), 'log_categories': overrides.get('log_categories', ['SESSION', 'LLM', 'TOOLS']), 'max_file_size_mb': overrides.get('max_file_size_mb', 10), 'max_backup_files': overrides.get('max_backup_files', 5)}
+        config_data = {'api_key': api_key or '', 'base_url': base_url, 'model': preset.model, 'temperature': preset.temperature, 'enabled_tools': list(preset_tool_names), 'system_prompt': preset.system_prompt, 'provider_type': 'openai_compatible', 'max_turns': overrides.get('max_turns', 100), 'detail': overrides.get('detail', 'normal'), 'workspace_path': overrides.get('workspace_path'), 'tool_output_token_limit': overrides.get('tool_output_token_limit', 10000), 'token_monitor_enabled': overrides.get('token_monitor_enabled', True), 'token_monitor_warning_threshold': overrides.get('token_monitor_warning_threshold', 35000), 'token_monitor_critical_threshold': overrides.get('token_monitor_critical_threshold', 50000), 'turn_monitor_enabled': overrides.get('turn_monitor_enabled', True), 'turn_monitor_warning_threshold': overrides.get('turn_monitor_warning_threshold', 0.8), 'turn_monitor_critical_threshold': overrides.get('turn_monitor_critical_threshold', 0.95), 'enable_logging': overrides.get('enable_logging', True), 'log_dir': overrides.get('log_dir', './logs'), 'log_level': overrides.get('log_level', 'INFO'), 'enable_file_logging': overrides.get('enable_file_logging', True), 'enable_console_logging': overrides.get('enable_console_logging', False), 'jsonl_format': overrides.get('jsonl_format', True), 'log_categories': overrides.get('log_categories', ['SESSION', 'LLM', 'TOOLS']), 'max_file_size_mb': overrides.get('max_file_size_mb', 10), 'max_backup_files': overrides.get('max_backup_files', 5)}
         config_data.update(overrides)
         from agent.config import AgentConfig
         config = AgentConfig(**config_data)

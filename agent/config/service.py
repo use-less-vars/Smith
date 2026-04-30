@@ -277,5 +277,5 @@ def create_agent_config_service(config_path: str='agent_config.json') -> ConfigS
     fields_to_remove = ['initial_input_tokens', 'initial_output_tokens', 'enable_logging', 'log_dir', 'log_level', 'enable_file_logging', 'enable_console_logging', 'jsonl_format', 'max_file_size_mb', 'max_backup_files', 'tool_output_token_limit']
     for key in fields_to_remove:
         default_config.pop(key, None)
-    default_config['use_qml_ui'] = False
+
     return ConfigService(config_path, default_config)

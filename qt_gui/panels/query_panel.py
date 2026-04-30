@@ -11,7 +11,6 @@ class QueryPanel(QWidget):
         # Callback slots (to be connected by SessionTab)
         self.on_run = None
         self.on_pause = None
-        self.on_restart = None
 
         self.init_ui()
         self.setup_signal_connections()
@@ -47,11 +46,6 @@ class QueryPanel(QWidget):
 
         button_layout.addStretch()
 
-        # Restart button
-        self.restart_btn = QPushButton("RESTART")
-        self.restart_btn.setMinimumWidth(80)
-        button_layout.addWidget(self.restart_btn)
-
         query_layout.addLayout(button_layout)
         layout.addWidget(query_frame)
 
@@ -59,7 +53,6 @@ class QueryPanel(QWidget):
         """Connect button signals to callbacks."""
         self.run_btn.clicked.connect(self._on_run_clicked)
         self.pause_btn.clicked.connect(self._on_pause_clicked)
-        self.restart_btn.clicked.connect(self._on_restart_clicked)
 
     def _on_run_clicked(self):
         """Handle run button click."""
@@ -70,11 +63,6 @@ class QueryPanel(QWidget):
         """Handle pause button click."""
         if self.on_pause:
             self.on_pause()
-
-    def _on_restart_clicked(self):
-        """Handle restart button click."""
-        if self.on_restart:
-            self.on_restart()
 
     def get_query_text(self):
         """Get the current query text."""
@@ -92,27 +80,20 @@ class QueryPanel(QWidget):
         """Enable/disable pause button."""
         self.pause_btn.setEnabled(enabled)
 
-    def set_restart_enabled(self, enabled):
-        """Enable/disable restart button."""
-        self.restart_btn.setEnabled(enabled)
-
     def set_buttons_running(self):
         """Set buttons for running state."""
         self.run_btn.setEnabled(False)
         self.pause_btn.setEnabled(True)
-        self.restart_btn.setEnabled(False)
 
     def set_buttons_paused(self):
         """Set buttons for paused state."""
         self.run_btn.setEnabled(True)
         self.pause_btn.setEnabled(False)
-        self.restart_btn.setEnabled(True)
 
     def set_buttons_idle(self):
         """Set buttons for idle state."""
         self.run_btn.setEnabled(True)
         self.pause_btn.setEnabled(False)
-        self.restart_btn.setEnabled(True)
 
     def set_focus_to_query(self):
         """Set focus to query entry."""
