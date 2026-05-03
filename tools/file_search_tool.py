@@ -27,7 +27,7 @@ class FileSearchTool(ToolBase):
     directory: Optional[str] = Field(default=None, description="Directory to search recursively (if filenames not provided).")
     context_lines: int = Field(default=5, description="Number of lines of context to show before and after each match.")
     show_line_numbers: bool = Field(default=True, description="Include line numbers in the output.")
-    use_regex: bool = Field(default=False, description="If True, treat pattern as a regular expression.")
+    use_regex: bool = Field(default=True, description="If True, treat pattern as a regular expression.")
     case_sensitive: bool = Field(default=False, description="If True, perform case-sensitive search (default False).")
     max_results: int = Field(default=50, description="Maximum number of matches to return.")
     exclude_dirs: List[str] = Field(
@@ -98,19 +98,26 @@ class FileSearchTool(ToolBase):
                             # Skip files outside workspace
                             continue
             elif self.file_pattern:
-                # Use glob to find files matching pattern, respecting workspace and exclusions
+                # Walk directory tree with exclusion pruning (unlike Path.glob which traverses everything)
                 files_to_search = []
                 base_path = Path(self.workspace_path or '.')
-                for p in base_path.glob(self.file_pattern):
-                    try:
-                        validated_path = self._validate_path(str(p))
-                        # Check if file is in excluded directory
-                        if self._is_path_excluded(validated_path):
+                pattern = self.file_pattern
+                for root, dirs, files in os.walk(str(base_path)):
+                    # Prune excluded directories BEFORE traversing into them
+                    dirs[:] = [d for d in dirs if not self._should_exclude_dir(d)]
+                    for file in files:
+                        full_path = os.path.join(root, file)
+                        rel_path = os.path.relpath(full_path, str(base_path))
+                        # Match file against glob pattern:
+                        # fnmatch handles simple patterns like '*.py', 'test_*.py' (filename only)
+                        # Path.match handles complex patterns like '**/*.py', 'tools/*.py' (relative path)
+                        if not fnmatch.fnmatch(file, pattern) and not Path(rel_path).match(pattern):
                             continue
-                        files_to_search.append(validated_path)
-                    except ValueError:
-                        # Skip files outside workspace
-                        continue
+                        try:
+                            validated_path = self._validate_path(full_path)
+                            files_to_search.append(validated_path)
+                        except ValueError:
+                            continue
             else:
                 return "Error: Provide one of 'filenames', 'directory', or 'file_pattern'."
             
@@ -135,7 +142,8 @@ class FileSearchTool(ToolBase):
             file_lines_cache = {}
             file_line_offsets_cache = {}
             nonexistent_files = []
-            
+            skipped_large_files = 0
+
             for file_path in files_to_search:
                 if not os.path.isfile(file_path):
                     nonexistent_files.append(file_path)
@@ -143,6 +151,7 @@ class FileSearchTool(ToolBase):
                 try:
                     file_size = os.path.getsize(file_path)
                     if file_size > self.MAX_FILE_SIZE:
+                        skipped_large_files += 1
                         continue
                     with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
                         content = f.read()
@@ -179,19 +188,44 @@ class FileSearchTool(ToolBase):
                 if len(matches) >= max_results:
                     break            
             if not matches:
-                msg = "No matches found."
+                mode = "regex" if self.use_regex else "plain text"
+                if not self.use_regex:
+                    # Check if pattern looks like it might be intended as regex
+                    import re as _re
+                    # Strong regex indicators: escaped chars (\., \), \|, etc.) or standalone | outside character classes
+                    # Avoid flagging plain '.' or '*' alone which are common in non-regex patterns
+                    has_regex_indicators = bool(_re.search(r'\\.', self.pattern)) or bool(_re.search(r'(?<!\\)\|', self.pattern))
+                else:
+                    has_regex_indicators = False
+
+                msg = f"No matches found for pattern '{self.pattern}' ({mode}, case_sensitive={self.case_sensitive})."
+
+                # Add count of files searched
+                if files_to_search:
+                    total_searched = len(files_to_search) - len(nonexistent_files) - skipped_large_files
+                    msg += f"\n  Files searched: {total_searched}"
+                    if nonexistent_files:
+                        msg += f" ({len(nonexistent_files)} non-existent)"
+                    if skipped_large_files:
+                        msg += f" ({skipped_large_files} skipped due to size >{self.MAX_FILE_SIZE/1_000_000:.0f}MB)"
+
+                # Add hint for possible regex patterns
+                if has_regex_indicators and not self.use_regex:
+                    msg += "\n  Hint: The pattern contains special characters (\\, ., (), |, etc). Did you mean to set use_regex=True?"
+
+                # Add nonexistent files detail
                 if nonexistent_files:
-                    # Check if the issue might be that all specified files don't exist
                     if self.filenames and len(nonexistent_files) == len(files_to_search):
                         msg = f"None of the specified files exist: {', '.join(self.filenames)}"
-                    elif nonexistent_files:
+                    elif nonexistent_files and len(nonexistent_files) <= 5:
                         rel_nonexistent = []
                         for f in nonexistent_files:
                             try:
                                 rel_nonexistent.append(os.path.relpath(f))
                             except ValueError:
                                 rel_nonexistent.append(f)
-                        msg = f"No matches found ({len(nonexistent_files)} specified files do not exist: {', '.join(rel_nonexistent)})"
+                        msg += f"\n  Non-existent files: {', '.join(rel_nonexistent)}"
+
                 return msg
             
             # Now build output with context lines and highlighting

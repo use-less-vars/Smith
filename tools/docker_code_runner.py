@@ -81,12 +81,19 @@ class DockerCodeRunner(ToolBase):
 
     Container pooling:
     - Containers are pooled and reused across executions for performance.
-    - Idle containers are automatically closed after the idle_timeout period (default 300s).
+    - Idle containers are automatically closed after the idle_timeout period (default 600s).
     - This reduces Docker container overhead while maintaining security isolation.
 
     Dockerfile:
     The Docker image is built from the project's Dockerfile at `docker/executor.Dockerfile`.
     Set `build=True` to force a rebuild before execution (useful when adding packages).
+
+    Security policy:
+    By default, the container has no network and a read-only home directory.
+    To enable runtime pip install --user, create a security policy file at
+    ~/.thoughtmachine/security_policy.json and set docker_network_allowed and
+    writable_home to true for your workspace path. See the project documentation
+    for the schema.
     """
     tool: Literal["DockerCodeRunner"] = "DockerCodeRunner"
 
@@ -143,8 +150,8 @@ class DockerCodeRunner(ToolBase):
         description="Interpreter to use for executing script (e.g., 'bash', 'python3', 'sh'). Default: 'bash'"
     )
     idle_timeout: int = Field(
-        default=300,
-        description="Idle timeout in seconds for container pooling. Container will be closed after this period of inactivity. Default: 300 seconds (5 minutes)."
+        default=600,
+        description="Idle timeout in seconds for container pooling. Container will be closed after this period of inactivity. Default: 600 seconds (10 minutes)."
     )
 
     @model_validator(mode='after')
@@ -292,7 +299,9 @@ chmod +x "{script_path}"
             # Add parent directory to sys.path
             import sys
             sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)) + '/..')
-            from docker_executor import DockerExecutor
+            import importlib
+            import docker_executor
+            DockerExecutor = importlib.reload(docker_executor).DockerExecutor
         except ImportError as e:
             duration = time.time() - start_time
             return self._truncate_output(self._build_json_response(
