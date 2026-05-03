@@ -89,42 +89,41 @@ After insertion:
     Unwarning is appended at the end (index 102).
 
 The LLM context will now start at the new summary system message (index 85) and include everything after it – i.e., the kept turns (originally 85…100) plus the unwarning. Old messages (0…84) are excluded.
-4. Token Warnings and Their Lifecycle
+4. Token Warnings and Their Lifecycle (Revised)
+
 4.1 Generation
 
-AgentState.update_token_state() (in agent/core/state.py) monitors total tokens against thresholds:
+AgentState.update_token_state() monitors total tokens against two thresholds (configurable, defaults below):
+- token_monitor_warning_threshold (default 35k) → soft warning.
+- token_monitor_critical_threshold (default 50k) → critical warning.
 
-    token_monitor_warning_threshold (default 35k) → emits a light warning.
+No countdown is started. The agent is informed of the thresholds and the required action (summarise).
 
-    token_monitor_critical_threshold (default 50k) → emits a critical warning and starts a countdown (default 5 turns).
+4.2 Warning Messages
 
-4.2 Injection into user_history
+All warnings are injected as messages with role='user', content prefixed by [SYSTEM NOTIFICATION], and "is_system_notification": true.
 
-Warnings are added as messages with role="user" and content prefixed by [SYSTEM NOTIFICATION].
-They are appended to user_history at the moment they are triggered.
-4.3 Inclusion in LLM Context
+Soft warning example:
+[SYSTEM NOTIFICATION] Token usage warning: Conversation is nearing context window limits (50k tokens). Critical threshold is at 60k tokens. This is not a problem: simply use SummarizeTool to summarise the session and keep a number of recent turns. The summary will free up the context window and you can continue working smoothly.
 
-    If a warning appears before the latest summary system message, it is excluded from the LLM context (stale).
+Critical warning example:
+[SYSTEM NOTIFICATION] CRITICAL: Token limit reached (60k tokens). Tool restrictions will apply starting next turn. Call SummarizeTool now to free context and continue.
 
-    If it appears after the summary, it is included (current).
+4.3 Tool Restrictions (Two-Phase)
 
-Bug fixed earlier: The context builder originally filtered all warnings from post_summary (including current ones). That was corrected by removing the warning‑filtering block in SummaryBuilder.build(). Now only the insertion index decides inclusion.
+On critical warning:
+- restrictions_pending = True
+- Same turn: all tools remain allowed. The agent can call SummarizeTool immediately.
+- Next turn (if token state is still CRITICAL): restrictions_active = True. From that turn onward, only SummarizeTool, Final, and FinalReport are allowed.
+- If the agent summarises in the same turn, token count drops below critical, and both flags are cleared. No restrictions apply.
 
-4.4 System Notification Metadata Flag
+4.4 No Countdown, No "Expired" Notifications
 
-All system notifications (token warnings, turn warnings, countdown expiry, context cleared / unwarning) now carry a metadata flag:
+The previous countdown logic (5‑turn grace period, countdown expiration events) has been removed. The agent never receives a "[SYSTEM NOTIFICATION] Token countdown expired" message. The simplified model eliminates race conditions and ordering bugs.
 
-{
-"role": "user",
-"content": "[...]",
-"is_system_notification": true
-}
+4.5 Turn‑Based Warnings
 
-This flag is used only in turn counting and summary insertion logic: in _find_summary_insertion_index and _group_messages_into_turns. Notifications with this flag are skipped when determining turn boundaries, ensuring that they never affect where a summary is inserted. However, they are not excluded from the LLM context; they appear in the context as normal user messages, preserving chronological order.
-
-Old sessions (without the flag) are still supported via fallback content-based checks for [SYSTEM NOTIFICATION] and [SYSTEM NOTIFICATION] patterns. The previously missing four-asterisk pattern [SYSTEM NOTIFICATION] has also been added to the fallback.
-
-Because the flag prevents notifications from shifting the insertion index, they stay in their original chronological order relative to user and assistant messages. The LLM sees them in the correct sequence, and summarisation no longer causes expired warnings or other system notifications to appear out of place.
+The same logic applies to turn limits. When turn count reaches critical percentage (default 95% of max_turns), a critical turn warning is issued with the same two‑phase restriction behaviour. Summarisation does not reset the turn counter but may reduce token count and indirectly avoid turn‑based restrictions.
 
 
 5. The Unwarning Placement Fix (Critical)
@@ -160,13 +159,9 @@ text
 [new user message ...]            ← kept turns (if any)
 
 The LLM context starts at the inserted summary system message (which is at the turn boundary, before the kept turns). The old warning is before that boundary → excluded. The unwarning is after the boundary → included, in correct chronological order.
-6. Interaction Between user_history and LLM Context
-Aspect	user_history	LLM Context
-Content	All messages ever added	Subset: system prompt + latest summary + messages after it
-Mutability	Append‑only (except summary insertion)	Rebuilt on every LLM call
-Includes warnings	All warnings ever added	Only warnings that appear after the latest summary
-Includes summary	Two copies: system message (inserted) + tool result (appended)	Only the system message (tool result is before the summary boundary)
-GUI display	Shows everything	Not used by GUI
+6. Interaction Between user_history and LLM Context (No change)
+
+Aspect remains as before. The new flags restrictions_pending and restrictions_active are runtime only, not stored in user_history. Notifications are stored normally.
 
 The GUI reads directly from user_history; the LLM reads from the filtered context. This separation allows full history preservation while respecting token limits.
 7. Key Code Locations
@@ -217,18 +212,19 @@ To verify correct behaviour after a summarisation:
 
 10. Summary
 
-The pruning mechanism successfully balances token efficiency with conversation continuity by:
+The pruning mechanism:
+- Keeps immutable full history (user_history).
+- Inserts a summary system message at a turn boundary.
+- Builds LLM context starting from that summary.
+- Appends an unwarning after the summary tool result.
+- Excludes messages before the summary from LLM context.
 
-    Keeping an immutable full history (user_history).
+Token warning flow (simplified):
+- Soft warning informs about thresholds.
+- Critical warning triggers one‑turn grace to summarise.
+- No countdown, no expiration messages.
+- Tool restrictions apply only after the turn if the agent fails to summarise.
 
-    Inserting a summary system message at a turn boundary.
+This removes all previous race conditions and fragility while keeping the agent fully informed.
 
-    Building the LLM context starting from that summary.
-
-    Appending an unwarning after the summary tool result for correct chronology.
-
-    Excluding messages before the summary from the LLM context.
-
-The recent fix for unwarning placement resolved the last major ordering issue, making the agent reliably aware of context resets. The system is now stable and ready for production use.
-
-Document version: 1.0 – Last updated: 2026‑04‑21
+Document version: 1.0 – Last updated: 2026‑04‑26

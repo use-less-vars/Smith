@@ -34,8 +34,9 @@ class MarkdownRenderer:
             body_match = re.search(r'<body[^>]*>(.*?)</body>', html_result, re.IGNORECASE | re.DOTALL)
             if body_match:
                 body_content = body_match.group(1).strip()
-                # Also need to include any styles in the head
-                # For simplicity, we'll just use the body content
+                # Keep <p> elements as-is. Qt DOES support font-size on <p> elements
+                # when set via inline style, but NOT on nested <div> elements.
+                # The previous <p>-><div> conversion broke font-size propagation.
                 html_result = body_content
             else:
                 # If no body tag found, strip any DOCTYPE, html, head tags
@@ -191,14 +192,16 @@ class MarkdownRenderer:
                     list_type = None
                 continue
 
-            # Regular text line
+            # Regular text line — MUST wrap in <p> so _inject_bg can add font-size
             if not in_paragraph:
                 in_paragraph = True
-            result_lines.append(line)
+                result_lines.append(f'<p>{line}')
+            else:
+                result_lines.append(f'<br/>{line}')
 
         # Close any open structures
         if in_paragraph:
-            result_lines.append('<br/>')
+            result_lines.append('</p>')
         if in_list:
             result_lines.append(f'</{list_type}>')
 

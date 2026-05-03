@@ -3,9 +3,10 @@ Session management data models.
 
 Defines the core concepts:
 - RuntimeParams: Mutable parameters for LLM generation (temperature, max_tokens, top_p)
-- SessionConfig: Immutable session-level configuration (model, system_prompt, toolset, safety_settings)
 - ContainerMetadata: Metadata for session-scoped containers (not the live objects)
 - Session: The atomic conversation unit containing all state.
+
+Backward compatibility: Old sessions with 'config' key are migrated to metadata['agent_config'].
 """
 from dataclasses import dataclass, field, asdict
 from datetime import datetime
@@ -106,26 +107,7 @@ class RuntimeParams:
         """Create from dictionary."""
         return cls(**data)
 
-@dataclass(frozen=True)
-class SessionConfig:
-    """Immutable session-level configuration. Set at creation and cannot be changed."""
-    model: str
-    system_prompt: str
-    toolset: List[str] = field(default_factory=list)
-    safety_settings: Optional[Dict[str, Any]] = None
-    initial_params: RuntimeParams = field(default_factory=RuntimeParams)
 
-    def to_dict(self) -> Dict[str, Any]:
-        """Convert to dictionary."""
-        result = {'model': self.model, 'system_prompt': self.system_prompt, 'toolset': self.toolset, 'safety_settings': self.safety_settings, 'initial_params': self.initial_params.to_dict()}
-        return result
-
-    @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> 'SessionConfig':
-        """Create from dictionary."""
-        init_params_data = data.pop('initial_params', {})
-        init_params = RuntimeParams.from_dict(init_params_data) if init_params_data else RuntimeParams()
-        return cls(initial_params=init_params, **data)
 
 @dataclass
 class ContainerMetadata:
@@ -150,7 +132,7 @@ class Session:
     session_id: str = field(default_factory=lambda: str(uuid.uuid4()))
     created_at: datetime = field(default_factory=datetime.now)
     updated_at: datetime = field(default_factory=datetime.now)
-    config: SessionConfig = field(default_factory=lambda: SessionConfig(model='deepseek-reasoner', system_prompt='You are a helpful assistant.', toolset=[]))
+
     runtime_params: RuntimeParams = field(default_factory=RuntimeParams)
     user_history: List[Dict[str, Any]] = field(default_factory=list)
     total_input_tokens: int = 0
@@ -182,27 +164,17 @@ class Session:
 
     def _wrap_user_history(self):
         """Wrap user_history with ObservableList if not already wrapped."""
-        if os.environ.get('THOUGHTMACHINE_DEBUG') == '1':
-            import sys
-            log('DEBUG', 'debug.unknown', f"[Session] _wrap_user_history called, session_id={self.session_id}, is_ObservableList={isinstance(self.user_history, ObservableList)}, type={type(self.user_history)}, len={(len(self.user_history) if hasattr(self.user_history, '__len__') else 'N/A')}")
+        log('DEBUG', 'debug.unknown', f"[Session] _wrap_user_history called, session_id={self.session_id}, is_ObservableList={isinstance(self.user_history, ObservableList)}, type={type(self.user_history)}, len={(len(self.user_history) if hasattr(self.user_history, '__len__') else 'N/A')}")
         if not isinstance(self.user_history, ObservableList):
-            if os.environ.get('THOUGHTMACHINE_DEBUG') == '1':
-                import sys
-                log('DEBUG', 'debug.unknown', f'[Session] _wrap_user_history: Creating ObservableList from current user_history')
+            log('DEBUG', 'debug.unknown', f'[Session] _wrap_user_history: Creating ObservableList from current user_history')
             new_list = ObservableList(self.user_history, callback=self._on_conversation_changed)
-            if os.environ.get('THOUGHTMACHINE_DEBUG') == '1':
-                import sys
-                log('DEBUG', 'debug.unknown', f'[Session] _wrap_user_history: Created ObservableList, id={id(new_list)}, len={len(new_list)}')
+            log('DEBUG', 'debug.unknown', f'[Session] _wrap_user_history: Created ObservableList, id={id(new_list)}, len={len(new_list)}')
             self.user_history = new_list
         else:
             self.user_history.callback = self._on_conversation_changed
-            if os.environ.get('THOUGHTMACHINE_DEBUG') == '1':
-                import sys
-                log('DEBUG', 'debug.unknown', f'[Session] _wrap_user_history: Already ObservableList, ensuring session callback, id={id(self.user_history)}, len={len(self.user_history)}')
-        if os.environ.get('THOUGHTMACHINE_DEBUG') == '1':
-            import sys
-            callback_repr = self.user_history.callback.__qualname__ if self.user_history.callback else None
-            log('DEBUG', 'debug.unknown', f'[Session] _wrap_user_history: after, len={len(self.user_history)}, id={id(self.user_history)}, callback={callback_repr}')
+            log('DEBUG', 'debug.unknown', f'[Session] _wrap_user_history: Already ObservableList, ensuring session callback, id={id(self.user_history)}, len={len(self.user_history)}')
+        callback_repr = self.user_history.callback.__qualname__ if self.user_history.callback else None
+        log('DEBUG', 'debug.unknown', f'[Session] _wrap_user_history: after, len={len(self.user_history)}, id={id(self.user_history)}, callback={callback_repr}')
 
     def _get_next_seq(self) -> int:
         """Return the next sequence number and increment the counter."""
@@ -298,7 +270,7 @@ class Session:
         Convert session to a dictionary suitable for JSON serialization.
         Excludes non-persistable fields like agent_context (derived) and objects.
         """
-        data = {'session_id': self.session_id, 'created_at': self.created_at.isoformat(), 'updated_at': datetime.now().isoformat(), 'config': self.config.to_dict(), 'runtime_params': self.runtime_params.to_dict(), 'user_history': list(self.user_history), 'containers': [c.to_dict() for c in self.containers], 'preset_name': self.preset_name, 'metadata': self.metadata, 'security_config': self.security_config, 'version': self.version, 'summary': self.summary, 'total_input_tokens': self.total_input_tokens, 'total_output_tokens': self.total_output_tokens, 'context_length': self.context_length}
+        data = {'session_id': self.session_id, 'created_at': self.created_at.isoformat(), 'updated_at': datetime.now().isoformat(), 'runtime_params': self.runtime_params.to_dict(), 'user_history': list(self.user_history), 'containers': [c.to_dict() for c in self.containers], 'preset_name': self.preset_name, 'metadata': self.metadata, 'security_config': self.security_config, 'version': self.version, 'summary': self.summary, 'total_input_tokens': self.total_input_tokens, 'total_output_tokens': self.total_output_tokens, 'context_length': self.context_length}
         return data
 
     @classmethod
@@ -306,8 +278,12 @@ class Session:
         """Reconstruct a Session from a persisted dictionary."""
         created_at = datetime.fromisoformat(data.get('created_at', '')) if data.get('created_at') else datetime.now()
         updated_at = datetime.fromisoformat(data.get('updated_at', '')) if data.get('updated_at') else datetime.now()
-        config_data = data.get('config', {})
-        config = SessionConfig.from_dict(config_data) if config_data else SessionConfig()
+        # Backward compat: migrate old 'config' key to metadata['agent_config']
+        config_data = data.pop('config', None)
+        metadata = data.get('metadata', {})
+        if config_data and 'agent_config' not in metadata:
+            if isinstance(config_data, dict):
+                metadata['agent_config'] = config_data
         runtime_params_data = data.get('runtime_params', {})
         runtime_params = RuntimeParams.from_dict(runtime_params_data) if runtime_params_data else RuntimeParams()
         user_history = data.get('user_history', [])
@@ -327,11 +303,10 @@ class Session:
         next_seq_value = max(data.get('next_seq', 0), max_seq + 1)
         containers_data = data.get('containers', [])
         containers = [ContainerMetadata.from_dict(c) for c in containers_data]
-        metadata = data.get('metadata', {})
         security_config_data = data.get('security_config', {})
         security_config = merge_security_config(security_config_data)
         version = data.get('version', 1)
-        session = cls(session_id=str(data.get('session_id', str(uuid.uuid4()))), created_at=created_at, updated_at=updated_at, config=config, runtime_params=runtime_params, user_history=user_history, containers=containers, preset_name=data.get('preset_name'), metadata=metadata, security_config=security_config, version=version, summary=data.get('summary'), total_input_tokens=data.get('total_input_tokens', 0), total_output_tokens=data.get('total_output_tokens', 0), next_seq=next_seq_value, context_length=data.get('context_length', 0))
+        session = cls(session_id=str(data.get('session_id', str(uuid.uuid4()))), created_at=created_at, updated_at=updated_at, runtime_params=runtime_params, user_history=user_history, containers=containers, preset_name=data.get('preset_name'), metadata=metadata, security_config=security_config, version=version, summary=data.get('summary'), total_input_tokens=data.get('total_input_tokens', 0), total_output_tokens=data.get('total_output_tokens', 0), next_seq=next_seq_value, context_length=data.get('context_length', 0))
         return session
 
     def update_from_persistable_dict(self, data: Dict[str, Any]) -> None:
@@ -339,8 +314,12 @@ class Session:
         old_history = self.user_history
         created_at = datetime.fromisoformat(data.get('created_at', '')) if data.get('created_at') else datetime.now()
         updated_at = datetime.fromisoformat(data.get('updated_at', '')) if data.get('updated_at') else datetime.now()
-        config_data = data.get('config', {})
-        config = SessionConfig.from_dict(config_data) if config_data else SessionConfig()
+        # Backward compat: migrate old 'config' key to metadata['agent_config']
+        config_data = data.pop('config', None)
+        metadata = data.get('metadata', {})
+        if config_data and 'agent_config' not in metadata:
+            if isinstance(config_data, dict):
+                metadata['agent_config'] = config_data
         runtime_params_data = data.get('runtime_params', {})
         runtime_params = RuntimeParams.from_dict(runtime_params_data) if runtime_params_data else RuntimeParams()
         user_history = data.get('user_history', [])
@@ -360,14 +339,12 @@ class Session:
         next_seq_value = max(data.get('next_seq', 0), max_seq + 1)
         containers_data = data.get('containers', [])
         containers = [ContainerMetadata.from_dict(c) for c in containers_data]
-        metadata = data.get('metadata', {})
         security_config_data = data.get('security_config', {})
         security_config = merge_security_config(security_config_data)
         version = data.get('version', 1)
         self.session_id = str(data.get('session_id', str(uuid.uuid4())))
         self.created_at = created_at
         self.updated_at = updated_at
-        self.config = config
         self.runtime_params = runtime_params
         old_history.clear()
         old_history.extend(user_history)

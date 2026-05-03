@@ -78,8 +78,6 @@ class EventProcessor:
             self._process_token_warning_event(event)
         elif event_type == 'turn_warning':
             self._process_turn_warning_event(event)
-        elif event_type in ['token_critical_countdown_start', 'turn_critical_countdown_start', 'token_critical_countdown_expired', 'turn_critical_countdown_expired']:
-            self._process_critical_countdown_event(event, event_type)
         if self.gui_integration:
             self.gui_integration.emit_status_message(f'Event: {event_type}')
 
@@ -209,15 +207,6 @@ class EventProcessor:
             if hasattr(self.gui_integration, 'emit_warning'):
                 self.gui_integration.emit_warning(f'Turn limit warning: {turn_count} turns')
 
-    def _process_critical_countdown_event(self, event: Dict[str, Any], event_type: str) -> None:
-        """Process critical countdown event."""
-        resource = 'token' if 'token' in event_type else 'turn'
-        action = 'started' if 'start' in event_type else 'expired'
-        message = event.get('message', f'{resource.upper()} critical countdown {action}')
-        if self.gui_integration:
-            self.gui_integration.emit_status_message(f'Critical countdown: {message}')
-            if hasattr(self.gui_integration, 'emit_warning'):
-                self.gui_integration.emit_warning(f'{resource.upper()} critical: {action}')
 
     def _extract_token_counts(self, event: Dict[str, Any]) -> tuple[Optional[int], Optional[int]]:
         """Extract token counts from event."""

@@ -18,7 +18,7 @@ from tools.summarize_tool import SummarizeTool
 class ToolExecutor:
     """Handles tool execution, JSON repair, and tool result processing."""
 
-    def __init__(self, tool_classes, config, state, logger=None, security_available=False):
+    def __init__(self, tool_classes, config, state, logger=None, security_available=False, agent=None):
         """
         Initialize tool executor.
         
@@ -28,26 +28,28 @@ class ToolExecutor:
             state: AgentState instance for tool allowance checking.
             logger: Optional logger instance.
             security_available: Whether security module is available.
+            agent: Optional Agent instance for token update callbacks.
         """
         self.tool_classes = tool_classes
         self.config = config
         self.state = state
         self.logger = logger
         self.security_available = security_available
+        self.agent = agent
         if security_available:
             from thoughtmachine.security import CapabilityRegistry
             self.CapabilityRegistry = CapabilityRegistry
         else:
             self.CapabilityRegistry = None
 
-    def execute_tool_calls(self, tool_calls: List[Dict[str, Any]], add_to_conversation_func, update_token_func, agent_id: int, turn_transaction: Optional[TurnTransaction]=None) -> Tuple[List[Dict[str, Any]], bool, Optional[str], Optional[str], Optional[str], Optional[int]]:
+    def execute_tool_calls(self, tool_calls: List[Dict[str, Any]], add_to_conversation_func, update_token_func=None, agent_id: int = 0, turn_transaction: Optional[TurnTransaction]=None) -> Tuple[List[Dict[str, Any]], bool, Optional[str], Optional[str], Optional[str], Optional[int]]:
         """
         Execute multiple tool calls from an assistant message.
         
         Args:
             tool_calls: List of tool call dictionaries from LLM.
             add_to_conversation_func: Function to add messages to conversation.
-            update_token_func: Function to update token count and yield events.
+            update_token_func: Deprecated, use agent._update_tokens_after_tool.
             agent_id: ID of the agent for security checks.
             turn_transaction: Optional TurnTransaction to buffer messages (if None, use add_to_conversation_func).
             
@@ -60,6 +62,12 @@ class ToolExecutor:
             - summary_text: Summary text if SummarizeTool was called
             - summary_keep_recent_turns: Number of turns to keep for summarization
         """
+        # Resolve update_token_func: if not provided, use agent._update_tokens_after_tool
+        if update_token_func is None:
+            if self.agent is not None:
+                update_token_func = self.agent._update_tokens_after_tool
+            else:
+                update_token_func = lambda x: None
         executed_tools = []
         final_detected = False
         final_content = None
@@ -182,10 +190,16 @@ class ToolExecutor:
         except Exception as e:
             return {'result': f'Error executing tool: {e}', 'tool_type': 'normal'}
 
+    def close(self):
+        """Close and release any resources held by this executor."""
+        self.tool_classes = []
+        self.agent = None
+        self.state = None
+
     def _create_tool_rejection_message(self, tool_name: str) -> str:
         """Create rejection message for disallowed tool calls."""
         allowed_tools = self.state.get_allowed_tools()
         if allowed_tools:
-            return f"❌ TOOL CALL REJECTED ❌\n\nYou attempted to use '{tool_name}', which is currently FORBIDDEN.\n\nCurrent state: CRITICAL token countdown expired (restrictions active)\nREQUIRED ACTION: SummarizeTool\nWhy: Token limit exceeded - conversation must be pruned before continuing.\n\nYou may call:\n- SummarizeTool (to prune and continue)\n- Final (to end conversation)\n- FinalReport (to end with report)\n\nCall SummarizeTool NOW to proceed."
+            return f"❌ TOOL CALL REJECTED ❌\n\nYou attempted to use '{tool_name}', which is currently FORBIDDEN.\n\nCurrent state: restrictions_active (limit exceeded)\nREQUIRED ACTION: SummarizeTool\nWhy: Token or turn limits exceeded - conversation must be pruned before continuing.\n\nYou may call:\n- SummarizeTool (to prune and continue)\n- Final (to end conversation)\n- FinalReport (to end with report)\n\nCall SummarizeTool NOW to proceed."
         else:
             return f"❌ TOOL CALL REJECTED ❌\n\nYou attempted to use '{tool_name}', which is currently FORBIDDEN.\n\nCurrent state: token_state={self.state.token_state.value}, turn_state={self.state.turn_state.value}\nPossible reasons: Token or turn limits exceeded with active restrictions.\n\nCheck system warnings for required actions."

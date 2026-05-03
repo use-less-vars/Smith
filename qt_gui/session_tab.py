@@ -23,6 +23,7 @@ from qt_gui.panels.output_panel import OutputPanel
 from qt_gui.panels.query_panel import QueryPanel
 from qt_gui.panels.status_panel import StatusPanel
 from qt_gui.panels.agent_controls import AgentControlsPanel
+from agent.config import AgentConfig
 
 class SessionTab(QWidget):
 
@@ -40,16 +41,12 @@ class SessionTab(QWidget):
         self.current_theme = None
         self.last_history = None
         self._cached_config = None
+        self.working_config = None  # Will hold Optional[AgentConfig]
         self._display_turn = 0
         self._display_retry_count = 0
         self._last_conversation_version = 0
         self._displayed_message_count = 0
-        self._loading_config = False
         self._closing = False
-        self._auto_save_timer = QTimer(self)
-        self._auto_save_timer.setInterval(120000)
-        self._auto_save_timer.timeout.connect(self._auto_save_session)
-        self._auto_save_timer.start()
         self.output_panel = OutputPanel(self)
         self.query_panel = QueryPanel(self)
         self.output_textedit = self.output_panel.output_textedit
@@ -58,7 +55,6 @@ class SessionTab(QWidget):
         self.query_entry = self.query_panel.query_entry
         self.run_btn = self.query_panel.run_btn
         self.pause_btn = self.query_panel.pause_btn
-        self.restart_btn = self.query_panel.restart_btn
         self.init_ui()
         self.setup_signal_connections()
         self._conversation_debounce_timer = QTimer(self)
@@ -113,26 +109,24 @@ class SessionTab(QWidget):
 
     def create_new_session(self):
         """Create fresh session with auto-generated name."""
-        from session.models import Session, SessionConfig
+        from session.models import Session
         import uuid
         from datetime import datetime
         from agent.logging import log
         try:
             agent_config = self.presenter.create_agent_config()
-            session_config = self.presenter._build_session_config(agent_config)
         except Exception as e:
             from PyQt6.QtWidgets import QMessageBox
             QMessageBox.critical(self, 'Session Error', f'Failed to create session configuration: {e}')
             return
         old_session_id = self.session.session_id if self.session else None
         log('DEBUG', 'debug.unknown', f'[CALLBACK] create_new_session: replacing session {old_session_id} with new session')
-        self.session = Session(session_id=str(uuid.uuid4()), config=session_config, user_history=[], metadata={})
+        self.session = Session(session_id=str(uuid.uuid4()), user_history=[], metadata={'agent_config': agent_config.model_dump()})
         log('DEBUG', 'debug.unknown', f'[SessionTab] Binding session to presenter, session: {self.session}')
         self.presenter.bind_session(self.session)
         self.presenter.save_session()
         self.update_window_title()
-        if os.environ.get('THOUGHTMACHINE_DEBUG') == '1':
-            log('DEBUG', 'debug.unknown', f'Created new session: {self.session.session_id}')
+        log('DEBUG', 'debug.unknown', f'Created new session: {self.session.session_id}')
 
     def load_session_by_id(self, session_id: str) -> bool:
         """Load a session by ID from the session store."""
@@ -142,8 +136,7 @@ class SessionTab(QWidget):
         if self.session is None:
             log('DEBUG', 'debug.unknown', f'Creating placeholder session for loading')
             agent_config = self.presenter.create_agent_config()
-            session_config = self.presenter._build_session_config(agent_config)
-            self.session = Session(session_id=session_id, config=session_config, user_history=[], metadata={})
+            self.session = Session(session_id=session_id, user_history=[], metadata={'agent_config': agent_config.model_dump()})
             self.presenter.bind_session(self.session)
         try:
             log('DEBUG', 'debug.unknown', f'Calling presenter.load_session_by_id({session_id}, target_session=self.session)')
@@ -254,6 +247,7 @@ class SessionTab(QWidget):
             filtered_tool_classes = SIMPLIFIED_TOOL_CLASSES
         self.agent_controls_panel = AgentControlsPanel(filtered_tool_classes)
         right_layout.addWidget(self.agent_controls_panel)
+        self.agent_controls_panel.apply_to_agent_requested.connect(self._on_apply_runtime_params)
         self.agent_controls_panel.on_mcp_config_changed = self._refresh_tools
         self.agent_controls_panel.set_workspace_btn.clicked.connect(self.set_workspace)
         self.agent_controls_panel.clear_workspace_btn.clicked.connect(self.clear_workspace)
@@ -277,7 +271,6 @@ class SessionTab(QWidget):
         right_layout.addWidget(self.query_panel)
         self.query_panel.run_btn.clicked.connect(self.run_agent)
         self.query_panel.pause_btn.clicked.connect(self.pause_agent)
-        self.query_panel.restart_btn.clicked.connect(self.restart_session)
         splitter.addWidget(right_container)
         splitter.setSizes([200, 150, 1050])
         main_layout.addWidget(splitter)
@@ -287,7 +280,6 @@ class SessionTab(QWidget):
     def setup_accessibility(self):
         """Set up accessibility features: keyboard navigation, screen reader support, tooltips."""
         self.run_btn.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
-        self.restart_btn.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.pause_btn.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.agent_controls_panel.toggle_button.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.agent_controls_panel.set_workspace_btn.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
@@ -308,8 +300,6 @@ class SessionTab(QWidget):
         self.output_textedit.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.run_btn.setAccessibleName('Run agent')
         self.run_btn.setAccessibleDescription('Start executing the agent with the current query')
-        self.restart_btn.setAccessibleName('Restart session')
-        self.restart_btn.setAccessibleDescription('Restart the agent session with fresh context')
         self.pause_btn.setAccessibleName('Pause agent')
         self.pause_btn.setAccessibleDescription('Pause the currently running agent')
         self.filter_lineedit.setAccessibleName('Event filter')
@@ -344,7 +334,6 @@ class SessionTab(QWidget):
             checkbox.setAccessibleName(f'Tool: {name}')
             checkbox.setAccessibleDescription(f'Enable or disable {name} tool')
         self.run_btn.setToolTip('Run the agent (Ctrl+R)')
-        self.restart_btn.setToolTip('Restart the session (Ctrl+Shift+R)')
         self.pause_btn.setToolTip('Pause the agent (Ctrl+P)')
         self.agent_controls_panel.toggle_button.setToolTip('Show/hide agent controls (Ctrl+T)')
         self.agent_controls_panel.set_workspace_btn.setToolTip('Set workspace directory')
@@ -364,8 +353,6 @@ class SessionTab(QWidget):
         self.run_shortcut.activated.connect(self.run_agent)
         self.pause_shortcut = QShortcut(QKeySequence('Ctrl+P'), self)
         self.pause_shortcut.activated.connect(self.pause_agent)
-        self.restart_shortcut = QShortcut(QKeySequence('Ctrl+Shift+R'), self)
-        self.restart_shortcut.activated.connect(self.restart_session)
         self.focus_query_shortcut = QShortcut(QKeySequence('Ctrl+L'), self)
         self.focus_query_shortcut.activated.connect(lambda: self.query_entry.setFocus())
         self.focus_filter_shortcut = QShortcut(QKeySequence('Ctrl+F'), self)
@@ -420,7 +407,6 @@ class SessionTab(QWidget):
         elif state == ExecutionState.STOPPING:
             self.status_panel.update_status('Stopping…')
             self.run_btn.setEnabled(False)
-            self.restart_btn.setEnabled(False)
             self.pause_btn.setEnabled(False)
         elif state == ExecutionState.MAX_TURNS_REACHED:
             self.status_panel.update_status('Max turns reached')
@@ -503,7 +489,8 @@ class SessionTab(QWidget):
     def run_agent(self):
         """Start or continue agent with current query."""
         query = self.query_entry.toPlainText().strip()
-        config_dict = self.agent_controls_panel.get_config_dict()
+        agent_config = self.agent_controls_panel.get_config()
+        config_dict = agent_config.model_dump()
         preset_name = config_dict.pop('preset_name', None)
         self.presenter.update_config(config_dict)
         current_state = self.presenter.state
@@ -561,26 +548,6 @@ class SessionTab(QWidget):
         self.update_buttons(running=False)
         self.update_window_title()
 
-    def restart_session(self):
-        """Restart the agent with current configuration, staying in the same session."""
-        query = self.query_entry.toPlainText().strip()
-        max_turn = 0
-        if self.presenter.current_session and hasattr(self.presenter.current_session, 'user_history'):
-            for event in self.presenter.current_session.user_history:
-                turn = event.get('turn', 0)
-                if turn > max_turn:
-                    max_turn = turn
-        self._display_turn = max_turn
-        config = self.agent_controls_panel.get_config_dict()
-        self.presenter.update_config(config)
-        try:
-            self.presenter.restart_session(query)
-        except Exception as e:
-            QMessageBox.critical(self, 'Session Error', f'Failed to restart session: {e}')
-        self.status_panel.update_status('Ready for new session')
-        self.update_buttons(running=False)
-        self.update_window_title()
-
     def update_buttons(self, running=None, idle=False):
         """Update button states based on agent state."""
         if running is None:
@@ -589,32 +556,54 @@ class SessionTab(QWidget):
         if running:
             if idle:
                 self.run_btn.setEnabled(True)
-                self.restart_btn.setEnabled(True)
                 self.pause_btn.setEnabled(False)
                 self.status_panel.update_status('Ready for next query')
             else:
                 self.run_btn.setEnabled(False)
-                self.restart_btn.setEnabled(False)
                 self.pause_btn.setEnabled(True)
                 self.status_panel.update_status('Running')
         else:
             self.run_btn.setEnabled(True)
-            self.restart_btn.setEnabled(True)
             self.pause_btn.setEnabled(False)
             self.status_panel.update_status('Ready')
 
     def load_config(self):
-        """Load configuration from file and update controls."""
-        self._loading_config = True
+        """Load configuration from file and update controls.
+
+        Layered merge (not exclusive priority):
+        1. Layer in global config (file) — provides workspace_path and all persisted fields
+        2. Layer in session.metadata['agent_config'] (full config dict) — highest priority
+
+        Each layer fills in fields the previous layer doesn't have, so fields like
+        workspace_path from global config survive unless explicitly overridden.
+        """
         try:
-            config = self.config_bridge.get_config()
+            config = {}
+            session = getattr(self.presenter, 'current_session', None)
+
+            # Layer 3 (base): Global config file — contains workspace_path and all persisted fields
+            global_config = self.config_bridge.get_config()
+            config.update(global_config)
+            log('DEBUG', 'session_tab', f'Layer global config ({len(global_config)} keys): workspace_path={global_config.get("workspace_path", "NOT_IN_DICT")}')
+            log('DEBUG', 'core.config', f'[CONFIG_TRACE] load_config layer global: workspace_path={config.get("workspace_path", "NOT_IN_DICT")}')
+
+            # Layer 2: session.metadata['agent_config'] (stored AgentConfig dict)
+            if session is not None and 'agent_config' in session.metadata:
+                session_config = session.metadata['agent_config']
+                if session_config:
+                    config.update(session_config)
+                    log('DEBUG', 'session_tab', f'Layer session.metadata agent_config ({len(session_config)} keys): workspace_path={config.get("workspace_path", "NOT_IN_DICT")}')
+                    log('DEBUG', 'core.config', f'[CONFIG_TRACE] load_config layer session.metadata agent_config: workspace_path={config.get("workspace_path", "NOT_IN_DICT")}')
+
+
+            agent_config = AgentConfig(**config)
+            self.working_config = agent_config
+            log('DEBUG', 'core.config', f'[CONFIG_TRACE] load_config final merged config: token_monitor_warning_threshold={config.get("token_monitor_warning_threshold", "NOT_IN_DICT")}, token_monitor_critical_threshold={config.get("token_monitor_critical_threshold", "NOT_IN_DICT")}, warning_threshold={config.get("warning_threshold", "NOT_IN_DICT")}, critical_threshold={config.get("critical_threshold", "NOT_IN_DICT")}')
             self._refresh_tools()
-            self.agent_controls_panel.set_config_dict(config)
+            self.agent_controls_panel.set_config(agent_config)
             self.presenter.update_config(config)
         except Exception as e:
-            pass
-        finally:
-            self._loading_config = False
+            log('ERROR', 'session_tab', f'load_config error: {e}')
 
     def _on_config_changed(self, config):
         """Handle configuration changes from bridge (e.g., file changed)."""
@@ -626,13 +615,12 @@ class SessionTab(QWidget):
         Args:
             immediate: If True, save immediately; otherwise use debounced save
         """
-        log('DEBUG', 'debug.unknown', f'save_config called: immediate={immediate}, _loading_config={self._loading_config}')
-        if self._loading_config:
-            return
         try:
-            config = self.agent_controls_panel.get_config_dict()
-            log('DEBUG', 'debug.unknown', f'save_config: config keys: {list(config.keys())}')
-            self.config_bridge.save_config(config, immediate=immediate)
+            agent_config = self.agent_controls_panel.get_config()
+            self.working_config = agent_config
+            config_dict = agent_config.model_dump()
+            log('DEBUG', 'debug.unknown', f'save_config: config keys: {list(config_dict.keys())}')
+            self.config_bridge.save_config(config_dict, immediate=immediate)
             log('DEBUG', 'debug.unknown', 'save_config: bridge save completed')
         except Exception as e:
             log('ERROR', 'debug.unknown', f'save_config error: {e}')
@@ -642,13 +630,62 @@ class SessionTab(QWidget):
         self.agent_controls_panel.update_model_suggestions()
         self._handle_config_change()
 
+    def _on_apply_runtime_params(self, config: AgentConfig):
+        """Handle Apply to Agent button press.
+
+        Receives AgentConfig directly (already validated by the panel).
+        Queues it via the mailbox pattern. The agent decides internally
+        whether to hot-swap or restart at the next process_query() boundary.
+        """
+        log('DEBUG', 'core.config', f'[CONFIG_TRACE] _on_apply_runtime_params start: provider={config.provider_type}, model={config.model}')
+        log('DEBUG', 'core.config', f'[CONFIG_TRACE] _on_apply_runtime_params token_monitor: warning_threshold={config.token_monitor_warning_threshold}, critical_threshold={config.token_monitor_critical_threshold}, warning_threshold_raw={getattr(config, "warning_threshold", "N/A")}, critical_threshold_raw={getattr(config, "critical_threshold", "N/A")}')
+
+        # Queue via mailbox pattern — agent decides hot-swap vs restart
+        if self.presenter.controller is not None:
+            self.presenter.controller.request_config_update(config)
+            log('INFO', 'session_tab', f'Configuration update queued: provider={config.provider_type}, model={config.model}')
+            # Persist the updated config (including workspace_path) to session metadata immediately
+            # so that the new workspace survives agent restart and session reload.
+            self.working_config = config
+            # Sync state_bridge._config so auto-save picks up the new workspace_path
+            self.presenter.update_config(config.model_dump())
+            log('DEBUG', 'core.config', '[CONFIG_TRACE] after presenter.update_config')
+            self._save_config_to_session()
+            log('DEBUG', 'core.config', '[CONFIG_TRACE] after _save_config_to_session')
+
     def _handle_config_change(self):
-        """Handle configuration change from UI controls."""
-        if self._loading_config:
+        """Handle configuration change from UI controls — update runtime state only."""
+        agent_config = self.agent_controls_panel.get_config()
+        self.working_config = agent_config
+        self.presenter.update_config(agent_config.model_dump())
+
+    def _save_config_to_session(self):
+        """Save agent_config to current session metadata for per-session persistence.
+
+        Uses session.metadata['agent_config'] as the single source of truth.
+        """
+        if not hasattr(self.presenter, 'current_session') or self.presenter.current_session is None:
+            log('DEBUG', 'session_tab', '_save_config_to_session: no current session, skipping')
             return
-        config = self.agent_controls_panel.get_config_dict()
-        self.presenter.update_config(config)
-        self._schedule_config_save()
+        if self.working_config is None:
+            log('DEBUG', 'session_tab', '_save_config_to_session: no working_config, skipping')
+            return
+        try:
+            from datetime import datetime
+            session = self.presenter.current_session
+            config_dict = self.working_config.model_dump() if hasattr(self.working_config, 'model_dump') else self.working_config
+            session.metadata['agent_config'] = config_dict
+            session.updated_at = datetime.now()
+            log('DEBUG', 'session_tab', f'Saved agent_config to session.metadata ({len(config_dict)} keys)')
+            log('DEBUG', 'core.config', f'[CONFIG_TRACE] saving to session metadata: workspace_path={config_dict.get("workspace_path", "NOT_IN_DICT")}')
+            log('DEBUG', 'core.config', f'[CONFIG_TRACE] _save_config_to_session metadata dict: token_monitor_warning_threshold={config_dict.get("token_monitor_warning_threshold", "NOT_IN_DICT")}, token_monitor_critical_threshold={config_dict.get("token_monitor_critical_threshold", "NOT_IN_DICT")}, warning_threshold={config_dict.get("warning_threshold", "NOT_IN_DICT")}, critical_threshold={config_dict.get("critical_threshold", "NOT_IN_DICT")}')
+            # Persist to disk immediately so per-session config survives restart
+            if hasattr(self.presenter, 'session_store') and self.presenter.session_store is not None:
+                self.presenter.session_store.save_session(session)
+                log('DEBUG', 'session_tab', 'Flushed agent_config to disk')
+                log('DEBUG', 'core.config', '[CONFIG_TRACE] session save complete')
+        except Exception as e:
+            log('DEBUG', 'session_tab', f'Failed to save config to session: {e}')
 
     def _refresh_tools(self):
         """Refresh the available tools from MCP configuration."""
@@ -667,12 +704,6 @@ class SessionTab(QWidget):
             self.agent_controls_panel._rebuild_tool_checkboxes()
         except Exception as e:
             pass
-
-    def _schedule_config_save(self):
-        """Schedule a debounced configuration save."""
-        if not self._loading_config:
-            config = self.agent_controls_panel.get_config_dict()
-            self.config_bridge.save_config(config, immediate=False)
 
     def set_workspace(self):
         """Open dialog to select workspace directory."""
@@ -837,7 +868,7 @@ class SessionTab(QWidget):
 
     def save_session(self):
         """Save current session to the central session store."""
-        if not self.presenter.user_history and (not self.presenter._initial_conversation):
+        if not self.presenter.user_history:
             QMessageBox.warning(self, 'No Session', 'No conversation to save.')
             return
         try:
@@ -858,7 +889,7 @@ class SessionTab(QWidget):
     def save_session_as(self):
         """Rename/relocate existing session (Save As)."""
         log('DEBUG', 'debug.unknown', f'save_session_as called, current session_name={self.presenter.session_name}')
-        if not self.presenter.user_history and (not self.presenter._initial_conversation):
+        if not self.presenter.user_history:
             QMessageBox.warning(self, 'No Session', 'No conversation to rename.')
             return
         session_id = self.presenter.current_session_id
@@ -922,7 +953,7 @@ class SessionTab(QWidget):
 
     def export_session(self):
         """Export current session to a file (user chooses location)."""
-        if not self.presenter.user_history and (not self.presenter._initial_conversation):
+        if not self.presenter.user_history:
             QMessageBox.warning(self, 'No Session', 'No conversation to export.')
             return
         file_path, _ = QFileDialog.getSaveFileName(self, 'Export Session As', '', 'Session Files (*.json);;All Files (*)')
@@ -1116,15 +1147,6 @@ class SessionTab(QWidget):
         else:
             log('DEBUG', 'debug.unknown', '_update_tab_label: no tab widget found')
 
-    def _auto_save_session(self):
-        """Auto-save the current session periodically."""
-        try:
-            success = self.presenter.auto_save_current_session()
-            if success:
-                self.update_window_title()
-        except Exception as e:
-            pass
-
     def closeEvent(self, event):
         """Handle closing the tab with save/discard prompts for unsaved changes."""
         log('DEBUG', 'debug.unknown', 'closeEvent: started')
@@ -1143,7 +1165,6 @@ class SessionTab(QWidget):
         except Exception as e:
             log('WARNING', 'debug.unknown', f'closeEvent: error disconnecting signals: {e}')
         from PyQt6.QtWidgets import QInputDialog
-        self._auto_save_timer.stop()
         log('DEBUG', 'debug.unknown', f'closeEvent: attempting to save session, user_history length={(len(self.presenter.user_history) if self.presenter.user_history else 0)}, current_session_id={self.presenter.current_session_id}')
         log('DEBUG', 'debug.unknown', 'closeEvent: proceeding with closing')
         log('DEBUG', 'debug.unknown', 'closeEvent: calling save_config')

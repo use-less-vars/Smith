@@ -1,7 +1,6 @@
 """
 SessionLifecycle: Session start/stop/pause/save/load operations.
 
-Handles:
 - Session creation, starting, pausing, restarting
 - Session loading, saving, exporting
 - Session listing, deletion, renaming
@@ -15,7 +14,7 @@ from typing import Optional, List, Dict, Any, Callable
 from agent.logging import log
 from agent.controller import AgentController
 from agent.core.state import ExecutionState
-from session.models import Session, SessionConfig
+from session.models import Session
 from session.store import FileSystemSessionStore
 from session.context_builder import SummaryBuilder
 from .state_bridge import StateBridge
@@ -30,7 +29,7 @@ class SessionLifecycle:
         self.context_builder = SummaryBuilder()
         self._state = ExecutionState.IDLE
         self._restarting = False
-        self._initial_conversation: Optional[List[Dict[str, Any]]] = None
+
         self._session_callback: Optional[Callable] = None
         self._conversation_callback: Optional[Callable] = None
         self._cached_config = None
@@ -62,8 +61,7 @@ class SessionLifecycle:
 
     def mark_clean(self) -> None:
         """Mark session as clean (no unsaved changes). Dummy method after removing dirty tracking."""
-        if os.environ.get('THOUGHTMACHINE_DEBUG') == '1':
-            log('DEBUG', 'presenter.lifecycle', f'mark_clean called (dummy method - dirty tracking removed)')
+        log('DEBUG', 'presenter.lifecycle', f'mark_clean called (dummy method - dirty tracking removed)')
 
     def has_unsaved_changes(self) -> bool:
         """Check if current session has unsaved changes.
@@ -92,8 +90,7 @@ class SessionLifecycle:
             if preset_name is not None:
                 from agent import Agent
                 overrides = config if config is not None else {}
-                overrides['initial_input_tokens'] = self.state_bridge.total_input
-                overrides['initial_output_tokens'] = self.state_bridge.total_output
+
                 temp_agent = Agent.from_preset(preset_name, session=None, **overrides)
                 agent_config = temp_agent.config
                 self._cached_config = agent_config
@@ -103,12 +100,15 @@ class SessionLifecycle:
                 self._cached_config = agent_config
                 self._cached_preset_name = None
             if self.state_bridge.current_session is None:
-                session_config = self.state_bridge.build_session_config(agent_config)
-                new_session = Session(session_id=str(uuid.uuid4()), config=session_config, user_history=[], metadata={})
+                ws_path = self.state_bridge.current_config.workspace_path
+                metadata = {}
+                if ws_path:
+                    metadata['workspace_path'] = ws_path
+                metadata['agent_config'] = agent_config.model_dump()
+                new_session = Session(session_id=str(uuid.uuid4()), user_history=[], metadata=metadata)
                 new_session.ensure_name()
                 self.state_bridge.bind_session(new_session)
                 self._register_session_callbacks(new_session)
-            self._initial_conversation = None
             if preset_name is not None:
                 self.controller.start(query, session=self.state_bridge.current_session, preset_name=preset_name, **overrides)
             else:
@@ -125,14 +125,19 @@ class SessionLifecycle:
         Args:
             name: Optional name for the new session. If None, session will be unnamed.
         """
-        if os.environ.get('THOUGHTMACHINE_DEBUG') == '1':
-            log('DEBUG', 'presenter.lifecycle', f'Auto-saving current session before starting new session')
+        log('DEBUG', 'presenter.lifecycle', f'Auto-saving current session before starting new session')
         self.auto_save_current_session()
         if self.controller.is_running:
             self.controller.stop()
         agent_config = self.state_bridge.create_agent_config()
-        session_config = self.state_bridge.build_session_config(agent_config)
-        session = Session(session_id=str(uuid.uuid4()), config=session_config, user_history=[], metadata={'name': name} if name else {})
+        ws_path = self.state_bridge.current_config.workspace_path
+        metadata = {}
+        if name:
+            metadata['name'] = name
+        if ws_path:
+            metadata['workspace_path'] = ws_path
+        metadata['agent_config'] = agent_config.model_dump()
+        session = Session(session_id=str(uuid.uuid4()), user_history=[], metadata=metadata)
         session.ensure_name()
         self.state_bridge.bind_session(session)
         self._register_session_callbacks(session)
@@ -179,10 +184,7 @@ class SessionLifecycle:
         self.controller.reset()
         self.state = ExecutionState.IDLE
         self._restarting = False
-        if self.state_bridge.current_session and self.state_bridge.current_session.user_history:
-            self._initial_conversation = self.context_builder.build(self.state_bridge.current_session.user_history)
-        else:
-            self._initial_conversation = None
+
 
     def restart_session(self, query: str=None):
         """
@@ -240,9 +242,7 @@ class SessionLifecycle:
                     log('DEBUG', 'presenter.lifecycle', f'Failed to export to external file: {e}')
             return True
         except Exception as e:
-            if os.environ.get('THOUGHTMACHINE_DEBUG') == '1':
-                import traceback
-                log('ERROR', 'presenter.lifecycle', f'Error saving session: {e}\n{traceback.format_exc()}')
+            log('ERROR', 'presenter.lifecycle', f'Error saving session: {e}')
             return False
 
     def load_session(self, filepath: str, target_session: Optional[Session]=None) -> bool:
@@ -256,8 +256,7 @@ class SessionLifecycle:
         Returns:
             True if loaded successfully, False otherwise
         """
-        if os.environ.get('THOUGHTMACHINE_DEBUG') == '1':
-            log('DEBUG', 'presenter.lifecycle', f'Auto-saving current session before loading new session')
+        log('DEBUG', 'presenter.lifecycle', f'Auto-saving current session before loading new session')
         self.auto_save_current_session()
         try:
             filepath = os.path.abspath(filepath)
@@ -412,6 +411,7 @@ class SessionLifecycle:
             return False
 
     def _build_session_from_current_state(self):
+        log('DEBUG', 'core.config', f'[CONFIG_TRACE] _build_session_from_current_state: workspace_path={self.state_bridge.current_config.workspace_path or "NOT_IN_DICT"}')
         """Construct a Session object from current presenter state."""
         log('DEBUG', 'presenter.lifecycle', f'_build_session_from_current_state: user_history length={(len(self.state_bridge.user_history) if self.state_bridge.user_history else 0)}, current_session_id={self.state_bridge.current_session_id}, current_session exists={self.state_bridge.current_session is not None}')
         conversation = None
@@ -420,7 +420,7 @@ class SessionLifecycle:
         else:
             conversation = self.controller.get_conversation() if hasattr(self.controller, 'get_conversation') else None
             if conversation is None:
-                conversation = self._initial_conversation
+                conversation = None
         if conversation is None:
             if self.state_bridge.current_session is not None:
                 conversation = []
@@ -429,11 +429,19 @@ class SessionLifecycle:
                 return None
         try:
             agent_config = self.state_bridge.create_agent_config()
-            session_config = self.state_bridge.build_session_config(agent_config)
         except Exception as e:
-            log('DEBUG', 'presenter.lifecycle', f'Error building session config: {e}')
+            log('DEBUG', 'presenter.lifecycle', f'Error creating agent config: {e}')
             return None
-        session = Session(session_id=self.state_bridge.current_session_id or str(uuid.uuid4()), config=session_config, user_history=conversation, metadata={'name': self.state_bridge.session_name} if self.state_bridge.session_name else {})
+        # Preserve existing metadata from current session (excluding stale agent_config)
+        metadata = {}
+        if self.state_bridge.current_session is not None and self.state_bridge.current_session.metadata:
+            for k, v in self.state_bridge.current_session.metadata.items():
+                if k != 'agent_config':
+                    metadata[k] = v
+        if self.state_bridge.session_name:
+            metadata['name'] = self.state_bridge.session_name
+        metadata['agent_config'] = agent_config.model_dump()
+        session = Session(session_id=self.state_bridge.current_session_id or str(uuid.uuid4()), user_history=conversation, metadata=metadata)
         session.ensure_name()
         if self.state_bridge.total_input > 0:
             session.total_input_tokens = self.state_bridge.total_input
@@ -443,6 +451,9 @@ class SessionLifecycle:
             session.context_length = self.state_bridge.context_length
         if self.state_bridge._external_file_path:
             session.metadata['external_file_path'] = self.state_bridge._external_file_path
+        # Store workspace_path in session metadata for persistence
+        workspace_path = self.state_bridge.current_config.workspace_path
+        session.metadata['workspace_path'] = workspace_path  # always set, even if None
         return session
 
     def auto_save_current_session(self) -> bool:
@@ -452,13 +463,11 @@ class SessionLifecycle:
             True if saved successfully, False on error.
         """
         log('DEBUG', 'presenter.lifecycle', f'auto_save_current_session called, current_session_id={self.state_bridge.current_session_id}, current_session exists={self.state_bridge.current_session is not None}')
-        if os.environ.get('THOUGHTMACHINE_DEBUG') == '1':
-            log('DEBUG', 'presenter.lifecycle', f'Attempting auto-save (event-driven)')
+        log('DEBUG', 'presenter.lifecycle', f'Attempting auto-save (event-driven)')
         try:
             success = self.save_session()
             if success:
-                if os.environ.get('THOUGHTMACHINE_DEBUG') == '1':
-                    log('DEBUG', 'presenter.lifecycle', f'Auto-saved session successfully')
+                log('DEBUG', 'presenter.lifecycle', f'Auto-saved session successfully')
                 if self.state_bridge._external_file_path:
                     try:
                         self.export_session(self.state_bridge._external_file_path, set_as_external=False)
@@ -466,8 +475,7 @@ class SessionLifecycle:
                         log('DEBUG', 'presenter.lifecycle', f'Failed to export to external file: {e}')
                 return True
             else:
-                if os.environ.get('THOUGHTMACHINE_DEBUG') == '1':
-                    log('DEBUG', 'presenter.lifecycle', f'Auto-save failed')
+                log('DEBUG', 'presenter.lifecycle', f'Auto-save failed')
                 return False
         except Exception as e:
             log('DEBUG', 'presenter.lifecycle', f'Error in auto-save: {e}')

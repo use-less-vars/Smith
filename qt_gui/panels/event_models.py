@@ -198,9 +198,7 @@ class EventDelegate(QStyledItemDelegate):
         """
         etype = event.get('type', 'unknown')
         detail_level = event.get('_detail_level', 'normal')
-        import os
-        if os.environ.get('THOUGHTMACHINE_DEBUG') == '1':
-            log('DEBUG', 'debug.unknown', f'[EventDelegate] _event_to_html called for type={etype}, suppress_title_bar={suppress_title_bar}')
+        log('DEBUG', 'debug.unknown', f'[EventDelegate] _event_to_html called for type={etype}, suppress_title_bar={suppress_title_bar}')
         lines = []
 
         def add_line(text, style='', use_markdown=False, title=''):
@@ -291,7 +289,10 @@ class EventDelegate(QStyledItemDelegate):
         elif etype == 'system':
             add_line(f"System: {event.get('content', '')}", style='color: #808080; font-style: italic;', use_markdown=True)
             if 'summary' in event:
-                add_line(f"<b>Summary:</b> {event['summary']}", style='color: #000000;')
+                summary_content = event.get('content', event['summary'])
+                # Strip the 'Summary of previous conversation: ' prefix if present
+                summary_text = summary_content.replace('Summary of previous conversation: ', '', 1) if isinstance(summary_content, str) else str(summary_content)
+                add_line(f"<b>Summary:</b> {summary_text}", style='color: #000000;')
                 lines.append('<hr>')
         elif etype == 'stopped':
             add_line('Agent stopped by user.', style='color: #FF8C00;')
@@ -466,7 +467,10 @@ class EventDelegate(QStyledItemDelegate):
         elif etype == 'system':
             add_line(f"System: {event.get('content', '')}")
             if 'summary' in event:
-                add_line(f"Summary: {event['summary']}")
+                summary_content = event.get('content', event['summary'])
+                # Strip the 'Summary of previous conversation: ' prefix if present
+                summary_text = summary_content.replace('Summary of previous conversation: ', '', 1) if isinstance(summary_content, str) else str(summary_content)
+                add_line(f"Summary: {summary_text}")
         elif etype == 'stopped':
             add_line('Agent stopped by user.')
         elif etype == 'user_interaction_requested':

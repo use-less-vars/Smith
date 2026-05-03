@@ -58,11 +58,15 @@ class TokenCounter:
     def estimate_request_tokens(self, messages, tool_definitions=None) -> int:
         """
         Estimate tokens for an API request including messages and tool definitions.
-        
+
+        Uses consistent tiktoken encoding for both messages and tools.
+        No arbitrary overhead factor is added, making this match the actual
+        token count that the API would return.
+
         Args:
             messages: List of message dictionaries.
             tool_definitions: Optional list of tool definition dictionaries.
-            
+
         Returns:
             Estimated total tokens for the request.
         """
@@ -76,10 +80,8 @@ class TokenCounter:
             total_tokens += self.estimate_tokens(msg)
         if tool_definitions:
             tools_json = json.dumps(tool_definitions)
-            total_tokens += len(tools_json) // 4
-        total_tokens = int(total_tokens * 1.1)
+            total_tokens += self.estimate_tokens(tools_json)
         return total_tokens
-
     def get_model_context_window(self) -> int:
         """
         Get approximate context window size for the current model.
@@ -104,9 +106,13 @@ class TokenCounter:
 
     def format_tokens(self, tokens: int) -> str:
         """Format token count in thousands with 'k' suffix.
-        
+
         Args:
             tokens: Token count.
+
+        Returns:
+            Formatted string like '51k' or '128k'.
         """
-        total_tokens = int(total_tokens * 1.1)
-        return total_tokens
+        if tokens >= 1000:
+            return f'{tokens // 1000}k'
+        return str(tokens)

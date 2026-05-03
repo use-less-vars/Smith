@@ -72,3 +72,21 @@ system_prompt.txt
 dist/
 build/
 *.egg-info/
+
+# Case mismatch fix
+AI_Tasks/
+reports
+
+# Backup and merge artifacts
+*.backup
+*.orig
+*.bak.*
+
+# Rotated logs
+debug_*.log.*
+
+# Generated artifacts
+Logging_cleanup_*.json
+dummy_test/
+agent_config.json
+output_panel_phase1.py

@@ -30,6 +30,7 @@ class MessageType(Enum):
     ERROR = "error"
     WARNING = "warning"
     SUMMARY = "summary"
+    SUMMARY_TOOL = "summary_tool"
 
 
 @dataclass
@@ -65,7 +66,7 @@ class MessageRenderer:
     """
     
     # Special tools that get blue styling
-    SPECIAL_TOOLS = {"Final", "FinalReport", "RequestUserInteraction", "ProgressReport"}
+    SPECIAL_TOOLS = {"Final", "FinalReport", "RequestUserInteraction", "ProgressReport", "SummarizeTool"}
 
     # Tool configuration overrides
     TOOL_OVERRIDES = {
@@ -73,6 +74,7 @@ class MessageRenderer:
         "FinalReport": {"show_arguments": False, "truncate_content": True, "style_key": MessageType.SPECIAL},
         "RequestUserInteraction": {"show_arguments": False, "truncate_content": False, "style_key": MessageType.SPECIAL},
         "ProgressReport": {"show_arguments": False, "truncate_content": False, "style_key": MessageType.SPECIAL},
+        "SummarizeTool": {"show_arguments": False, "truncate_content": False, "style_key": MessageType.SUMMARY_TOOL},
     }
 
     # CSS style definitions
@@ -85,7 +87,7 @@ class MessageRenderer:
         ),
         MessageType.USER_SYSTEM: MessageStyle(
             border_color="#cda2a2",
-            background_color="#f9ebeb",
+            background_color="#000000",
             header_text_color="#000000"
         ),
         MessageType.ASSISTANT: MessageStyle(
@@ -95,7 +97,7 @@ class MessageRenderer:
         ),
         MessageType.SYSTEM: MessageStyle(
             border_color="#ffcccc",
-            background_color="#ffe6e6",
+            background_color="#FCEFEF",
             header_text_color="#000000"
         ),
         MessageType.TOOL_CALL: MessageStyle(
@@ -129,8 +131,8 @@ class MessageRenderer:
         ),
         MessageType.WARNING: MessageStyle(
             border_color="#ffd9b3",
-            background_color="#fdf6ef",
-            text_color="#FFA500",
+            background_color="#fefbf8",
+            text_color="#9D6600",
             special_tool=False
         ),
         MessageType.SUMMARY: MessageStyle(
@@ -138,6 +140,12 @@ class MessageRenderer:
             background_color="#f8f8f8",
             text_color="#666666",
             special_tool=False
+        ),
+        MessageType.SUMMARY_TOOL: MessageStyle(
+            border_color="#fdcc5a",
+            background_color="#fdf9ee",
+            text_color="#89714e",
+            special_tool=True
         )
     }
     
@@ -250,6 +258,11 @@ class MessageRenderer:
         )
         return container_html
 
+    def _get_tool_style_key(self, tool_name: str) -> MessageType:
+        """Get the style key for a tool from TOOL_OVERRIDES, defaults to SPECIAL."""
+        config = self.TOOL_OVERRIDES.get(tool_name, {})
+        return config.get('style_key', MessageType.SPECIAL)
+
     def render_tool_call(self, tool_call: Dict, verbose: bool = False) -> str:
         """
         Render a tool call.
@@ -275,10 +288,10 @@ class MessageRenderer:
         extra_html = f"Arguments: {escaped_args}"        
         # Use unified card layout
         if is_special:
-            # Special tool: blue styling (SPECIAL type)
+            # Special tool: use per-tool styling from TOOL_OVERRIDES
             return self._render_card(
                 title=f"Tool: {tool_name}",
-                style_key=MessageType.SPECIAL,
+                style_key=self._get_tool_style_key(tool_name),
                 indent_level=0,
                 content_html="",
                 extra_html=extra_html
@@ -314,15 +327,15 @@ class MessageRenderer:
         
         if is_special:
             log("DEBUG", "ui.message_renderer", "render_tool_result special branch")
-            # Special tool: blue styling, full markdown rendering
+            # Special tool: per-tool styling from TOOL_OVERRIDES
             title = "Tool Result"
             if tool_name:
                 title = f"Tool Result ({tool_name})"
             
-            # Use unified card layout with SPECIAL type
+            # Use unified card layout with per-tool style
             return self._render_card(
                 title=title,
-                style_key=MessageType.SPECIAL,
+                style_key=self._get_tool_style_key(tool_name),
                 indent_level=0,
                 content_html=self._render_content(content),
                 extra_html=""
@@ -510,9 +523,9 @@ class MessageRenderer:
 
         if self.markdown_renderer:
             html_content = self.markdown_renderer.markdown_to_html(content)
-            # Strip margins from block-level elements so backgrounds
-            # in the card div are continuous (Qt QTextDocument renders
-            # each block with its own frame, and margins create gaps).
+            # Strip Qt's default margins from block-level elements so backgrounds
+            # in the card div are continuous (Qt QTextDocument adds margin-top:7px
+            # to <p> elements which would override our margin:0).
             html_content = re.sub(
                 r'<(h[1-6]|p|ul|ol|li|blockquote|pre|hr|div)([^>]*)>',
                 self._add_margin_zero,
@@ -521,8 +534,9 @@ class MessageRenderer:
             )
             return html_content
         else:
-            # Fallback: simple HTML escaping
-            return html.escape(content).replace('\n', '<br>')
+            # Fallback: simple HTML escaping — wrap in <p> so _inject_bg can add font-size
+            escaped = html.escape(content).replace('\n', '<br>')
+            return f'<p>{escaped}</p>' if escaped else ''
 
     @staticmethod
     def _add_margin_zero(match: re.Match) -> str:
@@ -530,13 +544,20 @@ class MessageRenderer:
         tag = match.group(1)
         attrs = match.group(2) or ''
         if 'style=' in attrs.lower():
-            # Append margin:0 to existing style attribute
+            # Prepend margin:0 to existing style attribute
             attrs = re.sub(
                 r'(style\s*=\s*["\'])',
                 r'\1margin:0; ',
                 attrs,
                 count=1,
                 flags=re.IGNORECASE
+            )
+            # Strip Qt's individual margin properties that would override margin:0
+            # (Qt QTextDocument adds margin-top:7px; margin-bottom:7px to <p> elements)
+            attrs = re.sub(
+                r'\s*(margin-top|margin-bottom|margin-left|margin-right|\-qt\-block\-indent|text\-indent)\s*:\s*[^;]+;?',
+                '',
+                attrs
             )
         else:
             attrs += ' style="margin:0;"'
@@ -681,15 +702,26 @@ class MessageRenderer:
             return content
         
         lines = content.split('\n')
+        truncated = False
+
+        # Line count truncation
         if len(lines) > MAX_LINES_PER_RESULT:
             lines = lines[:MAX_LINES_PER_RESULT]
-            lines.append('...')
+            truncated = True
 
-        # Character-based fallback: if only one line remains but it's very long, truncate it
-        if len(lines) == 1 and len(lines[0]) > MAX_CHARS_PER_LINE:
-            lines[0] = lines[0][:MAX_CHARS_PER_LINE] + '…'
+        # Per-line character truncation: cap each line at MAX_CHARS_PER_LINE
+        truncated_lines = []
+        for line in lines:
+            if len(line) > MAX_CHARS_PER_LINE:
+                truncated_lines.append(line[:MAX_CHARS_PER_LINE] + '…')
+                truncated = True
+            else:
+                truncated_lines.append(line)
 
-        return '\n'.join(lines)
+        if truncated:
+            truncated_lines.append('...')
+
+        return '\n'.join(truncated_lines)
     
     def _render_card(self, title: str, style_key: MessageType, indent_level: int = 1,
                     content_html: str = "", extra_html: str = "") -> str:
@@ -714,22 +746,35 @@ class MessageRenderer:
         # background-color. To get continuous backgrounds, inject the card's
         # background color directly into each markdown block element.
         if content_html:
-            # Add background-color and margin:0 to all block-level elements
-            # in the content so Qt renders each block with the card's color.
+            # Add background-color, font-size, and margin:0 to all block-level elements
+            # in the content so Qt renders each block with the card's color and font-size.
+            # font-size must be applied directly to block-level elements because Qt's
+            # QTextDocument doesn't reliably inherit font-size from parent elements.
             bg_style = f'background-color:{style.background_color};margin:0;'
+            p_style = f'font-size:15px;background-color:{style.background_color};margin:0;'
             def _inject_bg(match):
                 tag = match.group(1)
                 attrs = match.group(2) or ''
+                # Use font-size on ALL block elements since Qt doesn't
+                # reliably inherit font-size from parent divs
+                use_bg = p_style
                 if 'style=' in attrs.lower():
                     attrs = re.sub(
                         r'(style\s*=\s*["\'])',
-                        f'\\1{bg_style} ',
+                        f'\\1{use_bg} ',
                         attrs,
                         count=1,
                         flags=re.IGNORECASE
                     )
                 else:
-                    attrs += f' style="{bg_style}"'
+                    attrs += f' style="{use_bg}"'
+                # Strip Qt's individual margin properties that would override margin:0
+                # (Qt QTextDocument adds margin-top:7px; margin-bottom:7px to <p> elements)
+                attrs = re.sub(
+                    r'\s*(margin-top|margin-bottom|margin-left|margin-right|\-qt\-block\-indent|text\-indent)\s*:\s*[^;]+;?',
+                    '',
+                    attrs
+                )
                 return f'<{tag}{attrs}>'
             content_html = re.sub(
                 r'<(h[1-6]|p|ul|ol|li|blockquote|pre|hr|div)([^>]*)>',
@@ -748,7 +793,7 @@ class MessageRenderer:
             card_html += f'    <div style="color: #666666; font-size: 0.9em; font-family: monospace, monospace;">{extra_html}</div>\n'
 
         if content_html:
-            card_html += f'    <div style="color: {style.text_color}; font-family: monospace; white-space: pre-wrap; padding-left: 10px;">{content_html}</div>\n'
+            card_html += f'    <div style="color: {style.text_color}; font-family: monospace; font-size: 15px; white-space: pre-wrap; padding-left: 10px;">{content_html}</div>\n'
 
         card_html += '</div>'
         return card_html    
@@ -808,10 +853,10 @@ class MessageRenderer:
         
         # Use unified card layout
         if is_special:
-            # Special tool: blue styling (SPECIAL type)
+            # Special tool: per-tool styling from TOOL_OVERRIDES
             return self._render_card(
                 title=f"Tool: {tool_name}",
-                style_key=MessageType.SPECIAL,
+                style_key=self._get_tool_style_key(tool_name),
                 indent_level=0,  # Standalone tool calls have no indentation
                 content_html="",
                 extra_html=extra_html
@@ -872,10 +917,10 @@ class MessageRenderer:
         else:
             # Success case
             if is_special:
-                # Special tool: blue styling, full markdown rendering
+                # Special tool: per-tool styling from TOOL_OVERRIDES
                 return self._render_card(
                     title=title,
-                    style_key=MessageType.SPECIAL,
+                    style_key=self._get_tool_style_key(tool_name),
                     indent_level=0,
                     content_html=self._render_content(content),
                     extra_html=""

@@ -2,14 +2,17 @@
 import os
 import yaml
 from PyQt6.QtWidgets import QGroupBox, QVBoxLayout, QHBoxLayout, QGridLayout, QWidget, QLabel, QPushButton, QComboBox, QLineEdit, QSpinBox, QDoubleSpinBox, QCheckBox, QScrollArea, QStyle, QSizePolicy
-from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 from .mcp_config import MCPConfigDialog
 from .markdown_renderer import MarkdownRenderer
 from ..utils.constants import MAX_RESULT_LENGTH
 from agent.logging import log
+from agent.config import AgentConfig
 
 class AgentControlsPanel(QGroupBox):
     """Collapsible panel for agent controls."""
+
+    apply_to_agent_requested = pyqtSignal(object)
 
     def __init__(self, tool_classes, config_file=None):
         super().__init__('Agent Controls')
@@ -18,9 +21,7 @@ class AgentControlsPanel(QGroupBox):
         self.is_collapsed = True
         self.config_file = config_file
         self._provider_mapping = {'OpenAI (compatible)': 'openai_compatible', 'Anthropic': 'anthropic', 'OpenAI': 'openai'}
-        self.max_history_turns = None
-        self.keep_initial_query = True
-        self.keep_system_messages = True
+
         self.toggle_button = QPushButton('▼ Show Controls')
         self.toggle_button.setMaximumWidth(120)
         self.toggle_button.clicked.connect(self.toggle_collapse)
@@ -244,6 +245,21 @@ class AgentControlsPanel(QGroupBox):
         self.right_column.addStretch()
         self.main_layout.addWidget(self.controls_container)
         self.controls_container.setVisible(False)
+        apply_row = QWidget()
+        apply_layout = QHBoxLayout()
+        apply_row.setLayout(apply_layout)
+        self.apply_btn = QPushButton('Apply to Agent')
+        self.apply_btn.setToolTip('Apply runtime changes (temperature, max_tokens, top_p) without restarting the agent.')
+        self.apply_btn.setMaximumWidth(150)
+        self.apply_btn.clicked.connect(self._on_apply_to_agent)
+        apply_layout.addWidget(self.apply_btn)
+        self.save_global_btn = QPushButton('Save as Global Default')
+        self.save_global_btn.setToolTip('Save current configuration as the global default config file.')
+        self.save_global_btn.setMaximumWidth(180)
+        self.save_global_btn.clicked.connect(self._on_save_global_default)
+        apply_layout.addWidget(self.save_global_btn)
+        apply_layout.addStretch()
+        self.main_layout.addWidget(apply_row)
         self._warning_threshold_timer = QTimer()
         self._warning_threshold_timer.setSingleShot(True)
         self._warning_threshold_timer.timeout.connect(self._adjust_warning_threshold)
@@ -510,8 +526,41 @@ class AgentControlsPanel(QGroupBox):
         else:
             self.model_combo.setCurrentIndex(0)
 
-    def get_config_dict(self):
-        """Return a dictionary of current control values suitable for JSON serialization."""
+    def _on_apply_to_agent(self):
+        """Emit signal with current config when Apply to Agent is clicked."""
+        config = self.get_config()
+        self.apply_to_agent_requested.emit(config)
+
+    def _on_save_global_default(self):
+        """Save current config as global default (agent_config.json).
+
+        Strips sensitive fields (api_key) before saving so they are never
+        persisted to the shared default config file.
+        """
+        config = self.get_config()
+        config_dict = config.model_dump()
+        from PyQt6.QtWidgets import QMessageBox
+        from agent.config import get_config_paths
+        import json
+        paths = get_config_paths()
+        global_config_path = paths.get('global_config')
+        if not global_config_path:
+            QMessageBox.warning(self, 'Error', 'Could not determine global config path.')
+            return
+        # Remove sensitive fields that should not be saved as global defaults
+        config_dict.pop('api_key', None)
+        try:
+            with open(global_config_path, 'w') as f:
+                json.dump(config_dict, f, indent=2)
+            QMessageBox.information(
+                self, 'Saved',
+                f'Configuration saved as global default to:\n{global_config_path}'
+            )
+        except Exception as e:
+            QMessageBox.critical(self, 'Save Error', f'Failed to save config:\n{e}')
+
+    def get_config(self):
+        """Return an AgentConfig instance built from current UI control values."""
         config = {}
         provider_display = self.provider_combo.currentText()
         config['provider_type'] = self._provider_mapping.get(provider_display, 'openai_compatible')
@@ -523,20 +572,16 @@ class AgentControlsPanel(QGroupBox):
         config['temperature'] = self.temperature_spinbox.value()
         config['max_turns'] = self.max_turns_spinbox.value()
         config['token_monitor_enabled'] = self.token_monitor_checkbox.isChecked()
-        config['warning_threshold'] = self.warning_threshold_spinbox.value()
-        config['critical_threshold'] = self.critical_threshold_spinbox.value()
         config['token_monitor_warning_threshold'] = self.warning_threshold_spinbox.value() * 1000
         config['token_monitor_critical_threshold'] = self.critical_threshold_spinbox.value() * 1000
         config['turn_monitor_enabled'] = self.turn_monitor_checkbox.isChecked()
         config['turn_monitor_warning_threshold'] = self.turn_warning_threshold_spinbox.value()
         config['turn_monitor_critical_threshold'] = self.turn_critical_threshold_spinbox.value()
-        config['max_history_turns'] = self.max_history_turns
-        config['keep_initial_query'] = self.keep_initial_query
-        config['keep_system_messages'] = self.keep_system_messages
+
         workspace_display = self.workspace_display.text()
         workspace_path = None if workspace_display == 'None (unrestricted)' else workspace_display
         config['workspace_path'] = workspace_path
-        config['tool_output_limit'] = self.tool_output_limit_spinbox.value()
+        config['tool_output_token_limit'] = self.tool_output_limit_spinbox.value()
         config['detail'] = self.detail_combo.currentText()
         config['enabled_tools'] = [name for name, cb in self.tool_checkboxes.items() if cb.isChecked()]
         config['provider_config'] = {}
@@ -545,55 +590,73 @@ class AgentControlsPanel(QGroupBox):
             config['preset_name'] = preset_filepath
         else:
             config['preset_name'] = None
-        return config
+        return AgentConfig(**config)
 
-    def set_config_dict(self, config):
-        """Set control values from a configuration dictionary."""
+    def set_config(self, config: AgentConfig):
+        """Set control values from an AgentConfig instance."""
+        config_dict = config.model_dump()
+        log('DEBUG', 'core.config', f'[CONFIG_TRACE] AgentControlsPanel.set_config received: token_monitor_warning_threshold={config_dict.get("token_monitor_warning_threshold", "NOT_IN_DICT")}, token_monitor_critical_threshold={config_dict.get("token_monitor_critical_threshold", "NOT_IN_DICT")}')
+        set_val = config_dict.get  # shorthand
         reverse_mapping = {v: k for k, v in self._provider_mapping.items()}
-        if 'provider_type' in config:
-            provider_type = config['provider_type']
+        provider_type = set_val('provider_type')
+        if provider_type:
             display_text = reverse_mapping.get(provider_type, 'OpenAI (compatible)')
             index = self.provider_combo.findText(display_text)
             if index >= 0:
                 self.provider_combo.setCurrentIndex(index)
-        if 'api_key' in config:
-            self.api_key_edit.setText(config['api_key'])
-        if 'base_url' in config:
-            self.base_url_edit.setText(config['base_url'])
-        if 'model' in config:
-            self.model_combo.setEditText(config['model'])
-        if 'temperature' in config:
-            self.temperature_spinbox.setValue(config['temperature'])
-        if 'max_turns' in config:
-            self.max_turns_spinbox.setValue(config['max_turns'])
-        if 'token_monitor_enabled' in config:
-            self.token_monitor_checkbox.setChecked(config['token_monitor_enabled'])
-        if 'warning_threshold' in config:
-            self.warning_threshold_spinbox.setValue(config['warning_threshold'])
-        if 'critical_threshold' in config:
-            self.critical_threshold_spinbox.setValue(config['critical_threshold'])
-        if 'turn_monitor_enabled' in config:
-            self.turn_monitor_checkbox.setChecked(config['turn_monitor_enabled'])
-        if 'turn_monitor_warning_threshold' in config:
-            self.turn_warning_threshold_spinbox.setValue(config['turn_monitor_warning_threshold'])
-        if 'turn_monitor_critical_threshold' in config:
-            self.turn_critical_threshold_spinbox.setValue(config['turn_monitor_critical_threshold'])
-        if 'tool_output_limit' in config:
-            self.tool_output_limit_spinbox.setValue(config['tool_output_limit'])
-        if 'detail' in config:
-            self.detail_combo.setCurrentText(config['detail'])
-        if 'enabled_tools' in config:
-            enabled_tools = set(config['enabled_tools'])
+        api_key = set_val('api_key')
+        if api_key:
+            self.api_key_edit.setText(api_key)
+        base_url = set_val('base_url')
+        if base_url:
+            self.base_url_edit.setText(base_url)
+        model = set_val('model')
+        if model:
+            self.model_combo.setEditText(model)
+        temperature = set_val('temperature')
+        if temperature is not None:
+            self.temperature_spinbox.setValue(temperature)
+        max_turns = set_val('max_turns')
+        if max_turns is not None:
+            self.max_turns_spinbox.setValue(max_turns)
+        token_monitor_enabled = set_val('token_monitor_enabled')
+        if token_monitor_enabled is not None:
+            self.token_monitor_checkbox.setChecked(token_monitor_enabled)
+        token_monitor_warning = set_val('token_monitor_warning_threshold')
+        if token_monitor_warning is not None:
+            self.warning_threshold_spinbox.setValue(token_monitor_warning // 1000)
+        token_monitor_critical = set_val('token_monitor_critical_threshold')
+        if token_monitor_critical is not None:
+            self.critical_threshold_spinbox.setValue(token_monitor_critical // 1000)
+        log('DEBUG', 'core.config', f'[CONFIG_TRACE] AgentControlsPanel.set_config spinbox values AFTER set: warning_spinbox_raw={self.warning_threshold_spinbox.value()}, critical_spinbox_raw={self.critical_threshold_spinbox.value()}, token_monitor_warning_threshold_derived={self.warning_threshold_spinbox.value() * 1000}, token_monitor_critical_threshold_derived={self.critical_threshold_spinbox.value() * 1000}')
+        turn_monitor_enabled = set_val('turn_monitor_enabled')
+        if turn_monitor_enabled is not None:
+            self.turn_monitor_checkbox.setChecked(turn_monitor_enabled)
+        turn_warning = set_val('turn_monitor_warning_threshold')
+        if turn_warning is not None:
+            self.turn_warning_threshold_spinbox.setValue(turn_warning)
+        turn_critical = set_val('turn_monitor_critical_threshold')
+        if turn_critical is not None:
+            self.turn_critical_threshold_spinbox.setValue(turn_critical)
+        tool_output_limit = set_val('tool_output_token_limit')
+        if tool_output_limit is not None:
+            self.tool_output_limit_spinbox.setValue(tool_output_limit)
+        detail = set_val('detail')
+        if detail:
+            self.detail_combo.setCurrentText(detail)
+        enabled_tools = set_val('enabled_tools')
+        if enabled_tools is not None:
+            enabled_tools_set = set(enabled_tools)
             for name, checkbox in self.tool_checkboxes.items():
-                checkbox.setChecked(name in enabled_tools)
-        if 'workspace_path' in config:
-            workspace_path = config['workspace_path']
-            if workspace_path is None:
-                self.workspace_display.setText('None (unrestricted)')
-            else:
-                self.workspace_display.setText(workspace_path)
-        if 'preset_name' in config and config['preset_name']:
+                checkbox.setChecked(name in enabled_tools_set)
+        workspace_path = set_val('workspace_path')
+        if workspace_path is None:
+            self.workspace_display.setText('None (unrestricted)')
+        else:
+            self.workspace_display.setText(workspace_path)
+        preset_name = set_val('preset_name')
+        if preset_name:
             for i in range(self.preset_combo.count()):
-                if self.preset_combo.itemData(i) == config['preset_name']:
+                if self.preset_combo.itemData(i) == preset_name:
                     self.preset_combo.setCurrentIndex(i)
                     break
