@@ -4,6 +4,8 @@ import yaml
 from PyQt6.QtWidgets import QGroupBox, QVBoxLayout, QHBoxLayout, QGridLayout, QWidget, QLabel, QPushButton, QComboBox, QLineEdit, QSpinBox, QDoubleSpinBox, QCheckBox, QScrollArea, QStyle, QSizePolicy
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 from .mcp_config import MCPConfigDialog
+from .provider_selector import ProviderSelector
+from .provider_dialog import ProviderDialog
 from .markdown_renderer import MarkdownRenderer
 from ..utils.constants import MAX_RESULT_LENGTH
 from agent.logging import log
@@ -20,8 +22,6 @@ class AgentControlsPanel(QGroupBox):
         self.tool_checkboxes = {}
         self.is_collapsed = True
         self.config_file = config_file
-        self._provider_mapping = {'OpenAI (compatible)': 'openai_compatible', 'Anthropic': 'anthropic', 'OpenAI': 'openai'}
-
         self.toggle_button = QPushButton('▼ Show Controls')
         self.toggle_button.setMaximumWidth(120)
         self.toggle_button.clicked.connect(self.toggle_collapse)
@@ -141,50 +141,9 @@ class AgentControlsPanel(QGroupBox):
         temperature_layout.addWidget(self.temperature_spinbox)
         temperature_layout.addWidget(QLabel(''))
         self.left_column.addWidget(temperature_row)
-        provider_row = QWidget()
-        provider_layout = QHBoxLayout()
-        provider_row.setLayout(provider_layout)
-        provider_layout.setSpacing(5)
-        provider_layout.addWidget(QLabel('Provider:'))
-        self.provider_combo = QComboBox()
-        self.provider_combo.addItems(['OpenAI (compatible)', 'Anthropic', 'OpenAI'])
-        self.provider_combo.setCurrentText('OpenAI (compatible)')
-        provider_layout.addWidget(self.provider_combo)
-        provider_layout.addStretch()
-        self.left_column.addWidget(provider_row)
-        api_key_row = QWidget()
-        api_key_layout = QHBoxLayout()
-        api_key_row.setLayout(api_key_layout)
-        api_key_layout.setSpacing(5)
-        api_key_layout.addWidget(QLabel('API Key:'))
-        self.api_key_edit = QLineEdit()
-        self.api_key_edit.setPlaceholderText('Leave empty to use environment variable')
-        self.api_key_edit.setEchoMode(QLineEdit.EchoMode.Password)
-        api_key_layout.addWidget(self.api_key_edit)
-        api_key_layout.addStretch()
-        self.right_column.addWidget(api_key_row)
-        base_url_row = QWidget()
-        base_url_layout = QHBoxLayout()
-        base_url_row.setLayout(base_url_layout)
-        base_url_layout.setSpacing(5)
-        base_url_layout.addWidget(QLabel('Base URL:'))
-        self.base_url_edit = QLineEdit()
-        self.base_url_edit.setPlaceholderText('Leave empty for default')
-        base_url_layout.addWidget(self.base_url_edit)
-        base_url_layout.addStretch()
-        self.right_column.addWidget(base_url_row)
-        model_row = QWidget()
-        model_layout = QHBoxLayout()
-        model_row.setLayout(model_layout)
-        model_layout.setSpacing(5)
-        model_layout.addWidget(QLabel('Model:'))
-        self.model_combo = QComboBox()
-        self.model_combo.setEditable(True)
-        self.model_combo.addItems(['deepseek-reasoner', 'gpt-4', 'claude-3', 'llama-3', 'big pickle', 'gpt-3.5-turbo', 'claude-3-haiku', 'claude-3-sonnet', 'claude-3-opus'])
-        self.model_combo.setCurrentText('deepseek-reasoner')
-        model_layout.addWidget(self.model_combo)
-        model_layout.addStretch()
-        self.right_column.addWidget(model_row)
+        self.provider_selector = ProviderSelector()
+        self.provider_selector.manage_requested.connect(self._on_manage_profiles)
+        self.left_column.addWidget(self.provider_selector)
         tool_limit_row = QWidget()
         tool_limit_layout = QHBoxLayout()
         tool_limit_row.setLayout(tool_limit_layout)
@@ -325,7 +284,7 @@ class AgentControlsPanel(QGroupBox):
         Individual controls can still be adjusted by the user after selection.
         """
         if 'model' in preset_data:
-            self.model_combo.setEditText(preset_data['model'])
+            self.provider_selector.set_model(preset_data['model'])
         if 'temperature' in preset_data:
             self.temperature_spinbox.setValue(preset_data['temperature'])
         if 'tools' in preset_data:
@@ -499,32 +458,15 @@ class AgentControlsPanel(QGroupBox):
         critical_text = f'({int(critical_value * 100)})'
         self.turn_critical_formatted_label.setText(critical_text)
 
-    def update_model_suggestions(self, model_to_set=None):
-        """Update model suggestions based on current provider selection.
+    def _on_manage_profiles(self):
+        """Open the Provider Profiles management dialog.
 
-        Args:
-            model_to_set: If provided, try to select this model after updating suggestions.
-                          If not provided, try to restore current model text.
+        After the dialog closes, refresh the provider selector so new/edited
+        profiles appear in the dropdown.
         """
-        provider = self.provider_combo.currentText()
-        current_model = model_to_set if model_to_set is not None else self.model_combo.currentText()
-        self.model_combo.clear()
-        if provider == 'OpenAI (compatible)':
-            suggestions = ['deepseek-reasoner', 'gpt-4', 'gpt-3.5-turbo', 'big pickle', 'llama-3', 'mixtral']
-        elif provider == 'Anthropic':
-            suggestions = ['claude-3-opus', 'claude-3-sonnet', 'claude-3-haiku', 'claude-3']
-        elif provider == 'OpenAI':
-            suggestions = ['gpt-4-turbo', 'gpt-4', 'gpt-3.5-turbo', 'gpt-3.5']
-        else:
-            suggestions = ['deepseek-reasoner', 'gpt-4', 'claude-3', 'llama-3']
-        self.model_combo.addItems(suggestions)
-        index = self.model_combo.findText(current_model)
-        if index >= 0:
-            self.model_combo.setCurrentIndex(index)
-        elif current_model:
-            self.model_combo.setCurrentText(current_model)
-        else:
-            self.model_combo.setCurrentIndex(0)
+        dialog = ProviderDialog(self.provider_selector.manager, self)
+        dialog.exec()
+        self.provider_selector.refresh()
 
     def _on_apply_to_agent(self):
         """Emit signal with current config when Apply to Agent is clicked."""
@@ -549,6 +491,8 @@ class AgentControlsPanel(QGroupBox):
             return
         # Remove sensitive fields that should not be saved as global defaults
         config_dict.pop('api_key', None)
+        log('DEBUG', 'core.config', f'[CONFIG_TRACE] _on_save_global_default: writing to path={global_config_path}')
+        log('DEBUG', 'core.config', f'[CONFIG_TRACE] _on_save_global_default: token_monitor_warning_threshold={config_dict.get("token_monitor_warning_threshold", "NOT_IN_DICT")}, token_monitor_critical_threshold={config_dict.get("token_monitor_critical_threshold", "NOT_IN_DICT")}')
         try:
             with open(global_config_path, 'w') as f:
                 json.dump(config_dict, f, indent=2)
@@ -560,15 +504,31 @@ class AgentControlsPanel(QGroupBox):
             QMessageBox.critical(self, 'Save Error', f'Failed to save config:\n{e}')
 
     def get_config(self):
-        """Return an AgentConfig instance built from current UI control values."""
+        """Return an AgentConfig instance built from current UI control values.
+
+        Uses the ProviderSelector to resolve profile fields (api_key, base_url,
+        model, provider_type) and sets provider_id / model_override accordingly.
+        """
         config = {}
-        provider_display = self.provider_combo.currentText()
-        config['provider_type'] = self._provider_mapping.get(provider_display, 'openai_compatible')
-        config['api_key'] = self.api_key_edit.text().strip()
-        base_url = self.base_url_edit.text().strip()
-        if base_url:
-            config['base_url'] = base_url
-        config['model'] = self.model_combo.currentText()
+
+        # Resolve from ProviderSelector
+        profile_id = self.provider_selector.active_profile_id
+        model = self.provider_selector.active_model
+        config['model'] = model if model else 'gpt-4'
+
+        if profile_id:
+            config['provider_id'] = profile_id
+            profile = self.provider_selector.manager.get_profile(profile_id)
+            if profile:
+                config['api_key'] = profile.api_key
+                config['base_url'] = profile.base_url
+                config['provider_type'] = profile.provider_type
+                if profile.default_model and model != profile.default_model:
+                    config['model_override'] = model
+        else:
+            # No profile selected — default to openai_compatible
+            config['provider_type'] = 'openai_compatible'
+            config['api_key'] = ''
         config['temperature'] = self.temperature_spinbox.value()
         config['max_turns'] = self.max_turns_spinbox.value()
         config['token_monitor_enabled'] = self.token_monitor_checkbox.isChecked()
@@ -593,26 +553,25 @@ class AgentControlsPanel(QGroupBox):
         return AgentConfig(**config)
 
     def set_config(self, config: AgentConfig):
-        """Set control values from an AgentConfig instance."""
+        """Set control values from an AgentConfig instance.
+
+        Uses ProviderSelector for profile/model fields.
+        """
         config_dict = config.model_dump()
         log('DEBUG', 'core.config', f'[CONFIG_TRACE] AgentControlsPanel.set_config received: token_monitor_warning_threshold={config_dict.get("token_monitor_warning_threshold", "NOT_IN_DICT")}, token_monitor_critical_threshold={config_dict.get("token_monitor_critical_threshold", "NOT_IN_DICT")}')
         set_val = config_dict.get  # shorthand
-        reverse_mapping = {v: k for k, v in self._provider_mapping.items()}
-        provider_type = set_val('provider_type')
-        if provider_type:
-            display_text = reverse_mapping.get(provider_type, 'OpenAI (compatible)')
-            index = self.provider_combo.findText(display_text)
-            if index >= 0:
-                self.provider_combo.setCurrentIndex(index)
-        api_key = set_val('api_key')
-        if api_key:
-            self.api_key_edit.setText(api_key)
-        base_url = set_val('base_url')
-        if base_url:
-            self.base_url_edit.setText(base_url)
-        model = set_val('model')
+
+        # Provider profile
+        provider_id = set_val('provider_id')
+        if provider_id:
+            self.provider_selector.set_active_profile(provider_id)
+
+        # Model
+        model_override = set_val('model_override')
+        model = model_override or set_val('model')
         if model:
-            self.model_combo.setEditText(model)
+            self.provider_selector.set_model(model)
+
         temperature = set_val('temperature')
         if temperature is not None:
             self.temperature_spinbox.setValue(temperature)

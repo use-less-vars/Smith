@@ -507,6 +507,10 @@ class _AgentLogger:
         """Log session state change."""
         self._log_event(LogEventType.SESSION_STATE_CHANGE, LogLevel.DEBUG, f'Session state changed: {old_state} -> {new_state}', {'old_state': old_state, 'new_state': new_state}, self.current_turn)
 
+    def log_info(self, event_type: str, message: str):
+        """Log an informational event."""
+        self._log_event(LogEventType.AGENT_START, LogLevel.INFO, f'{event_type}: {message}', {'event_type': event_type, 'message': message}, self.current_turn)
+
     def log_error(self, error_type: str, message: str, traceback: Optional[str]=None):
         """Log an error."""
         self._log_event(LogEventType.ERROR, LogLevel.ERROR, f'{error_type}: {message}', {'error_type': error_type, 'message': message, 'traceback': traceback}, self.current_turn)

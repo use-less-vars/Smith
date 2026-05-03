@@ -254,14 +254,12 @@ class SessionTab(QWidget):
         self.agent_controls_panel.temperature_spinbox.valueChanged.connect(self._handle_config_change)
         self.agent_controls_panel.max_turns_spinbox.valueChanged.connect(self._handle_config_change)
         self.agent_controls_panel.tool_output_limit_spinbox.valueChanged.connect(self._handle_config_change)
-        self.agent_controls_panel.provider_combo.currentTextChanged.connect(self._update_model_suggestions)
-        self.agent_controls_panel.model_combo.currentTextChanged.connect(self._handle_config_change)
+        self.agent_controls_panel.provider_selector.model_changed.connect(self._handle_config_change)
         self.agent_controls_panel.detail_combo.currentTextChanged.connect(self._handle_config_change)
         self.agent_controls_panel.token_monitor_checkbox.stateChanged.connect(self._handle_config_change)
         self.agent_controls_panel.warning_threshold_spinbox.valueChanged.connect(self._handle_config_change)
         self.agent_controls_panel.critical_threshold_spinbox.valueChanged.connect(self._handle_config_change)
-        self.agent_controls_panel.api_key_edit.textChanged.connect(self._handle_config_change)
-        self.agent_controls_panel.base_url_edit.textChanged.connect(self._handle_config_change)
+
         self.agent_controls_panel.turn_monitor_checkbox.stateChanged.connect(self._handle_config_change)
         self.agent_controls_panel.turn_warning_threshold_spinbox.valueChanged.connect(self._handle_config_change)
         self.agent_controls_panel.turn_critical_threshold_spinbox.valueChanged.connect(self._handle_config_change)
@@ -286,7 +284,7 @@ class SessionTab(QWidget):
         self.agent_controls_panel.clear_workspace_btn.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.filter_lineedit.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.filter_type_combo.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
-        self.agent_controls_panel.model_combo.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.agent_controls_panel.provider_selector.model_combo.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.agent_controls_panel.detail_combo.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.agent_controls_panel.temperature_spinbox.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.agent_controls_panel.max_turns_spinbox.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
@@ -326,8 +324,8 @@ class SessionTab(QWidget):
         self.agent_controls_panel.max_turns_spinbox.setAccessibleDescription('Maximum number of turns before auto-stop')
         self.agent_controls_panel.tool_output_limit_spinbox.setAccessibleName('Tool output limit')
         self.agent_controls_panel.tool_output_limit_spinbox.setAccessibleDescription('Maximum token limit for tool outputs')
-        self.agent_controls_panel.model_combo.setAccessibleName('Model')
-        self.agent_controls_panel.model_combo.setAccessibleDescription('Select AI model')
+        self.agent_controls_panel.provider_selector.model_combo.setAccessibleName('Model')
+        self.agent_controls_panel.provider_selector.model_combo.setAccessibleDescription('Select AI model')
         self.agent_controls_panel.detail_combo.setAccessibleName('Detail level')
         self.agent_controls_panel.detail_combo.setAccessibleDescription('Detail level for agent responses')
         for name, checkbox in self.agent_controls_panel.tool_checkboxes.items():
@@ -347,7 +345,7 @@ class SessionTab(QWidget):
         self.agent_controls_panel.temperature_spinbox.setToolTip('Temperature for agent responses (0.0-2.0)')
         self.agent_controls_panel.max_turns_spinbox.setToolTip('Maximum number of turns before auto-stop')
         self.agent_controls_panel.tool_output_limit_spinbox.setToolTip('Maximum token limit for tool outputs')
-        self.agent_controls_panel.model_combo.setToolTip('Select AI model')
+        self.agent_controls_panel.provider_selector.model_combo.setToolTip('Select AI model')
         self.agent_controls_panel.detail_combo.setToolTip('Detail level for agent responses')
         self.run_shortcut = QShortcut(QKeySequence('Ctrl+R'), self)
         self.run_shortcut.activated.connect(self.run_agent)
@@ -581,6 +579,11 @@ class SessionTab(QWidget):
             config = {}
             session = getattr(self.presenter, 'current_session', None)
 
+            # Log config file paths
+            from agent.config import get_config_paths
+            _paths = get_config_paths()
+            log('DEBUG', 'core.config', f'[CONFIG_TRACE] load_config: global_config_path={_paths.get("global_config", "UNKNOWN")}, user_config_path={_paths.get("user_config", "UNKNOWN")}')
+
             # Layer 3 (base): Global config file — contains workspace_path and all persisted fields
             global_config = self.config_bridge.get_config()
             config.update(global_config)
@@ -611,7 +614,7 @@ class SessionTab(QWidget):
 
     def save_config(self, immediate=False):
         """Save current configuration to file.
-        
+
         Args:
             immediate: If True, save immediately; otherwise use debounced save
         """
@@ -619,16 +622,16 @@ class SessionTab(QWidget):
             agent_config = self.agent_controls_panel.get_config()
             self.working_config = agent_config
             config_dict = agent_config.model_dump()
+            # Determine which file path will be used
+            from agent.config import get_config_paths
+            paths = get_config_paths()
             log('DEBUG', 'debug.unknown', f'save_config: config keys: {list(config_dict.keys())}')
+            log('DEBUG', 'core.config', f'[CONFIG_TRACE] save_config: global_config_path={paths.get("global_config", "UNKNOWN")}, user_config_path={paths.get("user_config", "UNKNOWN")}')
+            log('DEBUG', 'core.config', f'[CONFIG_TRACE] save_config: token_monitor_warning_threshold={config_dict.get("token_monitor_warning_threshold", "NOT_IN_DICT")}, token_monitor_critical_threshold={config_dict.get("token_monitor_critical_threshold", "NOT_IN_DICT")}')
             self.config_bridge.save_config(config_dict, immediate=immediate)
             log('DEBUG', 'debug.unknown', 'save_config: bridge save completed')
         except Exception as e:
             log('ERROR', 'debug.unknown', f'save_config error: {e}')
-
-    def _update_model_suggestions(self):
-        """Update model suggestions based on selected provider."""
-        self.agent_controls_panel.update_model_suggestions()
-        self._handle_config_change()
 
     def _on_apply_runtime_params(self, config: AgentConfig):
         """Handle Apply to Agent button press.
@@ -673,7 +676,7 @@ class SessionTab(QWidget):
         try:
             from datetime import datetime
             session = self.presenter.current_session
-            config_dict = self.working_config.model_dump() if hasattr(self.working_config, 'model_dump') else self.working_config
+            config_dict = self.working_config.model_dump(exclude={'api_key'}) if hasattr(self.working_config, 'model_dump') else self.working_config
             session.metadata['agent_config'] = config_dict
             session.updated_at = datetime.now()
             log('DEBUG', 'session_tab', f'Saved agent_config to session.metadata ({len(config_dict)} keys)')
@@ -1167,15 +1170,21 @@ class SessionTab(QWidget):
         from PyQt6.QtWidgets import QInputDialog
         log('DEBUG', 'debug.unknown', f'closeEvent: attempting to save session, user_history length={(len(self.presenter.user_history) if self.presenter.user_history else 0)}, current_session_id={self.presenter.current_session_id}')
         log('DEBUG', 'debug.unknown', 'closeEvent: proceeding with closing')
-        log('DEBUG', 'debug.unknown', 'closeEvent: calling save_config')
-        self.save_config(immediate=True)
-        log('DEBUG', 'debug.unknown', 'closeEvent: save_config returned')
+        # [CONFIG_TRACE] closeEvent: NOT saving global config — only session is persisted.
+        # The global config (agent_config.json) must never be overwritten on tab close.
+        log('DEBUG', 'core.config', '[CONFIG_TRACE] closeEvent: skipping global save_config — only saving session')
+        # Stop debounced config save timer to prevent late writes to global config
+        if hasattr(self.config_bridge, '_pending_save_timer') and self.config_bridge._pending_save_timer.isActive():
+            self.config_bridge._pending_save_timer.stop()
+            log('DEBUG', 'core.config', '[CONFIG_TRACE] closeEvent: stopped pending save timer')
         if self.presenter.controller.is_running:
             log('DEBUG', 'debug.unknown', 'closeEvent: stopping controller')
             self.presenter.controller.stop()
             log('DEBUG', 'debug.unknown', 'closeEvent: controller stopped')
         log('DEBUG', 'debug.unknown', 'closeEvent: attempting to save session')
         try:
+            log('DEBUG', 'core.config', f'[CONFIG_TRACE] closeEvent: session_id={self.presenter.current_session_id}, session_store_dir={getattr(getattr(self.presenter, "session_store", None), "sessions_dir", "NO_STORE")}, session_path={getattr(getattr(self.presenter, "session_store", None), "sessions_dir", "NO_STORE")}/{self.presenter.current_session_id}.json')
+            log('DEBUG', 'core.config', f'[CONFIG_TRACE] closeEvent: token_monitor_warning_threshold={getattr(getattr(self, "working_config", None), "token_monitor_warning_threshold", "N/A")}, token_monitor_critical_threshold={getattr(getattr(self, "working_config", None), "token_monitor_critical_threshold", "N/A")}')
             self.presenter.save_session()
             log('DEBUG', 'debug.unknown', 'closeEvent: save_session completed')
         except Exception as e:

@@ -13,6 +13,7 @@ from .loader import (
     get_config_paths,
 )
 from .preset import Preset, PresetLoader, get_preset_loader
+from .provider_profile import ProviderProfile, ProviderManager
 
 __all__ = [
     'AgentConfig',
@@ -22,6 +23,8 @@ __all__ = [
     'validate_config',
     'update_config',
     'get_config_paths',
+    'ProviderProfile',
+    'ProviderManager',
     'Preset',
     'PresetLoader',
     'get_preset_loader',
