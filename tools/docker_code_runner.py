@@ -83,6 +83,10 @@ class DockerCodeRunner(ToolBase):
     - Containers are pooled and reused across executions for performance.
     - Idle containers are automatically closed after the idle_timeout period (default 300s).
     - This reduces Docker container overhead while maintaining security isolation.
+
+    Dockerfile:
+    The Docker image is built from the project's Dockerfile at `docker/executor.Dockerfile`.
+    Set `build=True` to force a rebuild before execution (useful when adding packages).
     """
     tool: Literal["DockerCodeRunner"] = "DockerCodeRunner"
 
@@ -260,15 +264,28 @@ chmod +x "{script_path}"
         if self.working_dir:
             # Ensure working_dir is safe (no path traversal)
             rel_path = os.path.normpath(self.working_dir)
-            if rel_path.startswith("..") or os.path.isabs(rel_path):
+            if rel_path.startswith(".."):
                 duration = time.time() - start_time
                 return self._truncate_output(self._build_json_response(
                     success=False,
                     exit_code=-1,
-                    error=f"working_dir '{self.working_dir}' must be relative to workspace and not traverse upwards.",
+                    error=f"working_dir '{self.working_dir}' must not traverse upwards.",
                     duration=duration
                 ))
-            workdir = os.path.join("/workspace", rel_path)
+            # Allow absolute paths under /workspace (e.g., /workspace/subdir)
+            if os.path.isabs(rel_path):
+                if rel_path.startswith("/workspace"):
+                    workdir = rel_path
+                else:
+                    duration = time.time() - start_time
+                    return self._truncate_output(self._build_json_response(
+                        success=False,
+                        exit_code=-1,
+                        error=f"working_dir '{self.working_dir}' absolute path must be under /workspace.",
+                        duration=duration
+                    ))
+            else:
+                workdir = os.path.join("/workspace", rel_path)
 
         try:
             # Import DockerExecutor from the existing module
@@ -354,14 +371,12 @@ chmod +x "{script_path}"
                 timed_out=timed_out
             ))
 
-        except Exception as e:
-            import traceback
-
+        except RuntimeError as e:
             duration = time.time() - start_time
             return self._truncate_output(self._build_json_response(
                 success=False,
                 exit_code=-1,
-                error=f"Unexpected error: {e}\n{traceback.format_exc()}",
+                error=str(e),
                 duration=duration
             ))
         except TimeoutError as e:
@@ -402,9 +417,7 @@ chmod +x "{script_path}"
                 if "stream" in chunk:
                     line = chunk["stream"].strip()
                     if line:
-                        import os
-                        if os.environ.get('THOUGHTMACHINE_DEBUG') == '1':
-                            print(f"Build: {line}")
+                        self._log_debug(f"Build: {line}")
             return image
         except DockerException as e:
             raise RuntimeError(f"Failed to build Docker image: {e}")

@@ -164,27 +164,17 @@ class Session:
 
     def _wrap_user_history(self):
         """Wrap user_history with ObservableList if not already wrapped."""
-        if os.environ.get('THOUGHTMACHINE_DEBUG') == '1':
-            import sys
-            log('DEBUG', 'debug.unknown', f"[Session] _wrap_user_history called, session_id={self.session_id}, is_ObservableList={isinstance(self.user_history, ObservableList)}, type={type(self.user_history)}, len={(len(self.user_history) if hasattr(self.user_history, '__len__') else 'N/A')}")
+        log('DEBUG', 'debug.unknown', f"[Session] _wrap_user_history called, session_id={self.session_id}, is_ObservableList={isinstance(self.user_history, ObservableList)}, type={type(self.user_history)}, len={(len(self.user_history) if hasattr(self.user_history, '__len__') else 'N/A')}")
         if not isinstance(self.user_history, ObservableList):
-            if os.environ.get('THOUGHTMACHINE_DEBUG') == '1':
-                import sys
-                log('DEBUG', 'debug.unknown', f'[Session] _wrap_user_history: Creating ObservableList from current user_history')
+            log('DEBUG', 'debug.unknown', f'[Session] _wrap_user_history: Creating ObservableList from current user_history')
             new_list = ObservableList(self.user_history, callback=self._on_conversation_changed)
-            if os.environ.get('THOUGHTMACHINE_DEBUG') == '1':
-                import sys
-                log('DEBUG', 'debug.unknown', f'[Session] _wrap_user_history: Created ObservableList, id={id(new_list)}, len={len(new_list)}')
+            log('DEBUG', 'debug.unknown', f'[Session] _wrap_user_history: Created ObservableList, id={id(new_list)}, len={len(new_list)}')
             self.user_history = new_list
         else:
             self.user_history.callback = self._on_conversation_changed
-            if os.environ.get('THOUGHTMACHINE_DEBUG') == '1':
-                import sys
-                log('DEBUG', 'debug.unknown', f'[Session] _wrap_user_history: Already ObservableList, ensuring session callback, id={id(self.user_history)}, len={len(self.user_history)}')
-        if os.environ.get('THOUGHTMACHINE_DEBUG') == '1':
-            import sys
-            callback_repr = self.user_history.callback.__qualname__ if self.user_history.callback else None
-            log('DEBUG', 'debug.unknown', f'[Session] _wrap_user_history: after, len={len(self.user_history)}, id={id(self.user_history)}, callback={callback_repr}')
+            log('DEBUG', 'debug.unknown', f'[Session] _wrap_user_history: Already ObservableList, ensuring session callback, id={id(self.user_history)}, len={len(self.user_history)}')
+        callback_repr = self.user_history.callback.__qualname__ if self.user_history.callback else None
+        log('DEBUG', 'debug.unknown', f'[Session] _wrap_user_history: after, len={len(self.user_history)}, id={id(self.user_history)}, callback={callback_repr}')
 
     def _get_next_seq(self) -> int:
         """Return the next sequence number and increment the counter."""

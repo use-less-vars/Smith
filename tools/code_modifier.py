@@ -5,10 +5,9 @@ Supports operations: add_function, add_method, add_import, add_class, replace_fu
 from typing import Optional, Literal, Dict, Any, List
 from pydantic import Field, model_validator
 import libcst as cst
+import warnings
 if not hasattr(cst, 'ImportFrom') or not hasattr(cst.ImportFrom, 'relative'):
-    import os
-    if os.environ.get('THOUGHTMACHINE_DEBUG') == '1':
-        print("Warning: Your libcst version may be incompatible. Expected >=0.4.0")
+    warnings.warn("Your libcst version may be incompatible. Expected >=0.4.0")
 import libcst.matchers as m
 import os
 import textwrap

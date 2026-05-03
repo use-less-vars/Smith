@@ -198,9 +198,7 @@ class EventDelegate(QStyledItemDelegate):
         """
         etype = event.get('type', 'unknown')
         detail_level = event.get('_detail_level', 'normal')
-        import os
-        if os.environ.get('THOUGHTMACHINE_DEBUG') == '1':
-            log('DEBUG', 'debug.unknown', f'[EventDelegate] _event_to_html called for type={etype}, suppress_title_bar={suppress_title_bar}')
+        log('DEBUG', 'debug.unknown', f'[EventDelegate] _event_to_html called for type={etype}, suppress_title_bar={suppress_title_bar}')
         lines = []
 
         def add_line(text, style='', use_markdown=False, title=''):

@@ -1,3 +1,4 @@
+from agent.logging import log
 import docker
 import hashlib
 import os
@@ -71,6 +72,10 @@ class DockerExecutor:
                 mem_limit=self.mem_limit,
                 cpu_quota=self.cpu_quota,
             )
+            # Auto-create workspace directory with correct ownership for the agent user
+            self.container.exec_run(
+                cmd=["sh", "-c", "mkdir -p /workspace && chown agent:agent /workspace"]
+            )
         self.last_used = time.time()
 
     def execute(self, command, timeout=30, workdir="/workspace", environment=None):
@@ -80,6 +85,12 @@ class DockerExecutor:
         
         self._ensure_container()
         self.last_used = time.time()
+        # Auto-create working directory with correct ownership if needed
+        if workdir != "/workspace":
+            self.container.exec_run(
+                cmd=["sh", "-c", f"mkdir -p {workdir} && chown agent:agent {workdir}"],
+                workdir="/workspace"
+            )
         try:
             exit_code, output = self._exec_with_timeout(
                 command=command,
@@ -156,50 +167,81 @@ class DockerExecutor:
             raise error
         
         return exit_code, output
-    def _ensure_image(self):
-        """Build Docker image if it doesn't exist locally or force_rebuild is True."""
+    def _ensure_image(self, verbose_build=False):
+        """Build Docker image if it doesn't exist locally or force_rebuild is True.
+        
+        Args:
+            verbose_build: If True, log build output summary on success.
+        
+        Returns:
+            The Docker image object.
+        """
         if self.force_rebuild:
             self.close()
-            self._build_image()
-            return
+            image, _ = self._build_image(verbose_build=verbose_build)
+            return image
         try:
-            self.client.images.get(self.image)
-            return
+            image = self.client.images.get(self.image)
+            return image
         except docker.errors.ImageNotFound:
             pass
-        self._build_image()
+        image, _ = self._build_image(verbose_build=verbose_build)
+        return image
     
-    def _build_image(self):
-        """Build Docker image from docker/executor.Dockerfile."""
+    def _build_image(self, verbose_build=False):
+        """Build Docker image from docker/executor.Dockerfile.
+        
+        Args:
+            verbose_build: If True, log build output summary on success.
+        
+        Returns:
+            Tuple of (image, log_lines) where log_lines is a list of build output lines.
+        
+        Raises:
+            RuntimeError: If build fails, with concatenated build logs in the message.
+        """
         dockerfile_dir = self.workspace_path
         dockerfile_path = os.path.join(dockerfile_dir, "docker", "executor.Dockerfile")
         if not os.path.exists(dockerfile_path):
             raise RuntimeError(f"Dockerfile not found at {dockerfile_path}")
 
-        if os.environ.get('THOUGHTMACHINE_DEBUG') == '1':
-            print(f"Building Docker image {self.image} from {dockerfile_path}")
-        if os.environ.get('THOUGHTMACHINE_DEBUG') == '1':
-            print(f"Build context directory: {dockerfile_dir}")
-        if os.environ.get('THOUGHTMACHINE_DEBUG') == '1':
-            print(f"Absolute path: {os.path.abspath(dockerfile_dir)}")
-        if os.environ.get('THOUGHTMACHINE_DEBUG') == '1':
-            print(f"Requirements.txt exists: {os.path.exists(os.path.join(dockerfile_dir, 'requirements.txt'))}")
-        if os.environ.get('THOUGHTMACHINE_DEBUG') == '1':
-            print(f"Files in build context:")
+        log('DEBUG', 'docker.build', f"Building Docker image {self.image} from {dockerfile_path}")
+        log('DEBUG', 'docker.build', f"Build context directory: {dockerfile_dir}")
+        log('DEBUG', 'docker.build', f"Absolute path: {os.path.abspath(dockerfile_dir)}")
+        log('DEBUG', 'docker.build', f"Requirements.txt exists: {os.path.exists(os.path.join(dockerfile_dir, 'requirements.txt'))}")
+        log('DEBUG', 'docker.build', f"Files in build context:")
         for f in os.listdir(dockerfile_dir):
-            if os.environ.get('THOUGHTMACHINE_DEBUG') == '1':
-                print(f"  {f}")
-        image, build_logs = self.client.images.build(
-            path=dockerfile_dir,
-            dockerfile="docker/executor.Dockerfile",
-            tag=self.image,
-            rm=True,
-            pull=False
-        )
-        for chunk in build_logs:
-            if "stream" in chunk:
-                line = chunk["stream"].strip()
-                if line:
-                    if os.environ.get('THOUGHTMACHINE_DEBUG') == '1':
-                        print(f"Build: {line}")
-        return image
+            log('DEBUG', 'docker.build', f"  {f}")
+
+        log_lines = []
+        try:
+            image, build_logs = self.client.images.build(
+                path=dockerfile_dir,
+                dockerfile="docker/executor.Dockerfile",
+                tag=self.image,
+                rm=True,
+                pull=True
+            )
+            # Generator iteration must be inside try/except block because
+            # Docker SDK raises BuildError from within the generator,
+            # not from build() itself.
+            for chunk in build_logs:
+                if "stream" in chunk:
+                    line = chunk["stream"].strip()
+                    if line:
+                        log_lines.append(line)
+                        log('DEBUG', 'docker.build', f"Build: {line}")
+        except docker.errors.BuildError as e:
+            # BuildError already has build_log; include it in the error message
+            build_log_str = "\n".join(str(line) for line in (e.build_log or []))
+            raise RuntimeError(
+                f"Docker build failed: {e}\n"
+                f"Build logs:\n{build_log_str}"
+            ) from e
+        except Exception as e:
+            raise RuntimeError(f"Docker build failed: {e}") from e
+
+        if verbose_build and log_lines:
+            log('INFO', 'docker.build', f"Build complete for {self.image}:\n" + "\n".join(log_lines))
+
+        return image, log_lines

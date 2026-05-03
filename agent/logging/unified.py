@@ -342,64 +342,19 @@ def _truncate_data(data: Any, truncate_hint: Optional[str] = None) -> Any:
     return _truncate_string(str(data), limit)
 
 
-# Singleton AgentLogger instance
-_logger_instance = None
+# Module-level registered logger (set by create_logger() in agent.py)
+_logger = None
+
+
+def set_logger(logger):
+    """Register the AgentLogger instance created by create_logger() in agent.py."""
+    global _logger
+    _logger = logger
 
 
 def _get_logger() -> Optional[object]:
-    """Get or create singleton AgentLogger instance."""
-    global _logger_instance
-    if _logger_instance is not None:
-        return _logger_instance
-    
-    # Lazy import to avoid circular import with agent/logging/__init__.py
-    classes = _get_agent_logger_classes()
-    if not classes:
-        return None
-    AgentLogger = classes['AgentLogger']    
-    # Create minimal config for AgentLogger
-    # This is a temporary solution until Phase 2 refactoring
-    class MinimalConfig:
-        log_categories = ["SESSION", "UI", "LLM", "TOOLS", "SECURITY", "PERFORMANCE"]
-        log_level = "INFO"
-        enable_logging = True
-        log_dir = "./logs"
-        enable_file_logging = True
-        enable_console_logging = False  # We handle console output ourselves
-        jsonl_format = True
-        max_file_size_mb = 10
-        max_backup_files = 5
-        session_id = None
-        file_log_level = "DEBUG"
-    
-    try:
-        config = MinimalConfig()
-        # Determine file_log_level from environment variable TM_LOG_FILE_LEVEL
-        env_level = os.environ.get('TM_LOG_FILE_LEVEL')
-        if env_level:
-            from agent.logging import LogLevel as AgentLogLevel
-            try:
-                config.file_log_level = AgentLogLevel(env_level.upper())
-            except ValueError:
-                pass
-
-        _logger_instance = AgentLogger(
-            config=config,
-            log_dir=config.log_dir,
-            log_level=config.log_level,
-            file_log_level=config.file_log_level,
-            enable_file_logging=config.enable_file_logging,
-            enable_console_logging=config.enable_console_logging,
-            jsonl_format=config.jsonl_format,
-            max_file_size_mb=config.max_file_size_mb,
-            max_backup_files=config.max_backup_files,
-            session_id=config.session_id
-        )
-    except Exception as e:
-        print(f"[LOGGING ERROR] Failed to create AgentLogger: {e}", file=sys.stderr)
-        _logger_instance = None
-    
-    return _logger_instance
+    """Get the registered AgentLogger instance (set via set_logger())."""
+    return _logger
 
 
 def log(

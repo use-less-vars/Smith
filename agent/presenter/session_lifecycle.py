@@ -61,8 +61,7 @@ class SessionLifecycle:
 
     def mark_clean(self) -> None:
         """Mark session as clean (no unsaved changes). Dummy method after removing dirty tracking."""
-        if os.environ.get('THOUGHTMACHINE_DEBUG') == '1':
-            log('DEBUG', 'presenter.lifecycle', f'mark_clean called (dummy method - dirty tracking removed)')
+        log('DEBUG', 'presenter.lifecycle', f'mark_clean called (dummy method - dirty tracking removed)')
 
     def has_unsaved_changes(self) -> bool:
         """Check if current session has unsaved changes.
@@ -126,8 +125,7 @@ class SessionLifecycle:
         Args:
             name: Optional name for the new session. If None, session will be unnamed.
         """
-        if os.environ.get('THOUGHTMACHINE_DEBUG') == '1':
-            log('DEBUG', 'presenter.lifecycle', f'Auto-saving current session before starting new session')
+        log('DEBUG', 'presenter.lifecycle', f'Auto-saving current session before starting new session')
         self.auto_save_current_session()
         if self.controller.is_running:
             self.controller.stop()
@@ -244,9 +242,7 @@ class SessionLifecycle:
                     log('DEBUG', 'presenter.lifecycle', f'Failed to export to external file: {e}')
             return True
         except Exception as e:
-            if os.environ.get('THOUGHTMACHINE_DEBUG') == '1':
-                import traceback
-                log('ERROR', 'presenter.lifecycle', f'Error saving session: {e}\n{traceback.format_exc()}')
+            log('ERROR', 'presenter.lifecycle', f'Error saving session: {e}')
             return False
 
     def load_session(self, filepath: str, target_session: Optional[Session]=None) -> bool:
@@ -260,8 +256,7 @@ class SessionLifecycle:
         Returns:
             True if loaded successfully, False otherwise
         """
-        if os.environ.get('THOUGHTMACHINE_DEBUG') == '1':
-            log('DEBUG', 'presenter.lifecycle', f'Auto-saving current session before loading new session')
+        log('DEBUG', 'presenter.lifecycle', f'Auto-saving current session before loading new session')
         self.auto_save_current_session()
         try:
             filepath = os.path.abspath(filepath)
@@ -468,13 +463,11 @@ class SessionLifecycle:
             True if saved successfully, False on error.
         """
         log('DEBUG', 'presenter.lifecycle', f'auto_save_current_session called, current_session_id={self.state_bridge.current_session_id}, current_session exists={self.state_bridge.current_session is not None}')
-        if os.environ.get('THOUGHTMACHINE_DEBUG') == '1':
-            log('DEBUG', 'presenter.lifecycle', f'Attempting auto-save (event-driven)')
+        log('DEBUG', 'presenter.lifecycle', f'Attempting auto-save (event-driven)')
         try:
             success = self.save_session()
             if success:
-                if os.environ.get('THOUGHTMACHINE_DEBUG') == '1':
-                    log('DEBUG', 'presenter.lifecycle', f'Auto-saved session successfully')
+                log('DEBUG', 'presenter.lifecycle', f'Auto-saved session successfully')
                 if self.state_bridge._external_file_path:
                     try:
                         self.export_session(self.state_bridge._external_file_path, set_as_external=False)
@@ -482,8 +475,7 @@ class SessionLifecycle:
                         log('DEBUG', 'presenter.lifecycle', f'Failed to export to external file: {e}')
                 return True
             else:
-                if os.environ.get('THOUGHTMACHINE_DEBUG') == '1':
-                    log('DEBUG', 'presenter.lifecycle', f'Auto-save failed')
+                log('DEBUG', 'presenter.lifecycle', f'Auto-save failed')
                 return False
         except Exception as e:
             log('DEBUG', 'presenter.lifecycle', f'Error in auto-save: {e}')

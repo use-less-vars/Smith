@@ -108,6 +108,23 @@ def validate_config(config_dict: Dict[str, Any]) -> Optional[AgentConfig]:
         logger.error(f'Configuration validation failed: {e}')
         return None
 
+def get_config_paths() -> Dict[str, str]:
+    """Return paths to configuration files.
+
+    Returns:
+        Dictionary with:
+        - 'global_config': Path to project-level global config file (agent_config.json)
+        - 'user_config': Path to user-level config file (~/.thoughtmachine/config.json)
+    """
+    project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    global_config_path = os.path.join(project_root, 'agent_config.json')
+    user_config_path = str(Path.home() / '.thoughtmachine' / 'config.json')
+    return {
+        'global_config': global_config_path,
+        'user_config': user_config_path,
+    }
+
+
 def update_config(current_config: Dict[str, Any], updates: Dict[str, Any]) -> Dict[str, Any]:
     """Update configuration with partial updates.
     

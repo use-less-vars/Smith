@@ -126,8 +126,7 @@ class SessionTab(QWidget):
         self.presenter.bind_session(self.session)
         self.presenter.save_session()
         self.update_window_title()
-        if os.environ.get('THOUGHTMACHINE_DEBUG') == '1':
-            log('DEBUG', 'debug.unknown', f'Created new session: {self.session.session_id}')
+        log('DEBUG', 'debug.unknown', f'Created new session: {self.session.session_id}')
 
     def load_session_by_id(self, session_id: str) -> bool:
         """Load a session by ID from the session store."""

@@ -151,16 +151,13 @@ class StateBridge:
 
     def bind_session(self, session: Session) -> None:
         """Bind a Session object as the source of truth for conversation state."""
-        if os.environ.get('THOUGHTMACHINE_DEBUG') == '1':
-            log('DEBUG', 'presenter.state_bridge', f'bind_session START: session_id={session.session_id}, user_history id={id(session.user_history)}, length={len(session.user_history)}, type={type(session.user_history)}, is_ObservableList={isinstance(session.user_history, ObservableList)}')
+        log('DEBUG', 'presenter.state_bridge', f'bind_session START: session_id={session.session_id}, user_history id={id(session.user_history)}, length={len(session.user_history)}, type={type(session.user_history)}, is_ObservableList={isinstance(session.user_history, ObservableList)}')
         self.current_session = session
         self.current_session_id = session.session_id
         self.session_name = session.metadata.get('name')
-        if os.environ.get('THOUGHTMACHINE_DEBUG') == '1':
-            log('DEBUG', 'presenter.state_bridge', f'bind_session: pending_history={len(self._pending_user_history)}, session.user_history id={id(session.user_history)}, length={len(session.user_history)}, is_ObservableList={isinstance(session.user_history, ObservableList)}')
+        log('DEBUG', 'presenter.state_bridge', f'bind_session: pending_history={len(self._pending_user_history)}, session.user_history id={id(session.user_history)}, length={len(session.user_history)}, is_ObservableList={isinstance(session.user_history, ObservableList)}')
         if self._pending_user_history and (not session.user_history):
-            if os.environ.get('THOUGHTMACHINE_DEBUG') == '1':
-                log('DEBUG', 'presenter.state_bridge', f'Performing slice assignment: session.user_history[:] = pending_user_history (id={id(session.user_history)}, len={len(self._pending_user_history)})')
+            log('DEBUG', 'presenter.state_bridge', f'Performing slice assignment: session.user_history[:] = pending_user_history (id={id(session.user_history)}, len={len(self._pending_user_history)})')
             session.user_history[:] = self._pending_user_history
         self._pending_user_history.clear()
         self.total_input = session.total_input_tokens

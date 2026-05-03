@@ -137,6 +137,7 @@ class _AgentLogger:
         self._file_handle = None
         self._current_file_size = 0
         os.makedirs(self.log_dir, exist_ok=True)
+        _cleanup_old_logs(self.log_dir)
         self.log_file_path = os.path.join(self.log_dir, f"agent_{self.session_id}.{('jsonl' if jsonl_format else 'log')}")
         self.py_logger = python_logging.getLogger(f'agent_{self.session_id}')
         self.py_logger.setLevel(self._to_python_log_level(self.log_level))
@@ -214,6 +215,16 @@ class _AgentLogger:
                     self._rotate_log_file()
             except Exception as e:
                 print(f"[LOGGING ERROR] Failed to write log entry: {e}", file=__import__('sys').stderr)
+                # Attempt fallback write to agent_fallback.jsonl
+                try:
+                    fallback_dir = os.path.dirname(self.log_file_path) if hasattr(self, 'log_file_path') and self.log_file_path else self.log_dir
+                    fallback_path = os.path.join(fallback_dir, 'agent_fallback.jsonl')
+                    with open(fallback_path, 'a', encoding='utf-8') as f:
+                        event['timestamp'] = datetime.now().isoformat()
+                        f.write(json.dumps(event, ensure_ascii=False) + '\n')
+                        f.flush()
+                except Exception:
+                    pass
                 try:
                     if self._file_handle and not self._file_handle.closed:
                         self._file_handle.close()
@@ -599,6 +610,27 @@ class _AgentLogger:
                     pass
                 self._file_handle = None
 AgentLogger = _AgentLogger
+
+
+def _cleanup_old_logs(log_dir: str) -> None:
+    """Remove log files older than TM_LOG_MAX_AGE_DAYS (default: 7)."""
+    try:
+        max_age_days = int(os.environ.get('TM_LOG_MAX_AGE_DAYS', '7'))
+        if max_age_days <= 0:
+            return
+        if not os.path.isdir(log_dir):
+            return
+        now = datetime.now()
+        for fname in os.listdir(log_dir):
+            fpath = os.path.join(log_dir, fname)
+            if os.path.isfile(fpath):
+                mtime = os.path.getmtime(fpath)
+                age_days = (now.timestamp() - mtime) / 86400
+                if age_days > max_age_days:
+                    os.remove(fpath)
+    except Exception:
+        pass  # Best-effort cleanup
+
 
 def create_logger(config: 'AgentConfig') -> Optional[_AgentLogger]:
     """Create a logger based on config settings."""

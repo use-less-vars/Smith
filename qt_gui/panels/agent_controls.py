@@ -532,25 +532,29 @@ class AgentControlsPanel(QGroupBox):
         self.apply_to_agent_requested.emit(config)
 
     def _on_save_global_default(self):
-        """Save current config as global default (user config file)."""
+        """Save current config as global default (agent_config.json).
+
+        Strips sensitive fields (api_key) before saving so they are never
+        persisted to the shared default config file.
+        """
         config = self.get_config()
         config_dict = config.model_dump()
         from PyQt6.QtWidgets import QMessageBox
         from agent.config import get_config_paths
         import json
         paths = get_config_paths()
-        user_config_path = paths.get('user_config')
-        if not user_config_path:
-            QMessageBox.warning(self, 'Error', 'Could not determine user config path.')
+        global_config_path = paths.get('global_config')
+        if not global_config_path:
+            QMessageBox.warning(self, 'Error', 'Could not determine global config path.')
             return
-        if not str(user_config_path).endswith('.json'):
-            user_config_path = str(user_config_path) + '.json'
+        # Remove sensitive fields that should not be saved as global defaults
+        config_dict.pop('api_key', None)
         try:
-            with open(user_config_path, 'w') as f:
+            with open(global_config_path, 'w') as f:
                 json.dump(config_dict, f, indent=2)
             QMessageBox.information(
                 self, 'Saved',
-                f'Configuration saved as global default to:\n{user_config_path}'
+                f'Configuration saved as global default to:\n{global_config_path}'
             )
         except Exception as e:
             QMessageBox.critical(self, 'Save Error', f'Failed to save config:\n{e}')

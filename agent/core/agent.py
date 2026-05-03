@@ -71,6 +71,12 @@ class Agent:
             create_logger = None
         if LOGGING_AVAILABLE and config.enable_logging:
             self.logger = create_logger(config)
+            # Register the logger with unified.py so _get_logger() returns it
+            try:
+                from agent.logging.unified import set_logger as unified_set_logger
+                unified_set_logger(self.logger)
+            except ImportError:
+                pass
             try:
                 from thoughtmachine.security import CapabilityRegistry, set_logger as security_set_logger
                 self.security_available = True
