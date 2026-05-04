@@ -511,6 +511,10 @@ class _AgentLogger:
         """Log an informational event."""
         self._log_event(LogEventType.AGENT_START, LogLevel.INFO, f'{event_type}: {message}', {'event_type': event_type, 'message': message}, self.current_turn)
 
+    def log_system_event(self, message: str):
+        """Log a system event (e.g., config hot-swap)."""
+        self._log_event(LogEventType.AGENT_START, LogLevel.INFO, f'System event: {message}', {'message': message}, self.current_turn)
+
     def log_error(self, error_type: str, message: str, traceback: Optional[str]=None):
         """Log an error."""
         self._log_event(LogEventType.ERROR, LogLevel.ERROR, f'{error_type}: {message}', {'error_type': error_type, 'message': message, 'traceback': traceback}, self.current_turn)
