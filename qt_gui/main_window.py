@@ -1,11 +1,12 @@
 """Main window for the ThoughtMachine GUI."""
-from PyQt6.QtWidgets import QMainWindow, QTabWidget, QPushButton, QMenuBar, QMenu, QWidget, QVBoxLayout, QHBoxLayout, QApplication
+from PyQt6.QtWidgets import QMainWindow, QTabWidget, QPushButton, QMenuBar, QMenu, QWidget, QVBoxLayout, QHBoxLayout, QApplication, QLabel
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QKeySequence, QAction
 from session.store import FileSystemSessionStore
 from qt_gui.themes import apply_theme
 from agent.logging import log
 import json
+import os
 from pathlib import Path
 
 class AgentGUI(QMainWindow):
@@ -32,10 +33,45 @@ class AgentGUI(QMainWindow):
         new_tab_btn.clicked.connect(self.new_tab)
         self.tab_widget.setCornerWidget(new_tab_btn, Qt.Corner.TopRightCorner)
         main_layout.addWidget(self.tab_widget)
+        self._init_session_size_label()
         self.restore_open_sessions()
         if self.tab_widget.count() == 0:
             self.new_tab()
         self.create_menu_bar()
+
+    def _init_session_size_label(self):
+        """Create the session file size label as a permanent widget in the status bar."""
+        self._session_size_label = QLabel("Session: N/A")
+        self._session_size_label.setToolTip(
+            "Size of the session file on disk. "
+            "Saves automatically reduce the file after summarisation."
+        )
+        self.statusBar().addPermanentWidget(self._session_size_label)
+
+    def _update_session_size_label(self):
+        """Update the session file size label from the current tab."""
+        tab = self.tab_widget.currentWidget()
+        if not tab or not tab.presenter.current_session_id:
+            self._session_size_label.setText("Session: N/A")
+            return
+        session_id = tab.presenter.current_session_id
+        path = self.session_store.get_session_path(session_id)
+        if path.exists():
+            size = os.path.getsize(path)
+            text = self._format_file_size(size)
+            self._session_size_label.setText(f"Session: {text}")
+        else:
+            self._session_size_label.setText("Session: unsaved")
+
+    @staticmethod
+    def _format_file_size(size_bytes: int) -> str:
+        """Format file size in human-readable format."""
+        if size_bytes < 1024:
+            return f"{size_bytes} B"
+        elif size_bytes < 1024 * 1024:
+            return f"{size_bytes / 1024:.1f} KB"
+        else:
+            return f"{size_bytes / (1024 * 1024):.1f} MB"
 
     def new_tab(self, session_id=None):
         from qt_gui.session_tab import SessionTab
@@ -44,6 +80,7 @@ class AgentGUI(QMainWindow):
         self.tab_widget.setCurrentWidget(tab)
         tab.update_window_title()
         tab._update_tab_label()
+        self._update_session_size_label()
 
     def restore_open_sessions(self):
         """Restore previously open sessions from open_sessions.json."""
@@ -104,6 +141,7 @@ class AgentGUI(QMainWindow):
         self.tab_widget.setCurrentWidget(tab)
         tab.update_window_title()
         tab._update_tab_label()
+        self._update_session_size_label()
 
     def close_tab(self, index):
         tab = self.tab_widget.widget(index)
@@ -118,6 +156,7 @@ class AgentGUI(QMainWindow):
         if tab:
             tab.update_window_title()
             self.statusBar().showMessage(f'Tokens: in={tab.total_input}, out={tab.total_output}, ctx={tab.context_length}')
+        self._update_session_size_label()
 
     def create_menu_bar(self):
         menu_bar = QMenuBar(self)

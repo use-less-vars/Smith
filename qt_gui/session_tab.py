@@ -126,6 +126,7 @@ class SessionTab(QWidget):
         self.presenter.bind_session(self.session)
         self.presenter.save_session()
         self.update_window_title()
+        self._update_session_size_label_on_main_window()
         log('DEBUG', 'debug.unknown', f'Created new session: {self.session.session_id}')
 
     def load_session_by_id(self, session_id: str) -> bool:
@@ -157,6 +158,7 @@ class SessionTab(QWidget):
             except Exception as e:
                 log('ERROR', 'debug.unknown', f'Error displaying session {session_id}: {e}')
             self.update_window_title()
+            self._update_session_size_label_on_main_window()
             log('DEBUG', 'debug.unknown', f'Loaded session: {session_id}')
             return True
         else:
@@ -371,6 +373,7 @@ class SessionTab(QWidget):
         self.presenter.error_occurred.connect(self.on_error_occurred)
         self.presenter.config_changed.connect(self.on_config_changed)
         self.presenter.conversation_changed.connect(self.on_conversation_changed)
+        self.presenter.conversation_changed.connect(self._update_session_size_label_on_main_window)
 
     @pyqtSlot(ExecutionState)
     def on_state_changed(self, state):
@@ -422,6 +425,12 @@ class SessionTab(QWidget):
         """Handle context token count updates."""
         self.context_length = context_length
         self.status_panel.update_context_length(context_length)
+
+    def _update_session_size_label_on_main_window(self):
+        """Tell the main window to refresh the session file size label."""
+        main_window = self.window()
+        if main_window and hasattr(main_window, '_update_session_size_label'):
+            main_window._update_session_size_label()
 
     @pyqtSlot(str)
     def on_status_message(self, message):
@@ -884,6 +893,7 @@ class SessionTab(QWidget):
             if success:
                 self.update_window_title()
                 self.presenter.gui_integration.emit_status_message('Session saved')
+                self._update_session_size_label_on_main_window()
             else:
                 QMessageBox.warning(self, 'Save Failed', 'Failed to save session.')
         except Exception as e:
@@ -941,6 +951,7 @@ class SessionTab(QWidget):
                 self.update_window_title()
                 self._update_tab_label()
                 self.presenter.gui_integration.emit_status_message(f"Session saved as '{new_name}'")
+                self._update_session_size_label_on_main_window()
             else:
                 QMessageBox.warning(self, 'Rename Failed', 'Failed to rename session.')
         else:
@@ -951,6 +962,7 @@ class SessionTab(QWidget):
             success = self.presenter.export_session(file_path, set_as_external=False)
             if success:
                 self.presenter.gui_integration.emit_status_message(f'Session exported to {target_path.name}')
+                self._update_session_size_label_on_main_window()
             else:
                 QMessageBox.warning(self, 'Save Failed', 'Failed to save session to the selected location.')
 

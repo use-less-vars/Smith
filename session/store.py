@@ -87,15 +87,20 @@ class FileSystemSessionStore(SessionStore):
     Saves each session as a JSON file in the sessions_dir with friendly filenames: {sanitized_name}_{short_id}.json
     """
 
-    def __init__(self, sessions_dir: Optional[str] = None):
+    def __init__(self, sessions_dir: Optional[str] = None, enable_session_history_pruning: bool = True):
         """
         Initialize.
 
         Args:
             sessions_dir: Directory to store session files. If None, defaults to
                          ~/.thoughtmachine/sessions
+            enable_session_history_pruning: If True (default), old summarization cycles
+                         are pruned on save to keep the session file compact. Set to
+                         False to disable pruning (useful for debugging or rollback).
         """
         logger.debug(f"[SessionStore] Initializing with sessions_dir={sessions_dir}")
+        self._enable_session_history_pruning = enable_session_history_pruning
+        logger.debug(f"[SessionStore] Session history pruning enabled: {self._enable_session_history_pruning}")
         self._original_sessions_dir = sessions_dir  # Store original parameter
         if sessions_dir is None:
             home = os.path.expanduser("~")
@@ -158,6 +163,14 @@ class FileSystemSessionStore(SessionStore):
         # Update the updated_at timestamp
         session.updated_at = datetime.now()
         data = session.to_persistable_dict()
+
+        # Prune old summarization cycles to keep the session file compact.
+        # The pruner only acts when there are >= 2 summaries (default min_summaries=2)
+        # and preserves the two most recent cycles intact.
+        if self._enable_session_history_pruning:
+            from session.history_pruner import prune_user_history
+            pruned = prune_user_history(data['user_history'])
+            data['user_history'] = pruned
         
         # Remove external_file_path from metadata if present (legacy concept)
         if 'metadata' in data and 'external_file_path' in data['metadata']:
