@@ -1,6 +1,13 @@
 FROM python:3.11-slim
 
+# Install pydantic system-wide (into rootfs which has exec permissions)
+RUN pip install --no-cache-dir pydantic
+
+# Disable user site-packages (writable dirs have noexec, preventing .so loading)
+ENV PYTHONNOUSERSITE=1
+
 RUN useradd -m -u 1000 agent && mkdir /workspace && chown agent:agent /workspace
 WORKDIR /workspace
 USER agent
+
 CMD ["tail", "-f", "/dev/null"]
