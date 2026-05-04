@@ -87,13 +87,16 @@ class FileSystemSessionStore(SessionStore):
     Saves each session as a JSON file in the sessions_dir with friendly filenames: {sanitized_name}_{short_id}.json
     """
 
-    def __init__(self, sessions_dir: Optional[str] = None, enable_session_history_pruning: bool = True):
+    def __init__(self, sessions_dir: Optional[str] = None, state_dir: Optional[str] = None,
+                 enable_session_history_pruning: bool = True):
         """
         Initialize.
 
         Args:
             sessions_dir: Directory to store session files. If None, defaults to
                          ~/.thoughtmachine/sessions
+            state_dir: Directory for state files (open_sessions.json, .current_session).
+                      If None, defaults to ~/.thoughtmachine/state
             enable_session_history_pruning: If True (default), old summarization cycles
                          are pruned on save to keep the session file compact. Set to
                          False to disable pruning (useful for debugging or rollback).
@@ -102,6 +105,17 @@ class FileSystemSessionStore(SessionStore):
         self._enable_session_history_pruning = enable_session_history_pruning
         logger.debug(f"[SessionStore] Session history pruning enabled: {self._enable_session_history_pruning}")
         self._original_sessions_dir = sessions_dir  # Store original parameter
+
+        # Resolve state directory
+        if state_dir is None:
+            home = os.path.expanduser("~")
+            state_dir = os.path.join(home, ".thoughtmachine", "state")
+        self.state_dir = Path(state_dir)
+        try:
+            self.state_dir.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            logger.warning(f"[SessionStore] Could not create state directory at {self.state_dir}")
+
         if sessions_dir is None:
             home = os.path.expanduser("~")
             sessions_dir = os.path.join(home, ".thoughtmachine", "sessions")
@@ -190,12 +204,19 @@ class FileSystemSessionStore(SessionStore):
                 logger.warning(f"[SessionStore] Target file {new_path} already exists, overwriting")
             old_path.rename(new_path)
         
-        # Write the session data
-        logger.debug(f"[SessionStore] Writing to {new_path}")
-        with open(new_path, 'w') as f:
-            json.dump(data, f, indent=2, default=str)  # default=str handles datetime
-        
-        logger.debug(f"[SessionStore] Session {session.session_id} saved to {new_path}")
+        # Write the session data atomically via temp file
+        temp_path = new_path.with_suffix('.tmp')
+        logger.debug(f"[SessionStore] Writing to {temp_path} (atomic)")
+        try:
+            with open(temp_path, 'w') as f:
+                json.dump(data, f, indent=2, default=str)  # default=str handles datetime
+            temp_path.replace(new_path)
+            logger.debug(f"[SessionStore] Session {session.session_id} saved to {new_path}")
+        except Exception:
+            # Clean up temp file on failure
+            if temp_path.exists():
+                temp_path.unlink()
+            raise
 
     def load_session(self, session_id: str) -> Optional[Session]:
         """Load a session from a JSON file."""
@@ -218,12 +239,17 @@ class FileSystemSessionStore(SessionStore):
         """
         List all saved sessions with basic metadata.
         Reads each JSON file and extracts a few fields.
+        Skips files that are not valid session objects (e.g. open_sessions.json).
         """
         sessions = []
         for file_path in self.sessions_dir.glob("*.json"):
             try:
                 with open(file_path, 'r') as f:
                     data = json.load(f)
+                # Skip files that aren't session objects (e.g. open_sessions.json is a list)
+                if not isinstance(data, dict):
+                    logger.debug(f"[SessionStore] Skipping {file_path.name}: not a session object")
+                    continue
                 # Extract minimal metadata for listing
                 session_info = {
                     'session_id': data.get('session_id'),
@@ -233,6 +259,9 @@ class FileSystemSessionStore(SessionStore):
                     'preview': self._extract_preview(data.get('user_history', [])),
                 }
                 sessions.append(session_info)
+            except json.JSONDecodeError as e:
+                logger.warning(f"[SessionStore] Corrupt session file {file_path.name}: {e}")
+                continue
             except Exception as e:
                 logger.error(f"[SessionStore] Error reading {file_path}: {e}")
                 continue
@@ -265,13 +294,21 @@ class FileSystemSessionStore(SessionStore):
         # Session not saved yet, return the default path (for compatibility)
         return self._get_session_path(session_id)
 
+    def get_open_sessions_path(self) -> Path:
+        """Get the path for the open_sessions.json state file."""
+        return self.state_dir / 'open_sessions.json'
+
     def get_current_session_id(self) -> Optional[str]:
         """
         Get the ID of the current session from the marker file.
         Returns None if no marker exists.
+
+        Migrates the marker from the old sessions_dir location to the
+        new state_dir location on first access if needed.
         """
-        marker = self.sessions_dir / ".current_session"
+        marker = self.state_dir / ".current_session"
         logger.debug(f"[SessionStore] get_current_session_id: marker={marker}, exists={marker.exists()}")
+
         if marker.exists():
             try:
                 content = marker.read_text().strip()
@@ -280,6 +317,24 @@ class FileSystemSessionStore(SessionStore):
             except Exception as e:
                 logger.error(f"[SessionStore] Error reading current session marker: {e}")
                 return None
+
+        # Migration: check old location in sessions_dir
+        old_marker = self.sessions_dir / ".current_session"
+        if old_marker.exists():
+            try:
+                content = old_marker.read_text().strip()
+                if content:
+                    logger.info(f"[SessionStore] Migrating .current_session from {old_marker} to {marker}")
+                    # Atomic write to new location
+                    temp_path = marker.with_suffix('.tmp')
+                    temp_path.write_text(content)
+                    temp_path.replace(marker)
+                    # Remove old marker
+                    old_marker.unlink()
+                    return content
+            except Exception as e:
+                logger.error(f"[SessionStore] Error migrating .current_session: {e}")
+
         return None
 
     def set_current_session_id(self, session_id: Optional[str]) -> None:
@@ -287,7 +342,7 @@ class FileSystemSessionStore(SessionStore):
         Set the current session ID by writing to the marker file.
         If session_id is None, the marker file is removed.
         """
-        marker = self.sessions_dir / ".current_session"
+        marker = self.state_dir / ".current_session"
         logger.debug(f"[SessionStore] set_current_session_id: marker={marker}, session_id={session_id}")
         # Ensure session_id is a string if not None
         if session_id is not None and not isinstance(session_id, str):
