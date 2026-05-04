@@ -1,4 +1,4 @@
-# ThoughtMachine  v0.9
+# ThoughtMachine v1.0
 
 An AI agent framework that can execute code securely inside Docker containers.
 
