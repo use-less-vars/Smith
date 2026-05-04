@@ -2,6 +2,7 @@
 Configuration models for the ThoughtMachine agent.
 """
 from typing import ClassVar, Optional, Callable, List, Any, Dict, Literal
+from pathlib import Path
 from pydantic import BaseModel, Field, field_validator, model_validator, ConfigDict
 from agent.logging import log
 from tools import SIMPLIFIED_TOOL_CLASSES
@@ -54,13 +55,17 @@ class AgentConfig(BaseModel):
         'rag_truncate_dim': RESTART_REQUIRED,
         'tool_output_token_limit': HOT_SWAPPABLE,
         'enabled_tools': HOT_SWAPPABLE,
+        'provider_id': RESTART_REQUIRED,
+        'model_override': RESTART_REQUIRED,
     }
 
-    api_key: str = ''
+    api_key: str = Field(default='', exclude=True)
     base_url: str = 'https://api.deepseek.com'
     model: str = 'deepseek-reasoner'
     provider_type: Literal['openai_compatible', 'anthropic', 'openai'] = 'openai_compatible'
     provider_config: Dict[str, Any] = Field(default_factory=dict)
+    provider_id: Optional[str] = Field(default=None, description='Active provider profile id from providers.json')
+    model_override: Optional[str] = Field(default=None, description='Override model from the profile (leaves provider_id intact)')
     temperature: float = 0.2
     max_turns: int = 100
     stop_check: Optional[Callable[[], bool]] = None
@@ -130,5 +135,39 @@ class AgentConfig(BaseModel):
         if active_tools:
             tool_classes = [cls for cls in tool_classes if cls.__name__ in active_tools]
         return tool_classes
+
+    def resolve_from_profile(self, manager) -> 'AgentConfig':
+        """Resolve provider fields from the active profile.
+
+        Uses the ``provider_id`` on this config to look up the matching profile
+        via *manager* (a :class:`~agent.config.provider_profile.ProviderManager`)
+        and fills in ``provider_type``, ``base_url``, ``api_key``, and
+        ``model`` accordingly.
+
+        The ``model_override`` field, if set, takes precedence over the
+        profile's ``default_model``.
+
+        Returns a *new* ``AgentConfig`` instance (this object is unchanged).
+        """
+        if not self.provider_id:
+            return self.model_copy(deep=True)
+
+        profile = manager.get_profile(self.provider_id)
+        if profile is None:
+            return self.model_copy(deep=True)
+
+        updates = {}
+        if not self.base_url or self.base_url == 'https://api.deepseek.com':
+            updates['base_url'] = profile.base_url
+        if not self.api_key:
+            updates['api_key'] = profile.api_key
+        if self.provider_type == 'openai_compatible' or not self.provider_type:
+            updates['provider_type'] = profile.provider_type
+        if self.model_override:
+            updates['model'] = self.model_override
+        elif not self.model or self.model == 'deepseek-reasoner':
+            updates['model'] = profile.default_model
+
+        return self.model_copy(update=updates)
 
     model_config = ConfigDict(extra='ignore')

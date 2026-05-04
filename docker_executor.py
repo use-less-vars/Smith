@@ -5,11 +5,82 @@ import os
 import time
 import threading
 import queue
+import json
+import fnmatch
+import sys
+log("DEBUG", "tools.docker_executor", "Module loaded", {"__file__": __file__})
+
+def _load_policy(workspace_path: str) -> dict:
+    """Load security policy from security_policy.json.
+    Checks in order:
+    1. Same directory as this file (project root)
+    2. ~/.thoughtmachine/security_policy.json
+    Returns dict with keys 'docker_network_allowed' and 'writable_home'.
+    """
+    from pathlib import Path
+
+    # Determine the directory where this file lives
+    this_dir = Path(__file__).parent.resolve()
+    candidate_paths = [
+        this_dir / "security_policy.json",          # project root
+        Path.home() / ".thoughtmachine" / "security_policy.json",  # home dir
+    ]
+
+    config_path = None
+    for candidate in candidate_paths:
+        if candidate.exists():
+            config_path = candidate
+            break
+
+    log("DEBUG", "tools.docker_executor.policy",
+        "Looking for security policy",
+        {"workspace_path": workspace_path, "candidates": [str(p) for p in candidate_paths], "found": str(config_path)})
+
+    if config_path is None:
+        log("DEBUG", "tools.docker_executor.policy", "No policy file found, using defaults",
+            {"docker_network_allowed": False, "writable_home": False})
+        return {"docker_network_allowed": False, "writable_home": False}
+
+    try:
+        with open(config_path) as f:
+            config = json.load(f)
+    except (json.JSONDecodeError, IOError) as e:
+        log("WARNING", "tools.docker_executor.policy", f"Error loading policy file: {e}",
+            {"config_path": str(config_path)})
+        return {"docker_network_allowed": False, "writable_home": False}
+
+    log("DEBUG", "tools.docker_executor.policy", "Policy config loaded",
+        {"config_path": str(config_path), "patterns": list(config.keys())})
+
+    # Find matching workspace pattern (exact or glob)
+    for pattern, policy in config.items():
+        if pattern == "default":
+            continue
+        match_result = fnmatch.fnmatch(workspace_path, pattern)
+        log("DEBUG", "tools.docker_executor.policy",
+            f"Matching pattern {pattern!r} against {workspace_path!r}: {match_result}",
+            {"pattern": pattern, "workspace_path": workspace_path, "match": match_result})
+        if match_result:
+            result = {
+                "docker_network_allowed": policy.get("docker_network_allowed", False),
+                "writable_home": policy.get("writable_home", False),
+            }
+            log("DEBUG", "tools.docker_executor.policy", "Policy matched, returning", result)
+            return result
+    # Fallback to default
+    default = config.get("default", {})
+    result = {
+        "docker_network_allowed": default.get("docker_network_allowed", False),
+        "writable_home": default.get("writable_home", False),
+    }
+    log("DEBUG", "tools.docker_executor.policy", "No pattern match, using default", result)
+    return result
 
 class DockerExecutor:
     def __init__(self, workspace_path, image="agent-executor",
-                  network="none", mem_limit="512m", cpu_quota=50000, force_rebuild=False, idle_timeout=300):
-        self.workspace_path = os.path.abspath(workspace_path)
+                  network="none", mem_limit="512m", cpu_quota=50000, force_rebuild=False, idle_timeout=600):
+        # Normalize path: absolute, no trailing slash — ensures deterministic container naming
+        self.workspace_path = os.path.abspath(workspace_path).rstrip('/')
         self.image = image
         self.network = network
         self.mem_limit = mem_limit
@@ -24,60 +95,99 @@ class DockerExecutor:
     def _ensure_container(self):
         # Ensure the Docker image exists
         self._ensure_image()
-        
+
+        log("DEBUG", "tools.docker_executor.container",
+            "_ensure_container called",
+            {"workspace_path": self.workspace_path, "image": self.image,
+             "has_container": self.container is not None})
+
         if self.container:
             try:
                 self.container.reload()
                 if self.container.status == "running":
+                    log("DEBUG", "tools.docker_executor.container", "Reusing running container",
+                        {"container_id": self.container.id, "name": self.container.name})
                     return
             except docker.errors.NotFound:
                 self.container = None
-
         # Deterministic container name based on workspace path
         safe_name = hashlib.sha256(self.workspace_path.encode()).hexdigest()[:12]
         container_name = f"agent-exec-{safe_name}"
 
+        # Try to get existing container and check against current policy
         try:
-            self.container = self.client.containers.get(container_name)
-            # Handle non-running container states
-            if self.container.status == "dead":
-                # Dead container cannot be started, remove and recreate
-                self.container.remove()
-                self.container = None
-                raise docker.errors.NotFound(f"Container {container_name} was dead and removed")
-            elif self.container.status != "running":
-                # Exited or created container, try to start
+            existing = self.client.containers.get(container_name)
+            existing.reload()
+
+            # Check if existing container's config matches current policy
+            policy = _load_policy(self.workspace_path)
+            desired_network = "bridge" if policy.get("docker_network_allowed") else "none"
+            current_network = existing.attrs['HostConfig']['NetworkMode']
+
+            # Check if /home/agent tmpfs is mounted
+            # Docker stores tmpfs in HostConfig.Tmpfs (dict), NOT in Mounts array
+            tmpfs_mounts = existing.attrs.get('HostConfig', {}).get('Tmpfs', {})
+            has_home_tmpfs = '/home/agent' in tmpfs_mounts
+            needs_writable_home = policy.get("writable_home", False)
+
+            if (current_network != desired_network) or (needs_writable_home != has_home_tmpfs):
+                # Config mismatch — remove and recreate
                 try:
-                    self.container.start()
-                except docker.errors.APIError:
-                    # Failed to start, remove and recreate
+                    existing.stop()
+                    existing.remove()
+                except docker.errors.NotFound:
+                    pass
+                existing = None
+
+            if existing is not None:
+                self.container = existing
+                # Handle non-running container states
+                if self.container.status == "dead":
                     self.container.remove()
                     self.container = None
-                    raise docker.errors.NotFound(f"Container {container_name} failed to start and was removed")
-        except docker.errors.NotFound:
-            self.container = self.client.containers.run(
-                image=self.image,
-                name=container_name,
-                volumes={self.workspace_path: {"bind": "/workspace", "mode": "rw"}},
-                tmpfs={"/tmp": "rw,noexec,nosuid,size=64m"},
-                network=self.network,
-                cap_drop=["ALL"],
-                security_opt=["no-new-privileges:true"],
-                read_only=True,
-                user="1000:1000",  # must match the user in Dockerfile
-                detach=True,
-                tty=True,
-                stdin_open=True,
-                command=["tail", "-f", "/dev/null"],
-                mem_limit=self.mem_limit,
-                cpu_quota=self.cpu_quota,
-            )
-            # Auto-create workspace directory with correct ownership for the agent user
-            self.container.exec_run(
-                cmd=["sh", "-c", "mkdir -p /workspace && chown agent:agent /workspace"]
-            )
-        self.last_used = time.time()
+                    raise docker.errors.NotFound(f"Container {container_name} was dead and removed")
+                elif self.container.status != "running":
+                    try:
+                        self.container.start()
+                    except docker.errors.APIError:
+                        self.container.remove()
+                        self.container = None
+                        raise docker.errors.NotFound(f"Container {container_name} failed to start and was removed")
+                self.last_used = time.time()
+                return
 
+        except docker.errors.NotFound:
+            pass
+
+        # Create new container with current policy
+        policy = _load_policy(self.workspace_path)
+        network_mode = "bridge" if policy.get("docker_network_allowed", False) else "none"
+        tmpfs = {"/tmp": "rw,noexec,nosuid,size=64m"}
+        if policy.get("writable_home", False):
+            tmpfs["/home/agent"] = "rw,size=256M,uid=1000,gid=1000"
+
+        log('DEBUG', 'tools.docker_executor.container',
+            f"Creating container with network={network_mode}, tmpfs={tmpfs}")
+
+        self.container = self.client.containers.run(
+            image=self.image,
+            name=container_name,
+            volumes={self.workspace_path: {"bind": "/workspace", "mode": "rw"}},
+            tmpfs=tmpfs,
+            network=network_mode,
+            cap_drop=["ALL"],
+            security_opt=["no-new-privileges:true"],
+            read_only=True,
+            user="1000:1000",  # must match the user in Dockerfile
+            detach=True,
+            tty=True,
+            stdin_open=True,
+            command=["tail", "-f", "/dev/null"],
+            mem_limit=self.mem_limit,
+            cpu_quota=self.cpu_quota,
+        )
+        # Workspace bind mount already has correct UID (matches host)
+        self.last_used = time.time()
     def execute(self, command, timeout=30, workdir="/workspace", environment=None):
         # Check idle timeout and close container if expired
         if self.container and (time.time() - self.last_used) > self.idle_timeout:

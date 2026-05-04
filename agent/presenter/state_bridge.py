@@ -14,6 +14,7 @@ from typing import Optional, Dict, Any, List
 from pathlib import Path
 from agent.logging import log
 from agent.config import AgentConfig, load_default_config, load_config, save_config
+from agent.config.provider_profile import ProviderManager
 from tools import SIMPLIFIED_TOOL_CLASSES
 from session.models import Session, RuntimeParams, ObservableList
 
@@ -36,9 +37,11 @@ class StateBridge:
         if os.path.exists(self.user_config_path):
             config_dict = load_config(self.user_config_path)
             self.current_config = AgentConfig(**config_dict)
+            log('DEBUG', 'core.config', f'[CONFIG_TRACE] StateBridge loaded from user_config_path={self.user_config_path}')
         else:
             config_dict = load_config(self.config_path)
             self.current_config = AgentConfig(**config_dict)
+            log('DEBUG', 'core.config', f'[CONFIG_TRACE] StateBridge loaded from config_path={self.config_path}')
 
     def get_config(self) -> dict:
         """Return current configuration dictionary."""
@@ -102,12 +105,16 @@ class StateBridge:
     def create_agent_config(self, config_dict: Optional[dict]=None, total_input: int=0, total_output: int=0) -> AgentConfig:
         """
         Create AgentConfig instance from configuration dictionary.
-        
+
+        If the config or current config has a ``provider_id``, the matching
+        profile is resolved via :class:`~agent.config.provider_profile.ProviderManager`
+        to fill in ``provider_type``, ``base_url``, ``api_key``, and ``model``.
+
         Args:
             config_dict: Optional dictionary to override current config
             total_input: Current total input tokens for initial values
             total_output: Current total output tokens for initial values
-            
+
         Returns:
             AgentConfig instance ready for use with controller
         """
@@ -115,6 +122,13 @@ class StateBridge:
             config = {**self.current_config.model_dump(), **config_dict}
         else:
             config = self.current_config.model_dump()
+
+        # Resolve provider profile if provider_id is present
+        provider_id = config.get('provider_id')
+        if provider_id:
+            manager = ProviderManager()
+            config = manager.resolve_config(config)
+
         api_key = config.get('api_key') or os.getenv('OPENAI_API_KEY') or os.getenv('DEEPSEEK_API_KEY')
         if not api_key:
             raise ValueError('Neither OPENAI_API_KEY nor DEEPSEEK_API_KEY environment variables are set, and no api_key in config. Please set one of them or add api_key to config.')
@@ -148,7 +162,6 @@ class StateBridge:
         agent_config = AgentConfig(**agent_kwargs)
 
         return agent_config
-
     def bind_session(self, session: Session) -> None:
         """Bind a Session object as the source of truth for conversation state."""
         log('DEBUG', 'presenter.state_bridge', f'bind_session START: session_id={session.session_id}, user_history id={id(session.user_history)}, length={len(session.user_history)}, type={type(session.user_history)}, is_ObservableList={isinstance(session.user_history, ObservableList)}')

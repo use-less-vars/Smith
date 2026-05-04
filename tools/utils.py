@@ -98,11 +98,14 @@ def model_to_openai_tool(model: Type[BaseModel]) -> Dict[str, Any]:
     Uses the model's JSON schema for parameters, then simplifies it.
     """
     schema = model.model_json_schema()
-    # Exclude workspace_path from tool schema (automatically set by agent)
-    if "properties" in schema and "workspace_path" in schema["properties"]:
-        del schema["properties"]["workspace_path"]
-        if "required" in schema and "workspace_path" in schema["required"]:
-            schema["required"].remove("workspace_path")
+    # Exclude internal infrastructure fields from tool schema (set by agent)
+    infra_fields = {"workspace_path", "token_limit", "is_docker", "container_workspace_path", "tool"}
+    if "properties" in schema:
+        for field in infra_fields:
+            if field in schema["properties"]:
+                del schema["properties"][field]
+                if "required" in schema and field in schema["required"]:
+                    schema["required"].remove(field)
     # Remove the top-level title and description from parameters
     parameters = {k: v for k, v in schema.items() if k not in ("title", "description")}
     # Simplify the parameters schema
