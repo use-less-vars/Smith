@@ -53,6 +53,8 @@ class AgentConfig(BaseModel):
         'rag_chunk_overlap': RESTART_REQUIRED,
         'rag_batch_size': RESTART_REQUIRED,
         'rag_truncate_dim': RESTART_REQUIRED,
+        'kb_enabled': RESTART_REQUIRED,
+        'kb_path': RESTART_REQUIRED,
         'tool_output_token_limit': HOT_SWAPPABLE,
         'enabled_tools': HOT_SWAPPABLE,
         'provider_id': RESTART_REQUIRED,
@@ -94,25 +96,35 @@ class AgentConfig(BaseModel):
     rag_chunk_overlap: int = Field(default=200, description='Overlap between chunks for RAG indexing (characters)')
     rag_batch_size: int = Field(default=16, description='Batch size for embedding generation in RAG indexing')
     rag_truncate_dim: int = Field(default=256, description='Dimension to truncate embeddings to for memory efficiency')
+    kb_enabled: bool = Field(default=True, description="Enable the project knowledge base")
+    kb_path: Optional[str] = Field(default=None, description="Path to knowledge base directory (None = default .thoughtmachine/knowledge/)")
     tool_output_token_limit: int = Field(default=10000, description='Maximum token limit for tool outputs (default 10,000 tokens)')
     detail: Literal['minimal', 'normal', 'verbose'] = Field(default='normal', description='Detail level for event display')
     enabled_tools: List[str] = Field(default_factory=lambda: [cls.__name__ for cls in SIMPLIFIED_TOOL_CLASSES], description='List of enabled tool class names')
 
     @field_validator('enabled_tools')
     def filter_search_codebase_tool(cls, v, info):
-        """Ensure SearchCodebaseTool is only available when rag_enabled is True."""
+        """Ensure SearchCodebaseTool and KnowledgeBaseTool are only available when their respective features are enabled."""
         rag_enabled = info.data.get('rag_enabled', False)
+        kb_enabled = info.data.get('kb_enabled', True)
+        filtered = list(v)
         if not rag_enabled:
-            filtered = [tool for tool in v if tool != 'SearchCodebaseTool']
-            if filtered != v:
-                return filtered
+            filtered = [tool for tool in filtered if tool != 'SearchCodebaseTool']
+        if not kb_enabled:
+            filtered = [tool for tool in filtered if tool != 'KnowledgeBaseTool']
+        if filtered != v:
+            return filtered
         return v
 
     @model_validator(mode='after')
     def filter_default_enabled_tools(self):
-        """Filter SearchCodebaseTool from default enabled_tools when rag_enabled=False."""
-        if not self.rag_enabled and self.enabled_tools:
-            filtered = [tool for tool in self.enabled_tools if tool != 'SearchCodebaseTool']
+        """Filter SearchCodebaseTool and KnowledgeBaseTool from default enabled_tools when their respective features are disabled."""
+        if self.enabled_tools:
+            filtered = list(self.enabled_tools)
+            if not self.rag_enabled:
+                filtered = [tool for tool in filtered if tool != 'SearchCodebaseTool']
+            if not self.kb_enabled:
+                filtered = [tool for tool in filtered if tool != 'KnowledgeBaseTool']
             if filtered != self.enabled_tools:
                 object.__setattr__(self, 'enabled_tools', filtered)
         return self
@@ -131,6 +143,8 @@ class AgentConfig(BaseModel):
         tool_classes = list(SIMPLIFIED_TOOL_CLASSES)
         if not self.rag_enabled:
             tool_classes = [cls for cls in tool_classes if cls.__name__ != 'SearchCodebaseTool']
+        if not self.kb_enabled:
+            tool_classes = [cls for cls in tool_classes if cls.__name__ != 'KnowledgeBaseTool']
         active_tools = enabled_tools if enabled_tools is not None else self.enabled_tools
         if active_tools:
             tool_classes = [cls for cls in tool_classes if cls.__name__ in active_tools]

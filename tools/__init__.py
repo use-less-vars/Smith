@@ -162,6 +162,12 @@ except ImportError as e:
     logger.warning(f"Failed to import GitInfoTool: {e}")
 
 try:
+    from .knowledge_base import KnowledgeBaseTool
+    TOOL_CLASSES.append(KnowledgeBaseTool)
+except ImportError as e:
+    logger.warning(f"Failed to import KnowledgeBaseTool: {e}")
+
+try:
     from .mcp_validator import MCPValidator
     TOOL_CLASSES.append(MCPValidator)
 except ImportError as e:
