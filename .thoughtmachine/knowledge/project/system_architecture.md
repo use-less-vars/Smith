@@ -99,3 +99,344 @@ Key architectural decisions, component relationships, and data flow patterns.
 - Lazy imports used strategically to avoid circular dependencies (docker_executor, security)
 - Configuration has been migrated from flat config/ to agent/config/ with Pydantic models
 
+## Pruning & Context Management
+## Pruning & Context Management
+
+*(Migrated from docs/pruning_system.md — Last validated: 2026-05-05)*
+
+### Overview
+ThoughtMachine maintains two parallel representations of a conversation:
+- **user_history** — append-only list of every message (user, assistant, tool, system, warnings, summaries). This is the ground truth for GUI and LLM context reconstruction.
+- **LLM context** — sliding window built from user_history, sent to the LLM. Excludes pruned/summarized messages.
+
+### Core Concepts
+- **Turns**: One round-trip interaction with the LLM. A user message or an assistant message with tool_calls starts a new turn. Tool results belong to their calling turn. Summaries are inserted at turn boundaries.
+- **user_history**: Append-only. Messages are never deleted — full history preserved for auditing/GUI. Each message has a sequential index (idx).
+- **LLM Context**: Built by `SummaryBuilder.build()` in `session/context_builder.py`. Always contains: system prompt + latest summary + messages after summary + relevant warnings.
+
+### Summarization (Pruning) Flow
+1. **Trigger**: Agent calls `SummarizeTool` (usually after token warning)
+2. **_apply_summary_pruning()** (in `agent/core/agent.py`):
+   - Computes insertion index via `_find_summary_insertion_index(keep_recent_turns)`
+   - Inserts summary system message at that index (turn boundary)
+   - Appends unwarning AFTER the SummarizeTool result (not inserted — preserves chronological order)
+3. **Result**: LLM context starts at the new summary. Old messages before it are excluded.
+
+### Token Warning Lifecycle (Simplified)
+- Soft warning (~35k tokens) → informs agent of thresholds
+- Critical warning (~50k tokens) → sets `restrictions_pending = True`
+- Same turn: all tools allowed (agent can SummarizeTool immediately)
+- Next turn if still CRITICAL: `restrictions_active = True` → only SummarizeTool, Final, FinalReport allowed
+- No countdown logic — the old 5-turn countdown with expiration events was removed
+- Unwarning ("Context has been summarized") is appended after SummarizeTool result
+
+### Key Code Locations
+| Component | File | Purpose |
+|-----------|------|---------|
+| _apply_summary_pruning | agent/core/agent.py | Inserts summary, appends unwarning |
+| _find_summary_insertion_index | agent/core/agent.py | Finds turn boundary for insertion |
+| SummaryBuilder.build | session/context_builder.py | Builds LLM context from user_history |
+| AgentState.update_token_state | agent/core/state.py | Generates token warnings |
+| _add_to_conversation | agent/core/agent.py | Adds messages to user_history |
+
+### Design Decisions
+- Two copies of summary exist: system message (resets LLM context) and tool result (audit record). Both serve different purposes.
+- Unwarning is **appended** (not inserted) to preserve chronological order with the SummarizeTool call.
+- Stale warnings in the GUI are normal — the GUI shows full history, filtering is a separate UI feature.
+
+## System Notifications
+## System Notifications
+
+*(Migrated from docs/system_notifications.md — Last validated: 2026-05-05)*
+
+### Overview
+System notifications are internally-generated messages that inform the agent about token usage, turn limits, and context clearing. They appear in user_history and LLM context with `role='user'` and a `[SYSTEM NOTIFICATION]` prefix.
+
+### Why role = "user"
+LLM providers (OpenAI, Anthropic) typically ignore system-role messages for agent reaction to warnings. Using `role="user"` ensures the agent "hears" the notification and can act (e.g., call SummarizeTool). This is deliberate.
+
+### Metadata flag: is_system_notification
+All new notifications include `"is_system_notification": true` in their message dictionary. Legacy prefixes `[**SYSTEM NOTIFICATION**]` and `[****SYSTEM NOTIFICATION****]` exist only in old sessions and are no longer generated.
+
+### Where the flag is added (agent/core/agent.py)
+- Turn warning events (pre-LLM, `_handle_state_event`)
+- Token warning events (pre-LLM, `_handle_state_event`)
+- Secondary token/turn warning paths
+- Post-tool token warnings (`_update_tokens_after_tool`)
+- Context cleared (unwarning) after summarization
+
+### Where the flag is used
+Only in two internal methods for turn counting and summary placement:
+- `_find_summary_insertion_index` — skips flagged messages when calculating insertion point
+- `_group_messages_into_turns` — skips flagged messages to prevent empty/spurious turns
+
+### Where it's NOT used
+The flag is NOT used in `SummaryBuilder.build()` — notifications after the summary inclusion point are always included in LLM context.
+
+### Lifecycle
+1. **Trigger**: `AgentState.update_token_state()` or `update_turn_state()` detects soft/critical threshold
+2. **Creation**: Event handler creates a message dict with `role="user"`, `[SYSTEM NOTIFICATION]` content, and `is_system_notification=True`
+3. **Injection**: Appended to user_history immediately
+4. **Summarization**: Notifications skipped during turn counting → insertion index unaffected
+5. **LLM context**: All messages from summary insertion point forward included (including notifications)
+6. **GUI**: MessageRenderer recognizes the flag and renders with special styling
+
+### Backward Compatibility
+Old sessions without the metadata flag are supported via fallback content-based checks for `[SYSTEM NOTIFICATION]`, `[**SYSTEM NOTIFICATION**]`, and `[****SYSTEM NOTIFICATION****]` substrings.
+
+### Common Pitfalls
+- Do NOT change role to "system" — LLM will ignore
+- Do NOT use content-string matching alone for new code — use metadata flag
+- Do NOT add the flag to normal user messages
+- Do NOT rely on countdown logic — it has been removed
+
+## Message Metadata Schema
+## Message Metadata Schema
+
+*(Migrated from docs/message_metadata.md — Last validated: 2026-05-05)*
+
+### Overview
+Messages in `user_history` can contain metadata fields beyond standard `role`, `content`, `tool_calls`, and `tool_call_id`. These are used internally for sequencing, rendering, pruning, and debugging. They are generally not passed to the LLM (or harmless if passed).
+
+### Standard Metadata Fields
+| Field | Type | Description |
+|-------|------|-------------|
+| `seq` | integer | Sequential index assigned by `Session._get_next_seq()` |
+| `created_at` | string (ISO) | Timestamp when message was added |
+| `is_system_notification` | boolean | True for system-generated notifications (token warnings, turn warnings, context cleared) |
+
+### Tool Message Fields
+- `tool_calls` (list): Standard OpenAI-compatible tool call objects with `id`, `type`, `function`
+- `tool_call_id` (string): Matches the `id` of the corresponding tool call
+- `content` (string): The output of the tool
+
+### Summary/Pruning Fields
+On summary system messages (inserted by `_apply_summary_pruning`):
+| Field | Type | Description |
+|-------|------|-------------|
+| `summary` | boolean | Always True — indicates this is a summary |
+| `pruning_keep_recent_turns` | integer | The `keep_recent_turns` value from SummarizeTool |
+| `pruning_discarded_msg_count` | integer | Number of pruned messages before this summary |
+| `pruning_insertion_idx` | integer | Index in user_history where summary was inserted |
+
+### Where Metadata is Stripped (or Not)
+- **SummaryBuilder.build** (`session/context_builder.py`): Copies ALL fields from user_history — does not strip any metadata. Acceptable because most LLM APIs ignore unknown fields.
+- **Qt GUI**: Reads `user_history` directly, uses only `role`, `content`, and `is_system_notification` (for styling).
+- **Session persistence**: `to_persistable_dict` / `from_persistable_dict` preserve all fields.
+
+### Guidelines for Adding New Fields
+1. Use descriptive `lower_snake_case` names. Prefix with `_` if strictly internal.
+2. New fields should be optional for backward compatibility.
+3. Document in this file and related component docs.
+4. If the field affects LLM behavior, consider whether a separate role or content pattern is more appropriate.
+
+## Security Layer
+## Security Layer
+
+*(Migrated from docs/security_layer.md — Last validated: 2026-05-05)*
+
+### Status
+Partially implemented; **disabled in v1.0** by setting `default_policy: "allow"`. Workspace validation and Docker sandbox remain active.
+
+### Architecture
+**Components:**
+- `thoughtmachine/security.py` — Core security logic (CapabilityRegistry, policy evaluation, prompting)
+- `session/models.py` — `Session.security_config` stores per-session policies
+- `agent/core/tool_executor.py` — Calls `is_allowed()` before tool execution
+- `agent/events.py` — EventBus for SECURITY_PROMPT / SECURITY_RESPONSE events
+- **GUI** — No subscription to security events yet (planned for v2.0)
+
+**Data Flow:**
+```
+ToolExecutor → CapabilityRegistry.check() → is_allowed()
+    ↓ (if "ask")
+_request_security_prompt() → publish(SECURITY_PROMPT) → wait on queue.Queue (timeout 300s)
+    ↓ (response or timeout)
+return (approved, remember) → update session.security_config if remember
+```
+
+### Security Profiles
+Defined in `security.py`:
+| Profile | Behavior |
+|---------|----------|
+| `default` | default_policy: "ask" |
+| `read_only` | Forces read_only: True |
+| `file_editor` | Allows only fs:read, fs:write |
+| `sandboxed` | Ask for Docker/MCP/git |
+| `permissive` | default_policy: "allow" (v1.0 default) |
+| `restricted` | default_policy: "deny" |
+
+### Capability Registry
+Tools declare `requires_capabilities` class attribute (list of strings). Examples: `["fs:read"]`, `["fs:write"]`, `["container:exec"]`, `["mcp:access"]`, `["git:access"]`. Registry built at import time by scanning ToolBase subclasses.
+
+### Known Issues (Pre-v1.0)
+- **No GUI subscription**: SECURITY_PROMPT events published but never handled → main thread blocks on queue.Queue.get(timeout=300) → times out after 5 minutes → denies tool
+- **Default policy "ask"** causes every tool to trigger a prompt → system hangs. Workaround: changed default_policy to "allow"
+- **Blocking in main thread**: agent's main thread waits for user input. Proper implementation requires async handshake or separate prompt thread
+
+### Future Work (v2.0)
+- Add GUI dialog for SECURITY_PROMPT events (PyQt6 modal)
+- Replace blocking queue with event-based handshake
+- Expose security panel in GUI (read-only toggle, network domains, tool overrides)
+- Migrate workspace restriction from agent_config.json into security_config
+- Implement hierarchical policies (global → session → agent → tool)
+
+## RAG System (Codebase Memory)
+## RAG System (Codebase Memory)
+
+*(Migrated from docs/rag_for_code.md — Last validated: 2026-05-05)*
+
+### Overview
+Provides codebase memory via Retrieval-Augmented Generation. Indexes source files into ChromaDB vector database and exposes `SearchCodebaseTool` for semantic code discovery.
+
+### Architecture
+```
+Source Files → [AST Chunker] → chunks → [Embedding Model] → embeddings → [ChromaDB] → [SearchCodebaseTool]
+```
+- **Embedding model**: `BAAI/bge-small-en-v1.5` (33M params) via `sentence-transformers`
+- **Vector store**: ChromaDB, persistent at `~/.thoughtmachine/rag/`
+- **Chunking**: AST-aware via `tree-sitter` (with line/paragraph fallback)
+- **Search**: Cosine similarity with score thresholding; supports intents (`exact`, `broad`, `file`) and path filtering
+
+### Key Files
+| File | Role |
+|------|------|
+| `agent/knowledge/codebase_indexer.py` | Core indexing + CLI commands |
+| `agent/knowledge/embedder.py` | `embed_chunks_batched()` |
+| `agent/knowledge/chunker.py` | AST-based chunker |
+| `agent/config/models.py` | `AgentConfig` RAG fields |
+| `agent/cli/rag_commands.py` | CLI: index-codebase, update-index |
+| `tools/search_codebase.py` | `SearchCodebaseTool` |
+
+### Configuration
+In `AgentConfig` and `agent_config.json`:
+- `rag_enabled` (default: true)
+- `rag_embedding_model` (default: `BAAI/bge-small-en-v1.5`)
+- `rag_vector_store_path` (default: `~/.thoughtmachine/rag/`)
+- `rag_chunk_size` (1500), `rag_chunk_overlap` (200), `rag_batch_size` (16), `rag_truncate_dim` (256)
+
+**Note**: The `ConfigService._SCHEMA` duplication mentioned in the original doc has been resolved — that attribute no longer exists. Config is solely managed via `AgentConfig` Pydantic model.
+
+### Indexing Workflow
+- **Full index** (`index-codebase`): Walk workspace → filter files → AST chunk → embed → store in ChromaDB
+- **Incremental update** (`update-index`): Compare `.index_state.json` → re-chunk changed files → delete old chunks → add new ones
+- Each workspace has a separate ChromaDB collection identified by `codebase_{workspace_hash}`
+
+### Search Tool (`SearchCodebaseTool`)
+- **Parameters**: `query` (str), `top_k` (int, default 5), `intent` ("exact"/"broad"/"file"), `restrict_to_path` (optional)
+- **Execution**: Embed query → query ChromaDB → filter by score → format as Markdown with file paths, line numbers, scores
+- **GUI**: Checkbox visible only when `rag_enabled=True`
+- **System prompt**: Rule 8 promotes usage
+
+### Known Issues
+- No automatic re-indexing — user must run `update-index` manually
+- No multi-project UI — workspace switching requires restart
+- Embedding model downloaded on first use (first run may be slow)
+- `sentence-transformers` logs harmless `UNEXPECTED` key warning for `position_ids`
+
+### Future Enhancements (Planned)
+1. Session Notebook Memory (KB tool partially fulfills this — without vector search)
+2. Staleness detection on agent startup
+3. GUI workspace switcher
+
+## Project Historical Trajectory
+## Project Historical Trajectory (March–April 2026)
+
+### Phase 0: Origins — Construction Cleanup & Tool Foundation (March 1–3)
+- **Initial architecture**: "Construction workspace" model — changes made in `./construction/` directory, then "promoted" to stable. Replaced with **git worktree architecture** (separate `ThoughtMachine` and `ThoughtMachine-dev` directories).
+- **First major task**: Remove all construction workspace references from 6 tools (FileEditor, FileLister, DirectoryCreator, FileMover, BatchFileEditor, CodeModifier), system prompt, and AI docs.
+- **Tool ecosystem genesis**: Original tools were basic (FileEditor, BatchFileEditor, FileLister). Agent inefficiency identified as the core problem — agents spent excessive turns reading files line-by-line.
+- **CodeModifier vision** (March 3): Proposed as the "premier code modification tool" using LibCST for AST-based operations. Initial operations: add_function, add_method, add_import, add_class, replace_function_body, modify_function.
+- **File System Access Improvement Plan** (March 1): Proposed 5 new code understanding tools: FileSummaryTool, FileSearchTool, DirectoryTreeTool, FilePreviewTool, FileMetadataTool — all later implemented.
+
+### Phase 1: Tool Ecosystem Buildout (March 4–8)
+- **Logging system**: Structured JSONL logging implemented (`agent_logging.py`), with turn-by-turn data, tool calls, token usage.
+- **Task Manager**: Recurrence feature for task management.
+- **Tool redundancy analysis** (March 6): Identified BatchFileEditor as fully superseded by FileEditor. Also analyzed: FileSearchTool vs FileEditor grep, FilePreviewTool vs FileEditor read. Conclusion: keep specialized tools, deprecate BatchFileEditor.
+- **ApplyEdits upgrades**: Enhanced with regex support, resilient matching, batch editing.
+- **LLM Interaction Analysis** (March 6): Studied agent conversation patterns, token usage, tool call efficiency.
+- **Context Window Load Analysis**: Studied system prompt and tool schema token consumption.
+- **Tool output truncation**: Implemented to prevent context overflow from large tool outputs.
+- **Log Viewer**: ThoughtMachine Log Viewer for browsing structured logs.
+- **Token Counter and Session Management**: Initial token counting with session-level fixes.
+
+### Phase 2: Modular Agent Architecture (March 8–9)
+- **Agent Core Modularization — Phase 1 & 2**: Split monolithic agent.py into: agent.py (core brain), agent_state.py (state machine with TokenState/TurnState/ExecutionState enums), agent_controller.py (thread management), agent_logging.py (structured logging), agent_core.py (shared data structures).
+- **Keep-Alive behavior**: Agent can process multiple queries without restarting via query queue.
+- **GUI integration**: Agent runs in background thread, yields events → Controller forwards to event queue → GUI polls and displays.
+- **Pause/Stop improvements**: Thread-safe control with synchronization primitives.
+- **Architecture overview** (March 9): Documented the 3-layer architecture (Agent → Controller → GUI) with clean separation of concerns.
+
+### Phase 3: Pruning System & Token Management (March 8–11)
+- **Pruning System**: Initial implementation with SummarizeTool — LLM generates summary, system message inserted at turn boundary, old messages excluded from context.
+- **Token Monitoring**: Warning at 70-80% of context window, critical at 90%, with countdown-based restrictions (later removed).
+- **Context Warning System**: System notifications with `[SYSTEM NOTIFICATION]` prefix.
+- **DirectoryTreeTool bugs**: Pydantic validation errors, exclude_dirs parameter debugging.
+- **Summarization pruning bug**: Grouping logic corrected for turn boundary calculation.
+- **FilePreviewTool/FileSearchTool safety**: Max file size limits to prevent large file reads.
+
+### Phase 4: GUI Refactoring & Quality of Life (March 11–16)
+- **Token Monitoring GUI**: Warning/critical indicators, real-time token display.
+- **Max Turns**: GUI implementation with configurable limits.
+- **Collapsible Agent Controls Panel**: UI modernization.
+- **Tool Output Truncation**: 12.8KB report on completion.
+- **Smart Scrolling**: Auto-scroll behavior, cursor position management.
+- **Temperature Configuration**: User-adjustable parameter in GUI.
+- **Configuration Persistence**: Agent settings saved across sessions.
+
+### Phase 5: Docker Code Execution (March 14–16)
+- **Docker executor**: Secure container-based code execution with dropped capabilities, read-only root FS.
+- **Docker Python Executor**: Tool for running Python/shell scripts in isolated container.
+- **Container pooling**: Deterministic container names, reuse across executions with idle timeout.
+- **Markdown rendering**: Fixes for GUI markdown display.
+
+### Phase 6: Multi-LLM Support & Provider Abstraction (March 16–17)
+- **Multi-Provider Architecture**: Provider factory pattern — OpenAI-compatible, Anthropic, etc.
+- **Provider profiles**: Per-provider configuration (model names, context windows, API endpoints).
+- **GUI Integration**: Provider selection in settings panel.
+- **Routeway AI Authentication**: Bug fix for custom provider auth.
+- **OpenAI-Compatible Provider Debug**: Raw response debugging.
+- **Base URL persistence**: User-entered base URLs correctly used.
+
+### Phase 7: MCP Integration (March 17–20)
+- **Model Context Protocol**: External tool integration via MCP bridge.
+- **Multi-transport MCP**: Support for stdio and HTTP transports.
+- **MCP Config GUI**: Integration with configuration panel.
+- **MCP Tool Validation**: Input schema validation for external tools.
+- **MCP Echo Tool Debugging**: Connection and message format fixes.
+
+### Phase 8: Security Layering (March 19–20)
+- **7-Layer Agentic Stack proposal**: Inspired by OSI network model — formalized security boundaries.
+- **Centralized security module**: `thoughtmachine/security.py` (420 lines).
+- **Capability Registry**: Tools declare `requires_capabilities` (fs:read, fs:write, container:exec, etc.).
+- **Security profiles**: default, read_only, file_editor, sandboxed, permissive, restricted.
+- **Status**: Partially implemented; default_policy set to "allow" in v1.0 due to blocking GUI prompt issue.
+
+### Phase 9: Session Management Overhaul (March 21–26)
+- **Session Roadmap** (March 21): Comprehensive 4-phase plan for save/load/continue.
+- **Key insight**: Separation of `user_history` (append-only, full transcript) vs `agent_context` (pruned/summarized for LLM).
+- **Session data model**: session_id (UUID), config (immutable), runtime_params (mutable), user_history (append-only), agent_context (derived).
+- **Save/Load implementation**: JSON serialization, SessionStore interface.
+- **Session-Agent separation**: Clear boundaries between session persistence and agent execution.
+- **ContextBuilder architecture**: Abstract base with LastNBuilder, SummaryBuilder, TurnBuilder strategies.
+- **HistoryProvider**: Context building and pruning with token limit awareness.
+- **Debug infrastructure**: DEBUG_CONTEXT, DEBUG_HISTORY_PROVIDER env var gates.
+
+### Phase 10: GUI Modularization & Maturity (March 24–29)
+- **Qt GUI modularization**: Split monolithic qt_gui_updated.py into qt_gui/ package with conversation_panel, input_panel, main_window, output_panel, settings_panel, thinking_indicator.
+- **Agent Modularization Refactoring**: Further split agent logic — ConfigManager, SessionLifecycle, Presenter extraction.
+- **Smart Scrolling**: Multiple iterations to fix scrollbar jumping during streaming output.
+- **OutputPanel performance**: QListView experiment reverted to QTextEdit with performance optimization.
+- **Event-driven updates**: Real-time token tracking in GUI.
+- **Dead code removal**: Cleanup of imported but unused modules.
+
+### Phase 11: Grand System Analysis (April 5)
+- **Phase 1**: Session history manipulation analysis — who reads/writes user_history, data formats, ObservableList pattern.
+- **Phase 2**: LLM context building deep-dive — SummaryBuilder algorithm, token estimation, edge cases.
+- **Phase 3**: Token counting, summary generation flow, debugging infrastructure — TokenCounter class, model context window mapping, debug flags.
+
+### Phase 12: Knowledge Base System (May 4–5)
+- **KB Tool implementation**: 8-task Phase 1 for persistent project notebook.
+- **6 KB modes**: list, read, append, update, status, search, create_domain.
+- **Documentation migration**: All docs/ migrated into KB domains.
+- **System assessment**: Comprehensive dead code identification across 9 architectural layers.
