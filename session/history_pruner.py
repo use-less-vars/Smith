@@ -42,14 +42,18 @@ class PruningPolicy:
     Attributes:
         keep_reasoning: If True, keep assistant reasoning_content if present.
         keep_all_final_turns: If True, keep the full turn that ends with a Final tool.
-        keep_non_final_assistant: If True, keep the last assistant message even
-            when no Final tool was called (natural turn end).
+        keep_plain_answer_only: If True, for turns without a final tool, keep only
+            the last assistant with content and no tool_calls (plain answer).
+            If False, keep the last assistant with any content (may have tool_calls).
+        keep_system_notifications: If True, keep system notification messages in
+            the pruned region. If False, drop them entirely.
         min_summaries_before_pruning: Minimum number of summary messages that
             must exist before any pruning is performed.
     """
     keep_reasoning: bool = False
     keep_all_final_turns: bool = True
-    keep_non_final_assistant: bool = True
+    keep_plain_answer_only: bool = True
+    keep_system_notifications: bool = False
     min_summaries_before_pruning: int = 2
 
 
@@ -129,59 +133,127 @@ def _compact_segment(
 ) -> List[Dict[str, Any]]:
     """Compact a list of messages by collapsing turns.
 
-    System messages and system notifications pass through unchanged.
-    Non-system messages are grouped into turns (starting at each user
-    message) and each turn is compacted.
+    Walks the segment sequentially, preserving original chronological order.
+    - System messages pass through unchanged.
+    - System notifications pass through only if keep_system_notifications is True.
+    - Non-system messages are grouped into turns (starting at each user
+      or assistant-with-tool_calls message) and each turn is compacted.
+    - Orphaned messages (not in any valid turn) are dropped.
     """
     result: List[Dict[str, Any]] = []
+    i = 0
+    n = len(segment)
 
-    # Separate pass-through messages from turnable messages
-    passthrough: List[Dict[str, Any]] = []
-    turn_messages: List[Dict[str, Any]] = []
-
-    for msg in segment:
+    while i < n:
+        msg = segment[i]
         role = msg.get('role', '')
-        if role == 'system' or _is_system_notification(msg):
-            passthrough.append(msg)
-        else:
-            turn_messages.append(msg)
 
-    # Group turn_messages into turns
-    turns = _group_turns(turn_messages)
+        # System messages pass through unchanged
+        if role == 'system':
+            result.append(msg)
+            i += 1
+            continue
 
-    # Compact each turn
-    for turn in turns:
-        compacted_turn = _compact_turn(turn, policy)
-        result.extend(compacted_turn)
+        # System notifications — kept only if policy says so
+        if _is_system_notification(msg):
+            if policy.keep_system_notifications:
+                result.append(msg)
+            i += 1
+            continue
 
-    # Merge passthrough messages back in their original positions
-    result = _merge_passthrough(passthrough, turn_messages, result)
+        # Turn starter: user or assistant-with-tool_calls
+        if role == 'user' or (role == 'assistant' and msg.get('tool_calls')):
+            # Collect the full turn starting at i
+            turn: List[Dict[str, Any]] = [msg]
+            j = i + 1
+            while j < n:
+                next_msg = segment[j]
+                next_role = next_msg.get('role', '')
+                # Stop at next turn starter
+                if next_role == 'user' or (next_role == 'assistant' and next_msg.get('tool_calls')):
+                    break
+                # System messages and notifications are handled separately — stop
+                if next_role == 'system' or _is_system_notification(next_msg):
+                    break
+                # All other messages (tool, plain assistant) belong to current turn
+                turn.append(next_msg)
+                j += 1
+
+            # Compact the turn and append
+            compacted = _compact_turn(turn, policy)
+            result.extend(compacted)
+            i = j
+            continue
+
+        # Orphaned message (non-turnable, not system, not notification) — drop
+        i += 1
 
     return result
 
 
 def _group_turns(messages: List[Dict[str, Any]]) -> List[List[Dict[str, Any]]]:
-    """Group a flat list of non-system messages into turns.
+    """Group messages into turns, matching SummaryBuilder's logic.
 
-    Each turn starts with a user message (that is not a system notification)
-    and includes all messages until the next such user message (exclusive).
+    Rules (mirrors SummaryBuilder._group_messages_into_turns):
+    - User messages always start a new turn
+    - Assistant messages with tool_calls can also start a turn (after pruning)
+    - Tool messages are attached only if the current turn already contains an
+      assistant with tool_calls
+    - All other messages (plain assistant responses) belong to current turn
+    - Turns that don't start with user or assistant-with-tools are discarded
+    - Orphaned messages that don't belong to any turn are dropped
     """
     turns: List[List[Dict[str, Any]]] = []
     current_turn: List[Dict[str, Any]] = []
 
     for msg in messages:
         role = msg.get('role', '')
-        if role == 'user' and not _is_system_notification(msg):
+        if role == 'user':
             if current_turn:
                 turns.append(current_turn)
             current_turn = [msg]
+        elif role == 'assistant' and msg.get('tool_calls'):
+            if current_turn:
+                turns.append(current_turn)
+            current_turn = [msg]
+        elif current_turn:
+            if role == 'tool':
+                # Check if ANY message in the current turn is an assistant
+                # with tool_calls (not just the last one), to support
+                # multi-tool-call scenarios.
+                has_tool_call_assistant = any(
+                    m.get('role') == 'assistant' and m.get('tool_calls')
+                    for m in current_turn
+                )
+                if has_tool_call_assistant:
+                    current_turn.append(msg)
+                else:
+                    # Orphaned tool — drop it
+                    continue
+            else:
+                current_turn.append(msg)
         else:
-            current_turn.append(msg)
+            # Orphaned message with no turn context — drop it
+            continue
 
     if current_turn:
         turns.append(current_turn)
 
-    return turns
+    # Validate: only keep turns starting with user or assistant-with-tc
+    valid_turns: List[List[Dict[str, Any]]] = []
+    for turn in turns:
+        if not turn:
+            continue
+        first_msg = turn[0]
+        first_role = first_msg.get('role')
+        if first_role == 'user':
+            valid_turns.append(turn)
+        elif first_role == 'assistant' and first_msg.get('tool_calls'):
+            valid_turns.append(turn)
+        else:
+            logger.debug('_group_turns: discarding turn starting with %s', first_role)
+
+    return valid_turns
 
 
 def _compact_turn(
@@ -190,13 +262,20 @@ def _compact_turn(
 ) -> List[Dict[str, Any]]:
     """Compact a single turn, returning only the messages to keep.
 
-    A turn is a list starting with a user message.
+    A turn is a list starting with a user message OR an assistant with
+    tool_calls (the latter occurs when pruning has cut off the user).
     """
     if not turn:
         return []
 
-    # Always keep the user message
-    result: List[Dict[str, Any]] = [turn[0]]
+    first_msg = turn[0]
+    first_role = first_msg.get('role')
+
+    # Determine if we have a user message to keep
+    keep_user: bool = (first_role == 'user')
+    result: List[Dict[str, Any]] = []
+    if keep_user:
+        result.append(first_msg)  # always keep the user message
 
     # Collect all assistant messages in this turn
     assistant_msgs: List[Dict[str, Any]] = [
@@ -248,11 +327,27 @@ def _compact_turn(
                     'Compact turn: final tool call %s has no matching tool result',
                     final_call_id,
                 )
-        # else: aggressive mode would drop everything after user
         return result
 
-    # No final tool found — keep last assistant with content
-    if policy.keep_non_final_assistant:
+    # No final tool found — find the last assistant to keep
+    if policy.keep_plain_answer_only:
+        # Keep only the LAST assistant with content AND no tool_calls
+        # (a plain text answer, not a tool-calling intermediate)
+        last_plain_assistant: Optional[Dict[str, Any]] = None
+        for asst in reversed(assistant_msgs):
+            content = asst.get('content', '')
+            tool_calls = asst.get('tool_calls', [])
+            has_content = bool(content and isinstance(content, str) and content.strip())
+            has_tool_calls = bool(tool_calls)
+            if has_content and not has_tool_calls:
+                last_plain_assistant = asst
+                break
+        if last_plain_assistant is not None:
+            result.append(last_plain_assistant)
+        # else: no plain assistant found — drop all assistant messages
+        # (tool-calling intermediaries are not meaningful without their results)
+    else:
+        # Legacy behavior: keep last assistant with content
         last_content_assistant: Optional[Dict[str, Any]] = None
         for asst in reversed(assistant_msgs):
             content = asst.get('content', '')
@@ -273,22 +368,3 @@ def _compact_turn(
     return result
 
 
-def _merge_passthrough(
-    passthrough: List[Dict[str, Any]],
-    original_turnable: List[Dict[str, Any]],
-    compacted_turnable: List[Dict[str, Any]],
-) -> List[Dict[str, Any]]:
-    """Merge passthrough messages (system, notifications) back into the
-    compacted turnable messages at roughly their original positions.
-
-    This preserves the relative ordering of system messages w.r.t. the
-    turnable messages they were originally interleaved with.
-
-    Since we currently don't track exact original positions during
-    separation, we prepend all passthrough messages. This is a
-    simplification that works because system messages are typically
-    at the beginning of the history (system prompt, summaries).
-    """
-    # Simple approach: system messages go before user turns
-    # This preserves logical ordering for typical history layout
-    return passthrough + compacted_turnable

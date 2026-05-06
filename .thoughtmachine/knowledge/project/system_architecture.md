@@ -440,3 +440,22 @@ In `AgentConfig` and `agent_config.json`:
 - **6 KB modes**: list, read, append, update, status, search, create_domain.
 - **Documentation migration**: All docs/ migrated into KB domains.
 - **System assessment**: Comprehensive dead code identification across 9 architectural layers.
+
+## 2026-05-06 — ## Core State Machine Simplification Plan (2026-05-06)
+
+**Go...
+
+## Core State Machine Simplification Plan (2026-05-06)
+
+**Goal:** Reduce ExecutionState to 3 values (RUNNING, PAUSING, READY), remove synthetic pause events, and make the agent loop return cleanly with a `stop_reason` event.
+
+**Overview:** A 5-phase overhaul to simplify the agent's state machine. Full spec stored in conversation history and summarized below.
+
+**Key Changes:**
+- Phase 1: ExecutionState enum reduced to RUNNING/PAUSING/READY; process_query() returns cleanly with stop_reason
+- Phase 2: Controller no longer synthesizes paused events; uses stop_reason for UI feedback
+- Phase 3: GUI/SessionLifecycle adapt to new states
+- Phase 4: Turn limit fix becomes trivial
+- Phase 5: Integration testing and regression checks
+
+**Status:** Plan received, awaiting implementation go-ahead.
