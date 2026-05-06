@@ -167,12 +167,11 @@ class AgentController(QObject):
             log('DEBUG', 'core.controller', f'Agent processing query, calling pause()')
             self.pause()
         else:
-            log('DEBUG', 'core.controller', f'Agent idle, sending paused event directly')
+            log('DEBUG', 'core.controller', f'Agent idle (not processing query); setting PAUSING state then emitting session_stop')
             self.pause_event.clear()
             self._pause_requested = True
             if hasattr(self, 'agent') and self.agent is not None and hasattr(self.agent, 'request_pause'):
                 self.agent.request_pause()
-            self._emit_event({'type': 'paused'})
             if hasattr(self, 'agent') and self.agent is not None:
                 from session.context_builder import ContextBuilder
                 if hasattr(self.agent, 'conversation'):
@@ -180,6 +179,13 @@ class AgentController(QObject):
                     self.agent.conversation = ContextBuilder._cleanup_orphaned_tool_messages(self.agent.conversation)
                     if original_len != len(self.agent.conversation):
                         log('WARNING', 'core.controller', f'Cleaned {original_len - len(self.agent.conversation)} orphaned tool messages on idle pause')
+            # Emit execution_state_change (PAUSING) followed by session_stop (READY).
+            # This mirrors the processing-case flow: the agent yields execution_state_change
+            # then 'paused', after which the controller emits session_stop.
+            # The event processor handles the PAUSING→READY transition via session_stop,
+            # giving the GUI time to paint 'Pausing…'.
+            self._emit_event({'type': 'execution_state_change', 'new_state': 'pausing'})
+            self._emit_event({'type': 'session_stop', 'stop_reason': 'paused'})
 
     def get_conversation(self) -> Optional[List[Dict[str, Any]]]:
         """Return the current conversation from the agent, if available."""

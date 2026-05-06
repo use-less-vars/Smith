@@ -483,3 +483,30 @@ The ExecutionState enum has been simplified to just 3 values: RUNNING, PAUSING, 
 - READY is the universal non-running state (replaces IDLE, PAUSED, WAITING_FOR_USER, FINALIZED, STOPPED, MAX_TURNS_REACHED)
 - When user provides input in READY state: checks self.presenter.current_session to decide start vs continue
 - PAUSING and STOPPING retained as transitional states for UI feedback
+
+## 2026-05-06 — ## Turn Limit Simplification Complete (2026-05-06)
+
+### Chan...
+
+## Turn Limit Simplification Complete (2026-05-06)
+
+### Changes Made
+1. **agent/core/state.py**: Simplified `TurnState` enum to only `LOW`/`WARNING` (removed `CRITICAL`). `update_turn_state()` uses fixed `max_turns - 3` warning threshold with immediate `restrictions_active = True`. `get_allowed_tools()` returns only `['Final', 'FinalReport']` when restricted.
+
+2. **agent/config/models.py**: Removed `turn_monitor_warning_threshold` and `turn_monitor_critical_threshold` from FIELD_CATEGORIES and field declarations.
+
+3. **agent/core/agent.py**: Removed turn threshold fields from `config_data` dict in preset creation.
+
+4. **agent/presenter/state_bridge.py**: Removed threshold entries from `direct_mappings`.
+
+5. **qt_gui/panels/agent_controls.py**: Removed turn_monitor_row widget, turn timers, all turn-related signal connections and methods.
+
+6. **qt_gui/session_tab.py**: Removed signal connections for removed turn monitor controls.
+
+7. **agent/core/tool_executor.py**: Updated rejection message to remove SummarizeTool references (only Final/FinalReport available).
+
+8. **agent_config.json**: Removed stale `turn_monitor_warning_threshold` and `turn_monitor_critical_threshold` fields.
+
+### Verification
+- Zero references to removed fields or `TurnState.CRITICAL` remain in agent/*.py or qt_gui/*.py.
+- Config file cleaned of stale fields (safe via `extra='ignore'` but removed for cleanliness).

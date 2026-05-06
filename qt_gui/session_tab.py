@@ -262,9 +262,7 @@ class SessionTab(QWidget):
         self.agent_controls_panel.warning_threshold_spinbox.valueChanged.connect(self._handle_config_change)
         self.agent_controls_panel.critical_threshold_spinbox.valueChanged.connect(self._handle_config_change)
 
-        self.agent_controls_panel.turn_monitor_checkbox.stateChanged.connect(self._handle_config_change)
-        self.agent_controls_panel.turn_warning_threshold_spinbox.valueChanged.connect(self._handle_config_change)
-        self.agent_controls_panel.turn_critical_threshold_spinbox.valueChanged.connect(self._handle_config_change)
+
         for checkbox in self.agent_controls_panel.tool_checkboxes.values():
             checkbox.stateChanged.connect(self._handle_config_change)
         right_layout.addWidget(self.output_panel, 4)
@@ -542,15 +540,12 @@ class SessionTab(QWidget):
             if idle:
                 self.run_btn.setEnabled(True)
                 self.pause_btn.setEnabled(False)
-                self.status_panel.update_status('Ready for next query')
             else:
                 self.run_btn.setEnabled(False)
                 self.pause_btn.setEnabled(True)
-                self.status_panel.update_status('Running')
         else:
             self.run_btn.setEnabled(True)
             self.pause_btn.setEnabled(False)
-            self.status_panel.update_status('Ready')
 
     def load_config(self):
         """Load configuration from file and update controls.

@@ -810,38 +810,6 @@ class Agent:
                         self.logger.py_logger.info(f'[RATE_LIMIT] Applying rate limit delay: {delay}s between turns')
                     time.sleep(delay)
             tools = self.llm_client.format_tools(self.tool_definitions)
-            request_tokens = self.token_counter.estimate_request_tokens(messages, tools)
-            model_context_window = self.token_counter.get_model_context_window()
-            critical_threshold = int(model_context_window * 0.95)
-            warning_threshold = int(model_context_window * 0.85)
-            if request_tokens > critical_threshold:
-                warning = f'Request token count ({request_tokens}) is near model context window limit ({model_context_window}). Please use SummarizeTool immediately to reduce context size.'
-                warning_msg = {'role': 'user', 'content': '[SYSTEM NOTIFICATION] ' + warning, 'is_system_notification': True}
-                self._add_to_conversation(warning_msg)
-                # Also add to messages so the LLM sees the warning in this turn
-                messages.append(warning_msg)
-                warning_tokens = self._estimate_tokens(warning_msg)
-                self.state.current_conversation_tokens += warning_tokens
-                yield self._create_token_update_event()
-                event_dict = {'type': 'token_warning', 'message': warning, 'token_count': request_tokens, 'old_state': 'low', 'new_state': 'critical', 'state': 'critical', 'request_tokens': request_tokens, 'model_context_window': model_context_window}
-                self._add_conversation_data_to_event(event_dict)
-                yield event_dict
-                if self.logger:
-                    self.logger.log_token_warning('low', 'critical', request_tokens, f'Request tokens {request_tokens} near model context window {model_context_window}')
-            elif request_tokens > warning_threshold:
-                warning = f'Request token count ({request_tokens}) is approaching model context window ({model_context_window}). Consider using SummarizeTool soon.'
-                warning_msg = {'role': 'user', 'content': '[SYSTEM NOTIFICATION] ' + warning, 'is_system_notification': True}
-                self._add_to_conversation(warning_msg)
-                # Also add to messages so the LLM sees the warning in this turn
-                messages.append(warning_msg)
-                warning_tokens = self._estimate_tokens(warning_msg)
-                self.state.current_conversation_tokens += warning_tokens
-                yield self._create_token_update_event()
-                event_dict = {'type': 'token_warning', 'message': warning, 'token_count': request_tokens, 'old_state': 'low', 'new_state': 'warning', 'state': 'warning', 'request_tokens': request_tokens, 'model_context_window': model_context_window}
-                self._add_conversation_data_to_event(event_dict)
-                yield event_dict
-                if self.logger:
-                    self.logger.log_token_warning('low', 'warning', request_tokens, f'Request tokens {request_tokens} approaching model context window {model_context_window}')
             try:
                 chat_kwargs = {'temperature': self.runtime_params.temperature}
                 if self.runtime_params.max_tokens is not None:
@@ -852,7 +820,7 @@ class Agent:
                 response = self.llm_client.chat_completion(messages=messages, tools=tools if tools else None, **chat_kwargs)
                 llm_duration_ms = (time.time() - llm_start_time) * 1000
                 if self.logger:
-                    self.logger.log_latency('llm_call', llm_duration_ms, {'turn': turn, 'request_tokens': request_tokens, 'model': self.config.model, 'has_tools': bool(tools)})
+                    self.logger.log_latency('llm_call', llm_duration_ms, {'turn': turn, 'model': self.config.model, 'has_tools': bool(tools)})
                 input_tokens = response.usage.get('prompt_tokens', 0) if response.usage else 0
                 output_tokens = response.usage.get('completion_tokens', 0) if response.usage else 0
                 # Use LLM-reported prompt_tokens as ground truth for conversation token count
@@ -914,6 +882,16 @@ class Agent:
             pause_debug(f'Checking pause request before turn: _pause_requested={self._pause_requested}')
             if self._pause_requested:
                 pause_debug(f'Pause detected! Transitioning to PAUSING')
+                # Save grace turn: commit LLM response to user_history BEFORE yielding pause
+                assistant_msg = {'role': 'assistant', 'content': content}
+                if reasoning is not None:
+                    assistant_msg['reasoning_content'] = reasoning
+                elif tool_calls:
+                    assistant_msg['reasoning_content'] = ''
+                # Don't include tool_calls — they weren't executed
+                grace_tx = TurnTransaction(self.session, self.context_builder)
+                grace_tx.add_assistant_message(assistant_msg)
+                grace_tx.commit()
                 events = self.state.set_execution_state(ExecutionState.PAUSING)
                 for event in events:
                     for yielded_event in self._handle_state_event(event):
@@ -1059,6 +1037,8 @@ class Agent:
             self._apply_summary_pruning_fallback(summary, keep_recent_turns)
             old_token_count = self.state.current_conversation_tokens
             self._update_conversation_token_estimate()
+            # Immediately re-evaluate token state to clear restrictions if below critical
+            self.state.update_token_state(self.state.current_conversation_tokens)
             log('DEBUG', 'core.pruning', f'Fallback pruning token change: {old_token_count} -> {self.state.current_conversation_tokens}')
             if self.logger and hasattr(self.logger, 'py_logger'):
                 self.logger.py_logger.info(f'[PRUNING] Updated token estimate after fallback: {self.state.current_conversation_tokens} tokens (was {old_token_count})')
@@ -1113,6 +1093,8 @@ class Agent:
             self.logger.py_logger.info(f'[PRUNING] Added summary to append-only history: kept {kept_turns_count} turns, inserted summary at index {insertion_idx}, history length: {len(user_history)} messages')
         old_token_count = self.state.current_conversation_tokens
         self._update_conversation_token_estimate()
+        # Immediately re-evaluate token state to clear restrictions if below critical
+        self.state.update_token_state(self.state.current_conversation_tokens)
         log('DEBUG', 'core.pruning', f'Summary pruning token change: {old_token_count} -> {self.state.current_conversation_tokens}, summary_idx={insertion_idx}, kept_turns={kept_turns_count}')
         if self.logger and hasattr(self.logger, 'py_logger'):
             self.logger.py_logger.info(f'[PRUNING] Updated token estimate: {self.state.current_conversation_tokens} tokens (was {old_token_count})')
@@ -1325,7 +1307,7 @@ class Agent:
         for tool_cls in SIMPLIFIED_TOOL_CLASSES:
             if tool_cls.__name__ in preset_tool_names:
                 tool_classes.append(tool_cls)
-        config_data = {'api_key': api_key or '', 'base_url': base_url, 'model': preset.model, 'temperature': preset.temperature, 'enabled_tools': list(preset_tool_names), 'system_prompt': preset.system_prompt, 'provider_type': 'openai_compatible', 'max_turns': overrides.get('max_turns', 100), 'detail': overrides.get('detail', 'normal'), 'workspace_path': overrides.get('workspace_path'), 'tool_output_token_limit': overrides.get('tool_output_token_limit', 10000), 'token_monitor_enabled': overrides.get('token_monitor_enabled', True), 'token_monitor_warning_threshold': overrides.get('token_monitor_warning_threshold', 35000), 'token_monitor_critical_threshold': overrides.get('token_monitor_critical_threshold', 50000), 'turn_monitor_enabled': overrides.get('turn_monitor_enabled', True), 'turn_monitor_warning_threshold': overrides.get('turn_monitor_warning_threshold', 0.8), 'turn_monitor_critical_threshold': overrides.get('turn_monitor_critical_threshold', 0.95), 'enable_logging': overrides.get('enable_logging', True), 'log_dir': overrides.get('log_dir', './logs'), 'log_level': overrides.get('log_level', 'INFO'), 'enable_file_logging': overrides.get('enable_file_logging', True), 'enable_console_logging': overrides.get('enable_console_logging', False), 'jsonl_format': overrides.get('jsonl_format', True), 'log_categories': overrides.get('log_categories', ['SESSION', 'LLM', 'TOOLS']), 'max_file_size_mb': overrides.get('max_file_size_mb', 10), 'max_backup_files': overrides.get('max_backup_files', 5)}
+        config_data = {'api_key': api_key or '', 'base_url': base_url, 'model': preset.model, 'temperature': preset.temperature, 'enabled_tools': list(preset_tool_names), 'system_prompt': preset.system_prompt, 'provider_type': 'openai_compatible', 'max_turns': overrides.get('max_turns', 100), 'detail': overrides.get('detail', 'normal'), 'workspace_path': overrides.get('workspace_path'), 'tool_output_token_limit': overrides.get('tool_output_token_limit', 10000), 'token_monitor_enabled': overrides.get('token_monitor_enabled', True), 'token_monitor_warning_threshold': overrides.get('token_monitor_warning_threshold', 35000), 'token_monitor_critical_threshold': overrides.get('token_monitor_critical_threshold', 50000), 'turn_monitor_enabled': overrides.get('turn_monitor_enabled', True), 'enable_logging': overrides.get('enable_logging', True), 'log_dir': overrides.get('log_dir', './logs'), 'log_level': overrides.get('log_level', 'INFO'), 'enable_file_logging': overrides.get('enable_file_logging', True), 'enable_console_logging': overrides.get('enable_console_logging', False), 'jsonl_format': overrides.get('jsonl_format', True), 'log_categories': overrides.get('log_categories', ['SESSION', 'LLM', 'TOOLS']), 'max_file_size_mb': overrides.get('max_file_size_mb', 10), 'max_backup_files': overrides.get('max_backup_files', 5)}
         config_data.update(overrides)
         from agent.config import AgentConfig
         config = AgentConfig(**config_data)
