@@ -1,5 +1,6 @@
 import threading
 import os
+import sys
 import queue
 import traceback
 from agent.config import AgentConfig
@@ -125,7 +126,9 @@ class AgentController(QObject):
         self.query_queue.put(query)
         self.thread = threading.Thread(target=self._run, daemon=True)
         self._running = True
+        log('DEBUG', 'core.controller', 'start(): _running set to True, starting thread')
         self.thread.start()
+        log('DEBUG', 'core.controller', 'start(): thread.start() returned')
 
     def stop(self):
         """Request the agent to pause after the current turn/tool."""
@@ -142,6 +145,10 @@ class AgentController(QObject):
             if os.environ.get('PAUSE_DEBUG'):
                 log('WARNING', 'presenter.pause_flow', f'Controller.continue_session: {debug_msg}')
             raise RuntimeError(f'Agent controller not running: {debug_msg}')
+        if self.agent is None:
+            debug_msg = '[Controller] Agent is None (creation failed). Cannot continue session.'
+            log('ERROR', 'core.controller', debug_msg)
+            raise RuntimeError(debug_msg)
         if os.environ.get('PAUSE_DEBUG'):
             log('WARNING', 'presenter.pause_flow', f'Controller.continue_session: calling resume() and queuing query')
         self.resume()
@@ -282,18 +289,21 @@ class AgentController(QObject):
     def _run(self):
         """Internal method that runs in the background thread."""
         log('DEBUG', 'core.controller', f'_run started')
-        try:
 
-            def should_stop():
-                log('DEBUG', 'core.controller', f'should_stop called, pause_event.is_set={self.pause_event.is_set()}, stop_event.is_set={self.stop_event.is_set()}, _pause_requested={self._pause_requested}')
-                if self.stop_event.is_set():
-                    log('DEBUG', 'core.controller', f'should_stop: stop_event is set, returning True')
-                    return True
-                if not self.pause_event.is_set():
-                    log('DEBUG', 'core.controller', f'should_stop: pause_event not set, returning PAUSED')
-                    return 'PAUSED'
-                log('DEBUG', 'core.controller', f'should_stop: not paused, returning False')
-                return False
+        def should_stop():
+            log('DEBUG', 'core.controller', f'should_stop called, pause_event.is_set={self.pause_event.is_set()}, stop_event.is_set={self.stop_event.is_set()}, _pause_requested={self._pause_requested}')
+            if self.stop_event.is_set():
+                log('DEBUG', 'core.controller', f'should_stop: stop_event is set, returning True')
+                return True
+            if not self.pause_event.is_set():
+                log('DEBUG', 'core.controller', f'should_stop: pause_event not set, returning PAUSED')
+                return 'PAUSED'
+            log('DEBUG', 'core.controller', f'should_stop: not paused, returning False')
+            return False
+
+        log('DEBUG', 'core.controller', '_run(): about to create agent')
+        # --- Agent creation (separate try/except to keep thread alive on failure) ---
+        try:
             if hasattr(self, '_agent_override') and self._agent_override is not None:
                 agent = self._agent_override
                 agent.config.stop_check = should_stop
@@ -311,7 +321,29 @@ class AgentController(QObject):
                 run_config.stop_check = should_stop
                 agent = Agent(run_config, session=self._session if hasattr(self, '_session') else None)
                 self.agent = agent
+            log('DEBUG', 'core.controller', '_run: Agent created successfully')
+        except Exception as e:
+            log('ERROR', 'core.controller', f'_run: Agent creation FAILED: {e}')
+            traceback.print_exc()
+            self.agent = None
+            self._emit_event({'type': 'error', 'error_type': 'AGENT_CREATION_ERROR', 'message': str(e), 'traceback': traceback.format_exc()})
+
+        # --- Main processing loop ---
+        try:
             while self._keep_alive:
+                if self.agent is None:
+                    # Agent creation failed; wait for stop or reset
+                    log('DEBUG', 'core.controller', '_run: No agent available, waiting in agentless idle loop')
+                    try:
+                        query = self.query_queue.get(timeout=1.0)
+                    except queue.Empty:
+                        continue
+                    if query in ('[RESET]', '[STOP]'):
+                        log('DEBUG', 'core.controller', '_run: Received stop/reset in agentless state, breaking')
+                        break
+                    # Ignore other queries when agent is None
+                    continue
+
                 stop_result = should_stop()
                 if stop_result:
                     if stop_result == 'PAUSED':
@@ -330,33 +362,29 @@ class AgentController(QObject):
                 if query == '[RESET]':
                     agent.reset()
                     continue
-                if query == '[PAUSE]':
-                    log('DEBUG', 'core.controller', f'Pause requested')
-                    self._emit_event({'type': 'paused'})
-                    continue
                 log('DEBUG', 'core.controller', f'Processing query: {query[:50]}...')
                 self._processing_query = True
-                for event in agent.process_query(query):
-                    log('DEBUG', 'core.controller', f"Event: {event['type']}")
-                    self._emit_event(event)
-                    if event['type'] == 'paused':
-                        self._pause_requested = False
-                        break
-                    if event['type'] in ('stopped', 'error', 'max_turns'):
-                        log('DEBUG', 'core.controller', f"Terminal event {event['type']} detected, treating as pause")
-                        self._pause_requested = False
-                        self._emit_event({'type': 'paused'})
-                        break
-                    elif event['type'] in ('final', 'user_interaction_requested'):
-                        log('DEBUG', 'core.controller', f'Sending paused event')
-                        self._emit_event({'type': 'paused'})
-                        break
-                    if not self.pause_event.is_set():
-                        log('DEBUG', 'core.controller', f'pause_event not set between events, breaking loop')
-                        self._pause_requested = False
-                        self._emit_event({'type': 'paused'})
-                        break
-                self._processing_query = False
+                stop_reason = None
+                try:
+                    for event in agent.process_query(query):
+                        log('DEBUG', 'core.controller', f"Event: {event['type']}")
+                        self._emit_event(event)
+                        if event.get('stop_reason'):
+                            log('DEBUG', 'core.controller', f"Stop reason: {event['stop_reason']}, breaking loop")
+                            self._pause_requested = False
+                            stop_reason = event['stop_reason']
+                            break
+                        if not self.pause_event.is_set():
+                            log('DEBUG', 'core.controller', f'pause_event not set between events, breaking loop')
+                            self._pause_requested = False
+                            break
+                except Exception as e:
+                    log('ERROR', 'core.controller', f'Unhandled exception during process_query: {e}')
+                    traceback.print_exc()
+                    stop_reason = 'error'
+                finally:
+                    self._processing_query = False
+                    self._emit_event({'type': 'session_stop', 'stop_reason': stop_reason or 'completed'})
                 if not self._keep_alive:
                     log('DEBUG', 'core.controller', f'_keep_alive=False, breaking outer loop')
                     break

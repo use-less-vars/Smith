@@ -459,3 +459,27 @@ In `AgentConfig` and `agent_config.json`:
 - Phase 5: Integration testing and regression checks
 
 **Status:** Plan received, awaiting implementation go-ahead.
+
+## 2026-05-06 — ## Phase 1: State Simplification Complete
+
+The ExecutionStat...
+
+## Phase 1: State Simplification Complete
+
+The ExecutionState enum has been simplified to just 3 values: RUNNING, PAUSING, READY.
+
+**Files modified across codebase:**
+
+1. **agent/core/state.py** — ExecutionState enum reduced, AgentState default READY
+2. **agent/core/agent.py** — process_query() simplified, all terminal state transitions removed, stop_reason added
+3. **agent/controller/__init__.py** — Event loop simplified, synthetic paused events removed
+4. **agent/presenter/event_processor.py** — All PAUSED/WAITING_FOR_USER → READY
+5. **agent/presenter/session_lifecycle.py** — Default IDLE→READY, guard conditions updated
+6. **agent/presenter/agent_presenter.py** — on_user_input checks for READY, differentiates via current_session
+7. **agent/presenter/gui_integration.py** — Default IDLE→READY
+8. **qt_gui/session_tab.py** — on_state_changed, run_agent, update_buttons all updated for READY-only model
+
+**Key design decisions:**
+- READY is the universal non-running state (replaces IDLE, PAUSED, WAITING_FOR_USER, FINALIZED, STOPPED, MAX_TURNS_REACHED)
+- When user provides input in READY state: checks self.presenter.current_session to decide start vs continue
+- PAUSING and STOPPING retained as transitional states for UI feedback

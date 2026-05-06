@@ -382,36 +382,16 @@ class SessionTab(QWidget):
         if self._closing:
             log('DEBUG', 'debug.unknown', 'on_state_changed: skipping due to _closing')
             return
-        if state == ExecutionState.IDLE:
+        if state == ExecutionState.READY:
             self.status_panel.update_status('Ready')
             self.update_buttons(running=False)
         elif state == ExecutionState.RUNNING:
             self.status_panel.update_status('Running')
             self.update_buttons(running=True, idle=False)
-        elif state == ExecutionState.PAUSED:
-            self.status_panel.update_status('Paused')
-            self.update_buttons(running=True, idle=True)
-        elif state == ExecutionState.WAITING_FOR_USER:
-            self.status_panel.update_status('Waiting for user input')
-            self.update_buttons(running=True, idle=True)
-            self.query_entry.setFocus()
-        elif state == ExecutionState.STOPPED:
-            self.status_panel.update_status('Stopped')
-            self.update_buttons(running=False)
-        elif state == ExecutionState.FINALIZED:
-            self.status_panel.update_status('Completed')
-            self.update_buttons(running=True, idle=True)
         elif state == ExecutionState.PAUSING:
             self.status_panel.update_status('Pausing…')
             self.update_buttons(running=True, idle=False)
             self.pause_btn.setEnabled(False)
-        elif state == ExecutionState.STOPPING:
-            self.status_panel.update_status('Stopping…')
-            self.run_btn.setEnabled(False)
-            self.pause_btn.setEnabled(False)
-        elif state == ExecutionState.MAX_TURNS_REACHED:
-            self.status_panel.update_status('Max turns reached')
-            self.update_buttons(running=True, idle=True)
 
     @pyqtSlot(int, int)
     def on_tokens_updated(self, total_input, total_output):
@@ -501,28 +481,26 @@ class SessionTab(QWidget):
         preset_name = config_dict.pop('preset_name', None)
         self.presenter.update_config(config_dict)
         current_state = self.presenter.state
-        if current_state == ExecutionState.IDLE:
-            if not query:
-                QMessageBox.warning(self, 'No Query', 'Please enter a query first.')
-                return
-            self._display_turn += 1
-            #self.output_panel.show_processing_indicator(query, self._display_turn)
-            try:
-                self.presenter.start_session(query, config_dict, preset_name=preset_name)
-            except Exception as e:
-                QMessageBox.critical(self, 'Session Error', f'Failed to start session: {e}')
-            self.query_entry.clear()
-            self.update_window_title()
-        elif current_state in [ExecutionState.PAUSED, ExecutionState.WAITING_FOR_USER]:
-            if query:
+        if current_state == ExecutionState.READY:
+            if self.presenter.controller.is_running:
+                if query:
+                    self._display_turn += 1
+                    #self.output_panel.show_processing_indicator(query, self._display_turn)
+                try:
+                    self.presenter.continue_session(query)
+                except Exception as e:
+                    QMessageBox.critical(self, 'Session Error', f'Failed to continue session: {e}')
+            else:
+                if not query:
+                    QMessageBox.warning(self, 'No Query', 'Please enter a query first.')
+                    return
                 self._display_turn += 1
                 #self.output_panel.show_processing_indicator(query, self._display_turn)
-            else:
-                pass
-            try:
-                self.presenter.continue_session(query)
-            except Exception as e:
-                QMessageBox.critical(self, 'Session Error', f'Failed to continue session: {e}')
+                try:
+                    self.presenter.start_session(query, config_dict, preset_name=preset_name)
+                except Exception as e:
+                    QMessageBox.critical(self, 'Session Error', f'Failed to start session: {e}')
+                self.update_window_title()
             self.query_entry.clear()
         else:
             QMessageBox.warning(self, 'Cannot Run', f'Cannot run agent in current state: {current_state}')
@@ -558,8 +536,8 @@ class SessionTab(QWidget):
     def update_buttons(self, running=None, idle=False):
         """Update button states based on agent state."""
         if running is None:
-            running = self.presenter.state in [ExecutionState.RUNNING, ExecutionState.PAUSED, ExecutionState.WAITING_FOR_USER]
-            idle = self.presenter.state in [ExecutionState.PAUSED, ExecutionState.WAITING_FOR_USER, ExecutionState.FINALIZED]
+            running = self.presenter.state == ExecutionState.RUNNING
+            idle = False
         if running:
             if idle:
                 self.run_btn.setEnabled(True)

@@ -20,14 +20,9 @@ class TurnState(enum.Enum):
 
 class ExecutionState(enum.Enum):
     """Unified execution state for agent and GUI."""
-    IDLE = 'idle'
     RUNNING = 'running'
     PAUSING = 'pausing'
-    PAUSED = 'paused'
-    WAITING_FOR_USER = 'waiting_for_user'
-    FINALIZED = 'finalized'
-    STOPPED = 'stopped'
-    MAX_TURNS_REACHED = 'max_turns_reached'
+    READY = 'ready'
 
 class SessionState(enum.Enum):
     """Session state of the agent."""
@@ -43,7 +38,7 @@ class AgentState:
     security_config: Optional[Dict[str, Any]] = None
     token_state: TokenState = TokenState.LOW
     turn_state: TurnState = TurnState.LOW
-    execution_state: ExecutionState = ExecutionState.IDLE
+    execution_state: ExecutionState = ExecutionState.READY
     session_state: SessionState = SessionState.NEW
     current_conversation_tokens: int = 0
     current_turn: int = 0
@@ -221,7 +216,7 @@ class AgentState:
         self.last_turn_warning_state = TurnState.LOW
         self.last_turn_warning = None
         self.last_turn_warning_count = 0
-        events.extend(self.set_execution_state(ExecutionState.IDLE))
+        events.extend(self.set_execution_state(ExecutionState.READY))
         events.extend(self.set_session_state(SessionState.NEW))
         return events
 

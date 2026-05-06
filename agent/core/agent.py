@@ -105,6 +105,17 @@ class Agent:
         self.conversation_manager = ConversationManager(session, None, self.logger)
         self.debug_context = DebugContext(self.logger)
         self.tool_classes = config.get_filtered_tool_classes()
+        # Register MCP tools lazily (not during import to avoid hangs)
+        try:
+            from tools.mcp_manager import register_mcp_tools
+            from tools import _update_simplified_toolset
+            register_mcp_tools(timeout=5.0)
+            # Sync SIMPLIFIED_TOOL_CLASSES with newly added MCP tools
+            _update_simplified_toolset()
+            # Recalculate tool_classes to include MCP tools
+            self.tool_classes = config.get_filtered_tool_classes()
+        except Exception as e:
+            logger.warning(f"Failed to register MCP tools: {e}")
         self.tool_definitions = [model_to_openai_tool(cls) for cls in self.tool_classes]
         self.tool_executor = ToolExecutor(self.tool_classes, config, None, self.logger, self.security_available, agent=self)
         self.provider = self.llm_client.provider
@@ -317,7 +328,7 @@ class Agent:
                 old_tool_executor.close()
 
             # Reset execution state
-            self.state.set_execution_state(ExecutionState.IDLE)
+            self.state.set_execution_state(ExecutionState.READY)
             self._next_query_queue = queue.Queue()
             self._paused = False
             self._pause_requested = False
@@ -470,12 +481,6 @@ class Agent:
                 self.logger.py_logger.debug(f'Session state change: {old_state} -> {new_state}')
             self._add_conversation_data_to_event(event)
             yield event
-        elif event.get('type') == 'state_change':
-            if self.logger:
-                self.logger.py_logger.debug(f"State change: {event.get('old_state')} -> {event.get('new_state')}")
-            self._add_conversation_data_to_event(event)
-            yield event
-
     def _update_conversation_token_estimate(self):
         """Update current_conversation_tokens by estimating tokens for runtime context."""
         log('DEBUG', 'core.context_builder', f"_update_conversation_token_estimate: has context_builder={hasattr(self, 'context_builder')}, context_builder is None={(self.context_builder if hasattr(self, 'context_builder') else 'no attr')}")
@@ -658,13 +663,10 @@ class Agent:
         llm_client = getattr(self, 'llm_client', None)
         if llm_client is None or getattr(llm_client, 'provider', None) is None:
             logger.error('LLM client is unavailable or in invalid state after config update')
-            events = self.state.set_execution_state(ExecutionState.WAITING_FOR_USER)
-            for event in events:
-                for yielded_event in self._handle_state_event(event):
-                    yield yielded_event
             event_dict = {
                 'type': 'error',
                 'error_type': 'invalid_config',
+                'stop_reason': 'error',
                 'message': 'LLM client unavailable after configuration update. The new configuration may be invalid.',
                 'turn': self._display_turn,
             }
@@ -690,7 +692,7 @@ class Agent:
         if current_exec_state == ExecutionState.RUNNING:
             if self.logger:
                 self.logger.log_error('EXECUTION_STATE', 'process_query called while already RUNNING')
-        elif current_exec_state in (ExecutionState.PAUSED, ExecutionState.WAITING_FOR_USER):
+        elif current_exec_state == ExecutionState.READY:
             events = self.state.set_execution_state(ExecutionState.RUNNING)
             for event in events:
                 for yielded_event in self._handle_state_event(event):
@@ -732,16 +734,12 @@ class Agent:
                 for event in events:
                     for yielded_event in self._handle_state_event(event):
                         yield yielded_event
-                events = self.state.set_execution_state(ExecutionState.PAUSED)
-                for event in events:
-                    for yielded_event in self._handle_state_event(event):
-                        yield yielded_event
                 if self.logger:
                     self.logger.log_stop_signal()
                     self.logger.log_system_resources()
                     self.logger.log_agent_end('stopped', 'Stop signal received')
                     self.logger.close()
-                stopped_event = {'type': 'stopped', 'turn': self._display_turn, 'context_length': self.state.current_conversation_tokens, 'usage': {'input': last_input_tokens, 'output': last_output_tokens, 'total_input': self.total_input_tokens, 'total_output': self.total_output_tokens}}
+                stopped_event = {'type': 'stopped', 'stop_reason': 'stopped', 'turn': self._display_turn, 'context_length': self.state.current_conversation_tokens, 'usage': {'input': last_input_tokens, 'output': last_output_tokens, 'total_input': self.total_input_tokens, 'total_output': self.total_output_tokens}}
                 self._add_conversation_data_to_event(stopped_event)
                 yield stopped_event
                 return
@@ -875,12 +873,13 @@ class Agent:
                 self._add_conversation_data_to_event(event_dict)
                 yield event_dict
                 time.sleep(wait_time)
-                break
+                if self.session is not None:
+                    self.session.add_message('system', f'Error: RATE_LIMIT_EXCEEDED: rate limit exceeded after {self.rate_limit_count} attempts')
+                stop_reason_event = {'type': 'stop_reason', 'stop_reason': 'rate_limit', 'message': f'Rate limit exceeded after {self.rate_limit_count} attempts', 'turn': self._display_turn, 'context_length': self.state.current_conversation_tokens, 'usage': {'input': last_input_tokens, 'output': last_output_tokens, 'total_input': self.total_input_tokens, 'total_output': self.total_output_tokens}}
+                self._add_conversation_data_to_event(stop_reason_event)
+                yield stop_reason_event
+                return
             except (ProviderError, LLMError) as e:
-                events = self.state.set_execution_state(ExecutionState.STOPPED)
-                for event in events:
-                    for yielded_event in self._handle_state_event(event):
-                        yield yielded_event
                 error_type = 'PROVIDER_ERROR'
                 if isinstance(e, LLMError):
                     error_type = e.error_type.upper()
@@ -889,22 +888,22 @@ class Agent:
                     self.logger.log_system_resources()
                     self.logger.log_agent_end('provider_error', f'Provider error: {e}')
                     self.logger.close()
-                event_dict = {'type': 'error', 'error_type': error_type, 'message': str(e), 'traceback': traceback.format_exc(), 'turn': self._display_turn, 'context_length': self.state.current_conversation_tokens, 'usage': {'input': last_input_tokens, 'output': last_output_tokens, 'total_input': self.total_input_tokens, 'total_output': self.total_output_tokens}}
+                if self.session is not None:
+                    self.session.add_message('system', f'Error: {error_type}: {e}')
+                event_dict = {'type': 'error', 'error_type': error_type, 'message': str(e), 'stop_reason': 'error', 'traceback': traceback.format_exc(), 'turn': self._display_turn, 'context_length': self.state.current_conversation_tokens, 'usage': {'input': last_input_tokens, 'output': last_output_tokens, 'total_input': self.total_input_tokens, 'total_output': self.total_output_tokens}}
                 self._add_conversation_data_to_event(event_dict)
                 yield event_dict
                 return
             except Exception as e:
                 logger.exception(f'[Agent] Unexpected exception in process_query: {e}')
-                events = self.state.set_execution_state(ExecutionState.STOPPED)
-                for event in events:
-                    for yielded_event in self._handle_state_event(event):
-                        yield yielded_event
                 if self.logger:
                     self.logger.log_error('UNEXPECTED_ERROR', str(e))
                     self.logger.log_system_resources()
                     self.logger.log_agent_end('unexpected_error', f'Unexpected error: {e}')
                     self.logger.close()
-                event_dict = {'type': 'error', 'error_type': 'UNEXPECTED_ERROR', 'message': str(e), 'traceback': traceback.format_exc(), 'turn': self._display_turn, 'context_length': self.state.current_conversation_tokens, 'usage': {'input': last_input_tokens, 'output': last_output_tokens, 'total_input': self.total_input_tokens, 'total_output': self.total_output_tokens}}
+                if self.session is not None:
+                    self.session.add_message('system', f'Error: UNEXPECTED_ERROR: {e}')
+                event_dict = {'type': 'error', 'error_type': 'UNEXPECTED_ERROR', 'message': str(e), 'stop_reason': 'error', 'traceback': traceback.format_exc(), 'turn': self._display_turn, 'context_length': self.state.current_conversation_tokens, 'usage': {'input': last_input_tokens, 'output': last_output_tokens, 'total_input': self.total_input_tokens, 'total_output': self.total_output_tokens}}
                 self._add_conversation_data_to_event(event_dict)
                 yield event_dict
                 return
@@ -914,18 +913,14 @@ class Agent:
             user_interaction_message = None
             pause_debug(f'Checking pause request before turn: _pause_requested={self._pause_requested}')
             if self._pause_requested:
-                pause_debug(f'Pause detected! Transitioning to PAUSING then PAUSED')
+                pause_debug(f'Pause detected! Transitioning to PAUSING')
                 events = self.state.set_execution_state(ExecutionState.PAUSING)
-                for event in events:
-                    for yielded_event in self._handle_state_event(event):
-                        yield yielded_event
-                events = self.state.set_execution_state(ExecutionState.PAUSED)
                 for event in events:
                     for yielded_event in self._handle_state_event(event):
                         yield yielded_event
                 pause_debug(f'Clearing _pause_requested after pause')
                 self._pause_requested = False
-                pause_event = {'type': 'paused', 'turn': self._display_turn, 'context_length': self.state.current_conversation_tokens}
+                pause_event = {'type': 'paused', 'stop_reason': 'paused', 'turn': self._display_turn, 'context_length': self.state.current_conversation_tokens}
                 self._add_conversation_data_to_event(pause_event)
                 yield pause_event
                 turn_duration = time.time() - turn_start_time
@@ -973,11 +968,7 @@ class Agent:
                 if turn_transaction:
                     turn_transaction.commit()
                 if final_detected:
-                    events = self.state.set_execution_state(ExecutionState.FINALIZED)
-                    for event in events:
-                        for yielded_event in self._handle_state_event(event):
-                            yield yielded_event
-                    final_event = {'type': 'final', 'content': final_content if final_content is not None else content, 'turn': self._display_turn, 'context_length': self.state.current_conversation_tokens, 'usage': {'input': last_input_tokens, 'output': last_output_tokens, 'total_input': self.total_input_tokens, 'total_output': self.total_output_tokens}}
+                    final_event = {'type': 'final', 'stop_reason': 'final', 'content': final_content if final_content is not None else content, 'turn': self._display_turn, 'context_length': self.state.current_conversation_tokens, 'usage': {'input': last_input_tokens, 'output': last_output_tokens, 'total_input': self.total_input_tokens, 'total_output': self.total_output_tokens}}
                     if reasoning is not None:
                         final_event['reasoning'] = reasoning
                     elif tool_calls:
@@ -990,10 +981,6 @@ class Agent:
                         self.logger.log_turn_complete(turn, {'input': last_input_tokens, 'output': last_output_tokens, 'duration_ms': turn_duration * 1000, 'context_tokens': self.state.current_conversation_tokens})
                     return
                 if user_interaction_message is not None:
-                    events = self.state.set_execution_state(ExecutionState.WAITING_FOR_USER)
-                    for event in events:
-                        for yielded_event in self._handle_state_event(event):
-                            yield yielded_event
                     turn_duration = time.time() - turn_start_time
                     if self.logger:
                         self.logger.log_system_resources()
@@ -1005,18 +992,14 @@ class Agent:
                     yield self._create_token_update_event()
             pause_debug(f'Checking pause request after turn processing: _pause_requested={self._pause_requested}')
             if self._pause_requested:
-                pause_debug(f'Pause detected after turn processing! Transitioning to PAUSING then PAUSED')
+                pause_debug(f'Pause detected after turn processing! Transitioning to PAUSING')
                 events = self.state.set_execution_state(ExecutionState.PAUSING)
-                for event in events:
-                    for yielded_event in self._handle_state_event(event):
-                        yield yielded_event
-                events = self.state.set_execution_state(ExecutionState.PAUSED)
                 for event in events:
                     for yielded_event in self._handle_state_event(event):
                         yield yielded_event
                 pause_debug(f'Clearing _pause_requested after pause (after turn processing)')
                 self._pause_requested = False
-                pause_event = {'type': 'paused', 'turn': self._display_turn, 'context_length': self.state.current_conversation_tokens}
+                pause_event = {'type': 'paused', 'stop_reason': 'paused', 'turn': self._display_turn, 'context_length': self.state.current_conversation_tokens}
                 self._add_conversation_data_to_event(pause_event)
                 yield pause_event
                 turn_duration = time.time() - turn_start_time
@@ -1027,19 +1010,11 @@ class Agent:
             if not tool_calls:
                 if turn_transaction and turn_transaction.has_assistant_message():
                     turn_transaction.commit()
-                events = self.state.set_execution_state(ExecutionState.PAUSING)
-                for event in events:
-                    for yielded_event in self._handle_state_event(event):
-                        yield yielded_event
-                events = self.state.set_execution_state(ExecutionState.PAUSED)
-                for event in events:
-                    for yielded_event in self._handle_state_event(event):
-                        yield yielded_event
                 if self.logger:
                     self.logger.log_system_resources()
                     self.logger.log_agent_end('completed', 'Assistant provided direct answer with no tool calls')
                     self.logger.close()
-                final_event = {'type': 'final', 'content': content, 'turn': self._display_turn, 'context_length': self.state.current_conversation_tokens, 'usage': {'input': last_input_tokens, 'output': last_output_tokens, 'total_input': self.total_input_tokens, 'total_output': self.total_output_tokens}}
+                final_event = {'type': 'final', 'stop_reason': 'final', 'content': content, 'turn': self._display_turn, 'context_length': self.state.current_conversation_tokens, 'usage': {'input': last_input_tokens, 'output': last_output_tokens, 'total_input': self.total_input_tokens, 'total_output': self.total_output_tokens}}
                 if reasoning is not None:
                     final_event['reasoning'] = reasoning
                 elif tool_calls:
@@ -1047,6 +1022,22 @@ class Agent:
                 self._add_conversation_data_to_event(final_event)
                 yield final_event
                 return
+
+        # Max turns reached - loop exhausted naturally
+        if self.logger:
+            self.logger.log_agent_end('max_turns_reached', f'Max turns ({self.config.max_turns}) reached')
+            self.logger.close()
+        max_turns_event = {
+            'type': 'stop_reason',
+            'stop_reason': 'max_turns_reached',
+            'turns': self.config.max_turns,
+            'turn': self._display_turn,
+            'context_length': self.state.current_conversation_tokens,
+            'usage': {'input': last_input_tokens, 'output': last_output_tokens, 'total_input': self.total_input_tokens, 'total_output': self.total_output_tokens}
+        }
+        self._add_conversation_data_to_event(max_turns_event)
+        yield max_turns_event
+        return
 
     def _apply_summary_pruning(self, summary: str, keep_recent_turns: int):
         """Add summary message to append-only history with metadata.
